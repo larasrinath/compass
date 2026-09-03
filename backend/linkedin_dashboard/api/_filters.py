@@ -59,12 +59,15 @@ _WINDOWS_PATH = re.compile(
     flags=re.IGNORECASE,
 )
 _QUOTED_FILESYSTEM_PATH = re.compile(
-    r"(?P<quote>[\"'])(?:[a-z]:[\\/]|\\\\|/(?:etc|home|opt|private|srv|tmp|users|var)/)"
+    r"(?P<quote>[\"'])(?:[a-z]:[\\/]|\\\\|/(?!/))"
     r"(?:(?!(?P=quote))[\s\S])+(?P=quote)",
     flags=re.IGNORECASE,
 )
 _FILESYSTEM_PATH_WITH_SPACES = re.compile(
-    r"(?<![a-z0-9])(?:[a-z]:[\\/]|\\\\|/(?:etc|home|opt|private|srv|tmp|users|var)/)"
+    r"(?<![a-z0-9])(?:"
+    r"[a-z]:[\\/]"
+    r"|\\\\[^\s\\/]+[\\/]"
+    r"|/(?!/)(?=[^\r\n\"'<>;,|]*/))"
     r"[^\r\n\"'<>;,|]+(?:[;,|]|$|(?=[\"'<>]))",
     flags=re.IGNORECASE,
 )
@@ -198,14 +201,26 @@ _SENSITIVE_HEADER_COMPACT = _SENSITIVE_QUERY_KEYS | {
     "setcookie",
 }
 _STRUCTURAL_HEADER_NAMES = ("content-length",)
-_PROVENANCE_ROUTES = (
-    re.compile(r"^/api/searches/[^/]+$"),
-    re.compile(r"^/api/candidates/[^/]+$"),
-    re.compile(r"^/api/candidates/[^/]+/sections/[^/]+$"),
-    re.compile(r"^/api/session/export$"),
-)
 _PROVENANCE_TEXT_FIELDS = {"claim_text", "matched_term", "raw_text", "snippet"}
 _DIAGNOSTIC_CONTAINERS = {"error", "errors", "section_error", "section_errors"}
+_PROVENANCE_HANDLER_MARKER = object()
+_SAFE_PROVENANCE_PROSE = re.compile(
+    r"\bAuthentication:\s*OAuth(?:\s+2\.0)?(?=\s*(?:/|[\r\n]|$))|"
+    r"\bBearer tokens?\b(?=\s*(?:[.,;|/]|[\r\n]|$))|"
+    r"\bKey:\s*Kubernetes\b(?=\s*(?:[.,;|/]|[\r\n]|$))",
+    re.IGNORECASE,
+)
+
+
+def preserve_provenance_text(handler: Any) -> Any:
+    """Mark an owned read handler as a source of exact raw-text provenance.
+
+    The unforgeable-in-band marker is attached to the endpoint object, never
+    inferred from the URL.  Adding a route with a provenance-shaped path does
+    not grant it a less restrictive response policy.
+    """
+    handler.__linkedin_dashboard_provenance__ = _PROVENANCE_HANDLER_MARKER
+    return handler
 
 
 def _is_json_media_type(content_type: str) -> bool:
@@ -705,6 +720,18 @@ def _redact_string(
     return sanitized
 
 
+def _redact_provenance_text(value: str) -> str:
+    """Preserve benign technical claims while removing actual private material."""
+    output: list[str] = []
+    cursor = 0
+    for match in _SAFE_PROVENANCE_PROSE.finditer(value):
+        output.append(_redact_string(value[cursor : match.start()]))
+        output.append(match.group(0))
+        cursor = match.end()
+    output.append(_redact_string(value[cursor:]))
+    return "".join(output)
+
+
 def _redact_key(
     value: Any,
     *,
@@ -792,7 +819,7 @@ def sanitize_for_frontend(
         ]
     if isinstance(value, str):
         if _preserve_provenance_text and _is_provenance_text_location(_location):
-            return value
+            return _redact_provenance_text(value)
         return _redact_string(
             value,
             field_name=field_name,
@@ -808,20 +835,28 @@ def _is_provenance_text_location(location: tuple[str, ...]) -> bool:
     leaf = normalized[-1]
     if leaf in {"error_message", "diagnostic", "message", "runtime"}:
         return False
-    if leaf in _PROVENANCE_TEXT_FIELDS:
+    if len(normalized) == 2 and normalized[0] == "sections":
         return True
-    if "sections" in normalized:
-        return normalized.index("sections") < len(normalized) - 1
-    return any(
-        part in {"evidence", "parsed_field", "parsed_fields"} for part in normalized
-    ) and leaf in {"text", "value"}
+    if len(normalized) != 2:
+        return False
+    container = normalized[0]
+    if container == "evidence" and leaf in _PROVENANCE_TEXT_FIELDS:
+        return True
+    return container in {"parsed_field", "parsed_fields"} and leaf in {
+        "text",
+        "value",
+        *_PROVENANCE_TEXT_FIELDS,
+    }
 
 
 def _request_preserves_provenance(scope: Scope) -> bool:
     if scope.get("method") != "GET":
         return False
-    path = str(scope.get("path", ""))
-    return any(pattern.fullmatch(path) for pattern in _PROVENANCE_ROUTES)
+    endpoint = scope.get("endpoint")
+    return (
+        getattr(endpoint, "__linkedin_dashboard_provenance__", None)
+        is _PROVENANCE_HANDLER_MARKER
+    )
 
 
 def _sensitive_header_name(name: str) -> bool:
@@ -1061,13 +1096,17 @@ class PrivacyFilterMiddleware:
         start: Message | None = None
         chunks: list[bytes] = []
         response_kind = "passthrough"
-        preserve_provenance_text = _request_preserves_provenance(scope)
-        sse_parser = _SSEParser(preserve_provenance_text=preserve_provenance_text)
+        preserve_provenance_text = False
+        sse_parser: _SSEParser | None = None
         trusted_openapi = scope.get("path") == "/api/openapi.json"
 
         async def capture(message: Message) -> None:
-            nonlocal response_kind, start
+            nonlocal preserve_provenance_text, response_kind, sse_parser, start
             if message["type"] == "http.response.start":
+                preserve_provenance_text = _request_preserves_provenance(scope)
+                sse_parser = _SSEParser(
+                    preserve_provenance_text=preserve_provenance_text
+                )
                 start = message
                 headers = _sanitize_headers(list(message.get("headers", [])))
                 message["headers"] = headers
@@ -1105,6 +1144,8 @@ class PrivacyFilterMiddleware:
                 await send(message)
                 return
             if response_kind == "sse":
+                if sse_parser is None:  # pragma: no cover - response.start is required
+                    raise RuntimeError("SSE response started without a parser")
                 await send(
                     {
                         **message,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 import stat
 from collections.abc import Callable, Iterator
@@ -74,6 +75,10 @@ _SCHEMA_ACTIONS = {
     sqlite3.SQLITE_DROP_VTABLE,
 }
 
+_INITIALIZATION_LOCKS_GUARD = Lock()
+_INITIALIZATION_LOCKS: dict[Path, Lock] = {}
+_INITIALIZATION_LOCK_TIMEOUT_SECONDS = 30.0
+
 
 class Database:
     """SQLite ownership boundary for the local dashboard."""
@@ -100,6 +105,13 @@ class Database:
         with self._initialize_lock:
             if self._initialized:
                 return
+            initialization_lock = _initialization_lock_for(self.path)
+            if not initialization_lock.acquire(
+                timeout=_INITIALIZATION_LOCK_TIMEOUT_SECONDS
+            ):
+                raise TimeoutError(
+                    "timed out waiting for another database initialization to finish"
+                )
             self._initializing = True
             database_fd: int | None = None
             migration_engine: Engine | None = None
@@ -109,14 +121,24 @@ class Database:
                 database_fd = _open_owner_only_file(self.path, create=True)
                 self._database_fd = database_fd
                 _secure_existing_sidecars(self.path)
-                migration_engine, migration_authorizer = _create_migration_engine(
-                    self.path, database_fd
-                )
+                migration_engine, _ = _create_migration_engine(self.path, database_fd)
                 try:
                     with migration_engine.connect() as connection:
-                        bootstrap = _database_has_no_user_schema(connection)
                         connection.exec_driver_sql("BEGIN IMMEDIATE")
                         try:
+                            # The blank/populated decision belongs to the write
+                            # transaction.  Looking before BEGIN IMMEDIATE lets two
+                            # first bootstraps both conclude that they own an empty DB.
+                            bootstrap = _database_has_no_user_schema(connection)
+                            migration_authorizer = connection.info.get(
+                                "migration_authorizer"
+                            )
+                            if not isinstance(
+                                migration_authorizer, _MigrationAuthorizer
+                            ):
+                                raise RuntimeError(
+                                    "migration connection has no local authority"
+                                )
                             migrations_applied = self._initialize_schema(
                                 connection,
                                 bootstrap=bootstrap,
@@ -143,6 +165,7 @@ class Database:
                 raise
             finally:
                 self._initializing = False
+                initialization_lock.release()
 
     def _initialize_schema(
         self,
@@ -151,6 +174,7 @@ class Database:
         bootstrap: bool,
         migration_authorizer: _MigrationAuthorizer,
     ) -> bool:
+        _required_migration_versions()
         if bootstrap:
             Base.metadata.create_all(connection)
             connection.exec_driver_sql(
@@ -227,7 +251,7 @@ def _create_runtime_engine(
             lambda *arguments: _sqlite_authorizer(
                 *arguments,
                 allow_schema_changes=False,
-                allow_migration_history=False,
+                allow_migration_history_insert=False,
             )
         )
         _configure_required_pragmas(dbapi_connection)
@@ -247,7 +271,7 @@ def _create_runtime_engine(
             lambda *arguments: _sqlite_authorizer(
                 *arguments,
                 allow_schema_changes=False,
-                allow_migration_history=False,
+                allow_migration_history_insert=False,
             )
         )
         _configure_required_pragmas(dbapi_connection)
@@ -266,7 +290,7 @@ class _MigrationAuthorizer:
         return _sqlite_authorizer(
             *arguments,
             allow_schema_changes=True,
-            allow_migration_history=self._history_write,
+            allow_migration_history_insert=self._history_write,
         )
 
     @contextmanager
@@ -280,33 +304,47 @@ class _MigrationAuthorizer:
             self._history_write = False
 
 
-def _create_migration_engine(
-    path: Path, expected_fd: int
-) -> tuple[Engine, _MigrationAuthorizer]:
+def _create_migration_engine(path: Path, expected_fd: int) -> tuple[Engine, None]:
     """Build a one-connection capability that can author only migration schema."""
     engine = create_engine(
         URL.create("sqlite", database=str(path)),
         connect_args={"check_same_thread": False},
         poolclass=NullPool,
     )
-    authorizer = _MigrationAuthorizer()
 
     @event.listens_for(engine, "connect")
     def configure_migration_sqlite(
         dbapi_connection: Any, connection_record: Any
     ) -> None:  # pragma: no cover - SQLAlchemy callback signature
-        del connection_record
         _revalidate_storage(dbapi_connection, path, expected_fd)
+        # A capability is minted for this physical connection only.  A second
+        # connection from the same engine gets a different, closed capability.
+        authorizer = _MigrationAuthorizer()
+        connection_record.info["migration_authorizer"] = authorizer
         dbapi_connection.set_authorizer(authorizer)
         _configure_required_pragmas(dbapi_connection)
 
-    return engine, authorizer
+    # Preserve the original factory shape without returning an authority object:
+    # authority is deliberately available only through the checked-out
+    # connection's info mapping.
+    return engine, None
+
+
+def _initialization_lock_for(path: Path) -> Lock:
+    """Return the bounded in-process coordinator for one canonical DB path."""
+    with _INITIALIZATION_LOCKS_GUARD:
+        return _INITIALIZATION_LOCKS.setdefault(path, Lock())
 
 
 def _configure_required_pragmas(dbapi_connection: Any) -> None:
     """Restore and prove every SQLite invariant required by persistence guards."""
     cursor = dbapi_connection.cursor()
     try:
+        # Install SQLite's own bounded lock wait before the first write-like
+        # journal-mode operation.  The path lock coordinates Database instances
+        # in this process; this protects against an independent local process.
+        cursor.execute("PRAGMA busy_timeout=5000")
+
         cursor.execute("PRAGMA foreign_keys=ON")
         if cursor.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
             raise RuntimeError("SQLite foreign keys could not be enabled")
@@ -338,7 +376,6 @@ def _configure_required_pragmas(dbapi_connection: Any) -> None:
         if str(verified_mode).casefold() != "wal":
             raise RuntimeError("SQLite WAL journal mode could not be verified")
 
-        cursor.execute("PRAGMA busy_timeout=5000")
     finally:
         cursor.close()
 
@@ -523,10 +560,10 @@ def _sqlite_authorizer(
     trigger_name: str | None,
     *,
     allow_schema_changes: bool = False,
-    allow_migration_history: bool = False,
+    allow_migration_history_insert: bool = False,
 ) -> int:
     """Prevent managed SQL from dismantling required SQLite invariants."""
-    del database_name, trigger_name
+    del database_name
     if action in {sqlite3.SQLITE_ATTACH, sqlite3.SQLITE_DETACH}:
         return sqlite3.SQLITE_DENY
     if action in _SCHEMA_ACTIONS and not allow_schema_changes:
@@ -540,9 +577,16 @@ def _sqlite_authorizer(
     if (
         action in {sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE}
         and (argument_one or "").casefold() == "schema_migration"
-        and not allow_migration_history
     ):
-        return sqlite3.SQLITE_DENY
+        # Migration history is append-only even while schema authority is open.
+        # Only a direct statement on the intended physical connection is
+        # permitted; trigger side effects carry trigger_name and are denied.
+        if not (
+            action == sqlite3.SQLITE_INSERT
+            and allow_migration_history_insert
+            and trigger_name is None
+        ):
+            return sqlite3.SQLITE_DENY
     if action == sqlite3.SQLITE_PRAGMA and argument_two is not None:
         pragma = (argument_one or "").casefold()
         setting = argument_two.strip(" \t'\"").casefold()
@@ -600,6 +644,55 @@ def _normalized_schema_sql(value: str) -> str:
     return "".join(output).strip()
 
 
+def _normalized_table_sql(value: str) -> str:
+    """Canonicalize table DDL without weakening quoted-literal semantics.
+
+    Old M0 databases were emitted with both TEXT and VARCHAR declarations.
+    SQLite assigns both TEXT affinity, so that one representation difference is
+    intentionally normalized.  Everything else outside quotes, including
+    COLLATE clauses and CHECK operators, remains part of the signed shape.
+    """
+    normalized = _normalized_schema_sql(value)
+    output: list[str] = []
+    outside: list[str] = []
+    quote: str | None = None
+    index = 0
+
+    def flush_outside() -> None:
+        if not outside:
+            return
+        fragment = "".join(outside)
+        fragment = re.sub(
+            r"\bVARCHAR(?:\s*\(\s*\d+\s*\))?",
+            "TEXT",
+            fragment,
+            flags=re.IGNORECASE,
+        )
+        output.append(fragment.casefold())
+        outside.clear()
+
+    while index < len(normalized):
+        character = normalized[index]
+        if quote is None:
+            if character in {"'", '"'}:
+                flush_outside()
+                quote = character
+                output.append(character)
+            else:
+                outside.append(character)
+        else:
+            output.append(character)
+            if character == quote:
+                if index + 1 < len(normalized) and normalized[index + 1] == quote:
+                    output.append(normalized[index + 1])
+                    index += 1
+                else:
+                    quote = None
+        index += 1
+    flush_outside()
+    return "".join(output)
+
+
 def _database_has_no_user_schema(connection: Connection) -> bool:
     return (
         connection.exec_driver_sql(
@@ -611,6 +704,14 @@ def _database_has_no_user_schema(connection: Connection) -> bool:
     )
 
 
+def _required_migration_versions() -> frozenset[str]:
+    versions = tuple(migration.VERSION for migration in _MIGRATION_MODULES)
+    unique = frozenset(versions)
+    if len(unique) != len(versions):
+        raise RuntimeError("configured migration versions must be unique")
+    return unique
+
+
 def _schema_manifest(connection: Any) -> frozenset[tuple[str, str, str, str]]:
     rows = connection.execute(
         "SELECT type, name, tbl_name, sql FROM sqlite_master "
@@ -618,7 +719,14 @@ def _schema_manifest(connection: Any) -> frozenset[tuple[str, str, str, str]]:
         "AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL"
     ).fetchall()
     return frozenset(
-        (kind, name, table, _normalized_schema_sql(sql))
+        (
+            kind,
+            name,
+            table,
+            _normalized_table_sql(sql)
+            if kind == "table"
+            else _normalized_schema_sql(sql),
+        )
         for kind, name, table, sql in rows
     )
 
@@ -773,7 +881,7 @@ def _verify_schema_and_contents_dbapi(dbapi_connection: Any) -> None:
         actual_structure = _schema_structure(dbapi_connection)
         actual_keys = {(kind, name) for kind, name, _, _ in actual}
         expected_keys = {(kind, name) for kind, name, _, _ in expected}
-        exact_kinds = {"index", "trigger"}
+        exact_kinds = {"table", "index", "trigger"}
         exact_expected = {row for row in expected if row[0] in exact_kinds}
         exact_actual = {row for row in actual if row[0] in exact_kinds}
         if (
@@ -809,6 +917,17 @@ def _verify_schema_and_contents_dbapi(dbapi_connection: Any) -> None:
             raise RuntimeError("SQLite integrity check failed")
         if cursor.execute("PRAGMA foreign_key_check").fetchone() is not None:
             raise RuntimeError("SQLite foreign key check failed")
+        expected_versions = _required_migration_versions()
+        actual_versions = {
+            row[0]
+            for row in cursor.execute("SELECT version FROM schema_migration").fetchall()
+        }
+        if actual_versions != expected_versions:
+            raise RuntimeError(
+                "SQLite migration history does not match the required versions "
+                f"(missing={sorted(expected_versions - actual_versions)!r}, "
+                f"unexpected={sorted(actual_versions - expected_versions)!r})"
+            )
     finally:
         cursor.close()
 

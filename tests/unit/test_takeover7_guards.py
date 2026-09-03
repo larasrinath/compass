@@ -10,7 +10,10 @@ import pytest
 from fastapi import Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.testclient import TestClient
-from linkedin_dashboard.api._filters import sanitize_for_frontend
+from linkedin_dashboard.api._filters import (
+    preserve_provenance_text,
+    sanitize_for_frontend,
+)
 from linkedin_dashboard.db.migrations import v0001_constraints
 from linkedin_dashboard.db.models import DashboardSession
 from linkedin_dashboard.db.session import (
@@ -159,10 +162,12 @@ def test_provenance_text_is_byte_exact_only_on_middleware_owned_routes(
     }
 
     @app.get("/api/candidates/r16/sections/main_profile")
+    @preserve_provenance_text
     def trusted_json() -> JSONResponse:
         return JSONResponse(payload)
 
     @app.get("/api/candidates/r16-sse/sections/main_profile")
+    @preserve_provenance_text
     def trusted_sse() -> StreamingResponse:
         event = ("data: " + json.dumps(payload) + "\n\n").encode()
         return StreamingResponse(
