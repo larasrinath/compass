@@ -1385,3 +1385,118 @@ def test_encoded_url_authority_and_delimiters_are_inspected_everywhere(
         "https://[redacted]@example.test/path"
     )
     assert json_response.headers["x-safe-url"] == ("https://example.test/path%20name")
+
+
+def test_collection_and_diagnostic_values_are_fully_redacted_everywhere(
+    tmp_path,
+) -> None:
+    app = create_app(settings_for(tmp_path / "embedded-collections.db"))
+    values = {
+        "collections": (
+            'safe-before {"secret.key":["first,secret",'
+            '{"nested":"second-secret"}]} safe-after'
+        ),
+        "diagnostics": (
+            "safe-before runtime={'hostname':'private-host',"
+            "'issue_template_path':'issues/private.md',"
+            "'cookie_path':'state/private.json'} safe-after"
+        ),
+        "normalized": "safe-before privateKey={'value':'key-secret'}; safe-after",
+    }
+    payload = ("data: " + _strict_json_dumps(values) + "\n\n").encode()
+
+    @app.get("/api/test/embedded-collections-json")
+    def embedded_collections_json() -> JSONResponse:
+        return JSONResponse(
+            values,
+            headers={
+                "X-Diagnostic": (
+                    'safe-before {"secret-key":{"value":"header-secret,tail"}} '
+                    "safe-after"
+                ),
+                "X-Private.Key": "must-drop",
+            },
+        )
+
+    @app.get("/api/test/embedded-collections-sse")
+    def embedded_collections_sse() -> StreamingResponse:
+        return StreamingResponse(
+            (bytes([byte]) for byte in payload), media_type="text/event-stream"
+        )
+
+    with client_for(app) as client:
+        json_response = client.get("/api/test/embedded-collections-json")
+        sse_response = client.get("/api/test/embedded-collections-sse")
+
+    outputs = (
+        json_response.text,
+        sse_response.text,
+        json_response.headers["x-diagnostic"],
+    )
+    for output in outputs:
+        assert "safe-before" in output
+        assert "safe-after" in output
+        assert "runtime" not in output.casefold()
+        for private in (
+            "first,secret",
+            "second-secret",
+            "private-host",
+            "issues/private.md",
+            "state/private.json",
+            "key-secret",
+            "header-secret,tail",
+        ):
+            assert private not in output
+    assert "x-private.key" not in json_response.headers
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "secret_key",
+        "secret-key",
+        "secret.key",
+        "secretKey",
+        "private_key",
+        "privateKey",
+    ],
+)
+def test_secret_and_private_key_variants_are_sensitive_dict_keys(key: str) -> None:
+    sanitized = sanitize_for_frontend({key: "private-value", "safe": "visible"})
+
+    assert sanitized == {"safe": "visible"}
+
+
+def test_nested_encoded_url_credentials_and_unicode_headers_fail_closed(
+    tmp_path,
+) -> None:
+    app = create_app(settings_for(tmp_path / "encoded-url-header.db"))
+    values = {
+        "url": (
+            "https://example.test/redirect/"
+            "https%253A%252F%252Foperator%253Anested-secret%2540private.test%252Fx"
+        ),
+        "label_url": (
+            "https://example.test/path%252Fsecret_key%253Dpath-secret%252Ftail"
+        ),
+    }
+
+    @app.get("/api/test/encoded-url-header")
+    def encoded_url_header() -> JSONResponse:
+        return JSONResponse(
+            values,
+            headers={
+                "X-Unicode-Diagnostic": (
+                    "https://operator%3Aheader-secret@example.test/%E2%9C%93"
+                )
+            },
+        )
+
+    with client_for(app) as client:
+        response = client.get("/api/test/encoded-url-header")
+
+    assert response.status_code == 200
+    for secret in ("nested-secret", "path-secret", "header-secret"):
+        assert secret not in response.text
+        assert secret not in response.headers.get("x-unicode-diagnostic", "")
+    assert response.headers["x-unicode-diagnostic"] == "[redacted]"

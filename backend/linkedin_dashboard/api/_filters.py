@@ -105,6 +105,13 @@ _QUOTED_LABELED_VALUE = re.compile(
     r"(?P<value>\"[^\"\r\n]*\"|'[^'\r\n]*'|.+?(?=[,;}\r\n]|$))",
     re.IGNORECASE,
 )
+_EMBEDDED_LABELED_VALUE = re.compile(
+    r"(?P<label>"
+    r"(?:(?P<quote>[\"'])(?P<quoted_name>[^\"'\r\n]{1,96})(?P=quote)"
+    r"|(?<![a-z0-9_.-])(?P<bare_name>[a-z][a-z0-9_.-]{0,95}))"
+    r"\s*[:=]\s*)",
+    re.IGNORECASE,
+)
 _SENSITIVE_QUERY_KEYS = {
     "accesskey",
     "accesstoken",
@@ -256,9 +263,11 @@ def _normalized_identifier_is_sensitive(value: str) -> bool:
         "cookiepath",
         "credential",
         "password",
+        "privatekey",
         "proxypassword",
         "proxyusername",
         "refreshtoken",
+        "secretkey",
         "sessiontoken",
         "xapikey",
     )
@@ -302,6 +311,83 @@ def _is_sensitive_identifier(value: str) -> bool:
         _normalized_identifier_is_sensitive(shadow)
         for shadow in _malformed_decoding_shadows(decoded)
     )
+
+
+def _embedded_label_is_sensitive(value: str) -> bool:
+    """Recognize normalized secret and internal-diagnostic labels."""
+    return _drop_key(value) or _is_sensitive_identifier(value)
+
+
+def _quoted_value_end(value: str, start: int) -> int:
+    quote = value[start]
+    escaped = False
+    for index in range(start + 1, len(value)):
+        character = value[index]
+        if escaped:
+            escaped = False
+        elif character == "\\":
+            escaped = True
+        elif character == quote:
+            return index + 1
+    return len(value)
+
+
+def _collection_value_end(value: str, start: int) -> int:
+    closing = {"{": "}", "[": "]"}
+    stack = [closing[value[start]]]
+    quote: str | None = None
+    escaped = False
+    for index in range(start + 1, len(value)):
+        character = value[index]
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote:
+                quote = None
+            continue
+        if character in {'"', "'"}:
+            quote = character
+        elif character in closing:
+            stack.append(closing[character])
+        elif character == stack[-1]:
+            stack.pop()
+            if not stack:
+                return index + 1
+    return len(value)
+
+
+def _embedded_value_end(value: str, start: int) -> int:
+    if start >= len(value):
+        return start
+    if value[start] in {'"', "'"}:
+        return _quoted_value_end(value, start)
+    if value[start] in "{[":
+        return _collection_value_end(value, start)
+    boundary = re.search(r"[,;&#?\r\n]", value[start:])
+    return len(value) if boundary is None else start + boundary.start()
+
+
+def _redact_embedded_labeled_values(value: str) -> str:
+    """Redact complete scalar/collection values while retaining surrounding prose."""
+    output: list[str] = []
+    emit_cursor = 0
+    search_cursor = 0
+    while match := _EMBEDDED_LABELED_VALUE.search(value, search_cursor):
+        label_name = match.group("quoted_name") or match.group("bare_name")
+        if not _embedded_label_is_sensitive(label_name):
+            search_cursor = match.end()
+            continue
+        value_start = match.end()
+        value_end = _embedded_value_end(value, value_start)
+        output.extend((value[emit_cursor : match.start()], "[redacted]"))
+        emit_cursor = value_end
+        search_cursor = value_end
+    if not output:
+        return value
+    output.append(value[emit_cursor:])
+    return "".join(output)
 
 
 def _quoted_label_is_sensitive(match: re.Match[str]) -> bool:
@@ -451,7 +537,10 @@ def _decoded_shadow_is_sensitive(value: str, decoded: str) -> str | None:
         if decoded_path == raw_path:
             return None
         normalized_path = decoded_path.casefold()
-        if _LABELED_SECRET.search(decoded_path):
+        if (
+            _LABELED_SECRET.search(decoded_path)
+            or _redact_embedded_labeled_values(decoded_path) != decoded_path
+        ):
             return "[redacted]"
         if (
             _FILE_URL.search(decoded_path)
@@ -461,6 +550,8 @@ def _decoded_shadow_is_sensitive(value: str, decoded: str) -> str | None:
             or str(Path.home()).casefold() in normalized_path
         ):
             return "[redacted-path]"
+        if _NETWORK_URL.search(decoded_path):
+            return "[redacted-url]"
         return None
 
     normalized = decoded.casefold()
@@ -469,6 +560,7 @@ def _decoded_shadow_is_sensitive(value: str, decoded: str) -> str | None:
         or _AUTHORIZATION_BEARER.search(decoded)
         or _BEARER_SECRET.search(decoded)
         or _contains_sensitive_quoted_label(decoded)
+        or _redact_embedded_labeled_values(decoded) != decoded
     ):
         return "[redacted]"
     if (
@@ -569,6 +661,7 @@ def _redact_string(
 
     sanitized = _NETWORK_URL.sub(preserve_network_url, sanitized)
     sanitized = _URL_AUTHORITY.sub(_redact_authority, sanitized)
+    sanitized = _redact_embedded_labeled_values(sanitized)
     sanitized = _QUOTED_LABELED_VALUE.sub(_redact_quoted_labeled_value, sanitized)
     sanitized = _LABELED_SECRET.sub(r"\g<label>[redacted]", sanitized)
     sanitized = _AUTHORIZATION_BEARER.sub(r"\g<label>[redacted]", sanitized)
@@ -608,7 +701,7 @@ def _drop_key(value: Any) -> bool:
         decoded = _MALFORMED_PERCENT_TOKEN.sub("", decoded)
     normalized = decoded.casefold()
     compact = re.sub(r"[^a-z0-9]", "", normalized)
-    identifier_like = bool(re.fullmatch(r"[a-z0-9 _-]+", normalized))
+    identifier_like = bool(re.fullmatch(r"[a-z0-9 ._-]+", normalized))
     return (
         normalized in _DROP_KEYS
         or normalized.endswith(_DROP_KEY_SUFFIXES)
@@ -696,7 +789,11 @@ def _sanitize_headers(headers: list[tuple[bytes, bytes]]) -> list[tuple[bytes, b
         if name in _STRUCTURAL_HEADER_NAMES:
             value = raw_value
         else:
-            value = _redact_string(raw_value.decode("latin-1")).encode("latin-1")
+            safe_value = _redact_string(raw_value.decode("latin-1"))
+            try:
+                value = safe_value.encode("latin-1")
+            except UnicodeEncodeError:
+                value = b"[redacted]"
         sanitized.append((raw_name, value))
     return sanitized
 

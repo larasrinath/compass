@@ -8,10 +8,12 @@ from linkedin_dashboard.db.migrations import (
     v0010_takeover_guards,
     v0011_purged_evidence_ancestry,
     v0012_score_session_provenance,
+    v0013_history_root_immutability,
 )
 from linkedin_dashboard.db.models import Candidate, DashboardSession, MessageDraft
 from linkedin_dashboard.db.session import Database
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 
 NOW = "2026-09-02T12:00:00+00:00"
 LATER = "2026-09-02T12:05:00+00:00"
@@ -467,7 +469,9 @@ def test_score_pair_must_share_session_for_insert_update_and_upsert(
     with sqlite3.connect(path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
-        with pytest.raises(sqlite3.IntegrityError, match="must share a session"):
+        with pytest.raises(
+            sqlite3.IntegrityError, match=r"must share a session|roots are immutable"
+        ):
             connection.execute(
                 _score_insert_sql(),
                 (
@@ -482,12 +486,16 @@ def test_score_pair_must_share_session_for_insert_update_and_upsert(
             _score_insert_sql(),
             (valid_id, f"candidate-{suffix}-a", f"brief-{suffix}-a"),
         )
-        with pytest.raises(sqlite3.IntegrityError, match="must share a session"):
+        with pytest.raises(
+            sqlite3.IntegrityError, match=r"must share a session|roots are immutable"
+        ):
             connection.execute(
                 "UPDATE OR REPLACE score SET brief_id=? WHERE id=?",
                 (f"brief-{suffix}-b", valid_id),
             )
-        with pytest.raises(sqlite3.IntegrityError, match="must share a session"):
+        with pytest.raises(
+            sqlite3.IntegrityError, match=r"must share a session|roots are immutable"
+        ):
             connection.execute(
                 _score_insert_sql(replace=True),
                 (valid_id, f"candidate-{suffix}-a", f"brief-{suffix}-b"),
@@ -518,6 +526,12 @@ def test_v0012_preflight_rejects_existing_cross_session_scores_atomically(
             {"version": v0012_score_session_provenance.VERSION},
         )
         for name in v0012_score_session_provenance.TRIGGER_NAMES:
+            connection.exec_driver_sql(f'DROP TRIGGER "{name}"')
+        connection.execute(
+            text("DELETE FROM schema_migration WHERE version=:version"),
+            {"version": v0013_history_root_immutability.VERSION},
+        )
+        for name in v0013_history_root_immutability.TRIGGER_NAMES:
             connection.exec_driver_sql(f'DROP TRIGGER "{name}"')
     _seed_two_score_sessions(database, "preflight")
     with database.engine.begin() as connection:
@@ -614,3 +628,209 @@ def test_full_purge_uses_same_owning_session_from_either_score_root(
         assert connection.execute(
             "SELECT COUNT(*) FROM evidence WHERE id=?", (evidence_id,)
         ).fetchone() == (0,)
+
+
+@pytest.mark.parametrize("recursive_triggers", ["ON", "OFF"])
+@pytest.mark.parametrize("history", ["confirmation", "attempt"])
+def test_candidate_session_freezes_for_approved_or_attempted_message_history(
+    database: Database, recursive_triggers: str, history: str
+) -> None:
+    suffix = f"history-session-{history}-{recursive_triggers.lower()}"
+    candidate_id, draft_id = _seed_candidate(database, suffix)
+    with database.engine.begin() as connection:
+        connection.exec_driver_sql(
+            "INSERT INTO session "
+            "(id, created_at, label, purge_after, nav_budget, nav_used, send_enabled) "
+            f"VALUES ('session-target-{suffix}', 'now', 'Target', 'later', 120, 0, 0)"
+        )
+        if history == "confirmation":
+            connection.execute(
+                text(
+                    "INSERT INTO send_confirmation "
+                    "(token, candidate_id, draft_id, body_sha256, created_at, "
+                    "expires_at) VALUES (:token, :candidate, :draft, :hash, "
+                    ":created, :expires)"
+                ),
+                {
+                    "token": f"token-{suffix}",
+                    "candidate": candidate_id,
+                    "draft": draft_id,
+                    "hash": "a" * 64,
+                    "created": NOW,
+                    "expires": LATER,
+                },
+            )
+        else:
+            connection.execute(
+                text(
+                    "INSERT INTO send_attempt "
+                    "(id, candidate_id, draft_id, idempotency_key, body_sha256, "
+                    "confirm_send, state, started_at, finished_at, resolution) "
+                    "VALUES (:id, :candidate, :draft, :key, :hash, 0, "
+                    "'DRY_RUN_OK', :started, :finished, 'unresolved')"
+                ),
+                {
+                    "id": f"attempt-{suffix}",
+                    "candidate": candidate_id,
+                    "draft": draft_id,
+                    "key": f"attempt-{suffix}".ljust(64, "0")[:64],
+                    "hash": "a" * 64,
+                    "started": NOW,
+                    "finished": LATER,
+                },
+            )
+    path = database.path
+    database.dispose()
+
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
+        with pytest.raises(sqlite3.IntegrityError, match="session is immutable"):
+            connection.execute(
+                "UPDATE OR REPLACE candidate SET session_id=? WHERE id=?",
+                (f"session-target-{suffix}", candidate_id),
+            )
+        assert connection.execute(
+            "SELECT session_id FROM candidate WHERE id=?", (candidate_id,)
+        ).fetchone() == (f"session-{suffix}",)
+
+
+def test_candidate_history_session_freeze_is_enforced_on_managed_connection(
+    database: Database,
+) -> None:
+    candidate_id, draft_id = _seed_candidate(database, "managed-history-session")
+    with database.engine.begin() as connection:
+        connection.exec_driver_sql(
+            "INSERT INTO session "
+            "(id, created_at, label, purge_after, nav_budget, nav_used, send_enabled) "
+            "VALUES ('managed-target', 'now', 'Target', 'later', 120, 0, 0)"
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO send_confirmation "
+            "(token, candidate_id, draft_id, body_sha256, created_at, expires_at) "
+            f"VALUES ('managed-token', '{candidate_id}', '{draft_id}', "
+            f"'{'a' * 64}', '{NOW}', '{LATER}')"
+        )
+
+    with pytest.raises(DBAPIError, match="session is immutable"):
+        with database.engine.begin() as connection:
+            connection.execute(
+                text("UPDATE candidate SET session_id='managed-target' WHERE id=:id"),
+                {"id": candidate_id},
+            )
+
+
+@pytest.mark.parametrize("recursive_triggers", ["ON", "OFF"])
+@pytest.mark.parametrize("root", ["candidate_id", "brief_id"])
+@pytest.mark.parametrize("operation", ["update", "upsert", "replace"])
+def test_score_roots_are_immutable_for_updates_and_real_upserts(
+    database: Database, recursive_triggers: str, root: str, operation: str
+) -> None:
+    suffix = f"score-root-{root}-{operation}-{recursive_triggers.lower()}"
+    _seed_candidate(database, suffix)
+    with database.engine.begin() as connection:
+        connection.exec_driver_sql(
+            "INSERT INTO candidate "
+            "(id, session_id, username, profile_url, first_seen_at, stage, "
+            "retrieval_status) VALUES "
+            f"('candidate-alt-{suffix}', 'session-{suffix}', 'person-alt-{suffix}', "
+            f"'https://www.linkedin.com/in/person-alt-{suffix}/', 'now', "
+            "'discovered', 'pending')"
+        )
+        for name in ("base", "alt"):
+            connection.exec_driver_sql(
+                "INSERT INTO role_brief "
+                "(id, session_id, version, created_at, job_description, "
+                "target_titles, location, industries, positive_keywords, "
+                "negative_keywords, message_tone, weights_version) VALUES "
+                f"('brief-{name}-{suffix}', 'session-{suffix}', "
+                f"{1 if name == 'base' else 2}, 'now', 'job', '[]', 'anywhere', "
+                "'[]', '[]', '[]', 'plain', 'v1')"
+            )
+        connection.exec_driver_sql(
+            _score_insert_sql().replace(
+                "VALUES (?, ?, ?",
+                "VALUES ("
+                f"'score-{suffix}', 'candidate-{suffix}', 'brief-base-{suffix}'",
+            )
+        )
+    path = database.path
+    database.dispose()
+    replacement = (
+        f"candidate-alt-{suffix}" if root == "candidate_id" else f"brief-alt-{suffix}"
+    )
+
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
+        with pytest.raises(sqlite3.IntegrityError, match="roots are immutable"):
+            if operation == "update":
+                connection.execute(
+                    f"UPDATE score SET {root}=? WHERE id=?",
+                    (replacement, f"score-{suffix}"),
+                )
+            elif operation == "upsert":
+                candidate = (
+                    replacement if root == "candidate_id" else f"candidate-{suffix}"
+                )
+                brief = replacement if root == "brief_id" else f"brief-base-{suffix}"
+                connection.execute(
+                    "INSERT INTO score "
+                    "(id, candidate_id, brief_id, weights_version, stage, score, "
+                    "score_lower, score_upper, confidence, confidence_band, "
+                    "computed_at, is_current) VALUES (?, ?, ?, 'v1', "
+                    "'provisional', 1, 1, 1, 1, 'high', 'now', 1) "
+                    "ON CONFLICT(id) DO UPDATE SET "
+                    "candidate_id=excluded.candidate_id, brief_id=excluded.brief_id",
+                    (f"score-{suffix}", candidate, brief),
+                )
+            else:
+                candidate = (
+                    replacement if root == "candidate_id" else f"candidate-{suffix}"
+                )
+                brief = replacement if root == "brief_id" else f"brief-base-{suffix}"
+                connection.execute(
+                    _score_insert_sql(replace=True),
+                    (f"score-{suffix}", candidate, brief),
+                )
+        assert connection.execute(
+            "SELECT candidate_id, brief_id FROM score WHERE id=?", (f"score-{suffix}",)
+        ).fetchone() == (f"candidate-{suffix}", f"brief-base-{suffix}")
+
+
+@pytest.mark.parametrize(
+    "failure_after", range(1, len(v0013_history_root_immutability.STATEMENTS) + 1)
+)
+def test_v0013_each_statement_is_atomic_and_retryable(
+    tmp_path: Path, monkeypatch, failure_after: int
+) -> None:
+    database = Database(tmp_path / f"interrupted-v13-{failure_after}.db")
+    database.initialize()
+    with database.engine.begin() as connection:
+        connection.execute(
+            text("DELETE FROM schema_migration WHERE version=:version"),
+            {"version": v0013_history_root_immutability.VERSION},
+        )
+        for name in v0013_history_root_immutability.TRIGGER_NAMES:
+            connection.exec_driver_sql(f'DROP TRIGGER "{name}"')
+    baseline = _schema_objects(database.path)
+    database.dispose()
+    retry = Database(database.path)
+    original_apply = v0013_history_root_immutability.apply
+
+    def interrupted_apply(connection) -> None:
+        for index, statement in enumerate(
+            v0013_history_root_immutability.STATEMENTS, start=1
+        ):
+            connection.exec_driver_sql(statement)
+            if index == failure_after:
+                raise RuntimeError(f"interrupted after v13 statement {index}")
+
+    monkeypatch.setattr(v0013_history_root_immutability, "apply", interrupted_apply)
+    with pytest.raises(RuntimeError, match=f"v13 statement {failure_after}"):
+        retry.initialize()
+    assert _schema_objects(retry.path) == baseline
+
+    monkeypatch.setattr(v0013_history_root_immutability, "apply", original_apply)
+    retry.initialize()
+    retry.dispose()
