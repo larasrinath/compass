@@ -9,6 +9,7 @@ from linkedin_dashboard.db.migrations import (
     v0011_purged_evidence_ancestry,
     v0012_score_session_provenance,
     v0013_history_root_immutability,
+    v0014_history_identity_completion,
 )
 from linkedin_dashboard.db.models import Candidate, DashboardSession, MessageDraft
 from linkedin_dashboard.db.session import Database
@@ -326,7 +327,10 @@ def test_replace_cannot_remove_purged_evidence_through_ancestor(
     with sqlite3.connect(path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
-        with pytest.raises(sqlite3.IntegrityError, match="purged evidence"):
+        with pytest.raises(
+            sqlite3.IntegrityError,
+            match=r"purged evidence|score identity.*immutable",
+        ):
             connection.execute(
                 f'INSERT OR REPLACE INTO "{table}" SELECT * FROM "{table}" WHERE id=?',
                 (f"{row_id}-{suffix}",),
@@ -362,7 +366,10 @@ def test_update_replace_cannot_reuse_purged_ancestor_identity(
     with sqlite3.connect(path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
-        with pytest.raises(sqlite3.IntegrityError, match="purged evidence"):
+        with pytest.raises(
+            sqlite3.IntegrityError,
+            match=r"purged evidence|score identity.*immutable",
+        ):
             connection.execute(
                 f'UPDATE OR REPLACE "{table}" SET id=? WHERE id=?',
                 (f"{row_id}-{target_suffix}", f"{row_id}-{attacker_suffix}"),
@@ -470,7 +477,8 @@ def test_score_pair_must_share_session_for_insert_update_and_upsert(
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
         with pytest.raises(
-            sqlite3.IntegrityError, match=r"must share a session|roots are immutable"
+            sqlite3.IntegrityError,
+            match=r"must share a session|roots are immutable|identity.*immutable",
         ):
             connection.execute(
                 _score_insert_sql(),
@@ -487,14 +495,16 @@ def test_score_pair_must_share_session_for_insert_update_and_upsert(
             (valid_id, f"candidate-{suffix}-a", f"brief-{suffix}-a"),
         )
         with pytest.raises(
-            sqlite3.IntegrityError, match=r"must share a session|roots are immutable"
+            sqlite3.IntegrityError,
+            match=r"must share a session|roots are immutable|identity.*immutable",
         ):
             connection.execute(
                 "UPDATE OR REPLACE score SET brief_id=? WHERE id=?",
                 (f"brief-{suffix}-b", valid_id),
             )
         with pytest.raises(
-            sqlite3.IntegrityError, match=r"must share a session|roots are immutable"
+            sqlite3.IntegrityError,
+            match=r"must share a session|roots are immutable|identity.*immutable",
         ):
             connection.execute(
                 _score_insert_sql(replace=True),
@@ -763,7 +773,10 @@ def test_score_roots_are_immutable_for_updates_and_real_upserts(
     with sqlite3.connect(path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
-        with pytest.raises(sqlite3.IntegrityError, match="roots are immutable"):
+        with pytest.raises(
+            sqlite3.IntegrityError,
+            match=r"roots are immutable|identity.*immutable",
+        ):
             if operation == "update":
                 connection.execute(
                     f"UPDATE score SET {root}=? WHERE id=?",
@@ -832,5 +845,74 @@ def test_v0013_each_statement_is_atomic_and_retryable(
     assert _schema_objects(retry.path) == baseline
 
     monkeypatch.setattr(v0013_history_root_immutability, "apply", original_apply)
+    retry.initialize()
+    retry.dispose()
+
+
+@pytest.mark.parametrize("recursive_triggers", ["ON", "OFF"])
+def test_update_replace_score_id_collision_preserves_both_histories(
+    database: Database, recursive_triggers: str
+) -> None:
+    target_suffix = f"score-id-target-{recursive_triggers.lower()}"
+    attacker_suffix = f"score-id-attacker-{recursive_triggers.lower()}"
+    target_evidence = _seed_evidence(database, target_suffix, purged=False)
+    attacker_evidence = _seed_evidence(database, attacker_suffix, purged=False)
+    path = database.path
+    database.dispose()
+
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
+        with pytest.raises(sqlite3.IntegrityError, match="score identity is immutable"):
+            connection.execute(
+                "UPDATE OR REPLACE score SET id=? WHERE id=?",
+                (f"score-{target_suffix}", f"score-{attacker_suffix}"),
+            )
+        assert connection.execute(
+            "SELECT id FROM score WHERE id IN (?, ?) ORDER BY id",
+            (f"score-{target_suffix}", f"score-{attacker_suffix}"),
+        ).fetchall() == sorted(
+            [(f"score-{target_suffix}",), (f"score-{attacker_suffix}",)]
+        )
+        assert connection.execute(
+            "SELECT id FROM evidence WHERE id IN (?, ?) ORDER BY id",
+            (target_evidence, attacker_evidence),
+        ).fetchall() == sorted([(target_evidence,), (attacker_evidence,)])
+
+
+@pytest.mark.parametrize(
+    "failure_after", range(1, len(v0014_history_identity_completion.STATEMENTS) + 1)
+)
+def test_v0014_each_statement_is_atomic_and_retryable(
+    tmp_path: Path, monkeypatch, failure_after: int
+) -> None:
+    database = Database(tmp_path / f"interrupted-v14-{failure_after}.db")
+    database.initialize()
+    with database.engine.begin() as connection:
+        connection.execute(
+            text("DELETE FROM schema_migration WHERE version=:version"),
+            {"version": v0014_history_identity_completion.VERSION},
+        )
+        for name in v0014_history_identity_completion.TRIGGER_NAMES:
+            connection.exec_driver_sql(f'DROP TRIGGER "{name}"')
+    baseline = _schema_objects(database.path)
+    database.dispose()
+    retry = Database(database.path)
+    original_apply = v0014_history_identity_completion.apply
+
+    def interrupted_apply(connection) -> None:
+        for index, statement in enumerate(
+            v0014_history_identity_completion.STATEMENTS, start=1
+        ):
+            connection.exec_driver_sql(statement)
+            if index == failure_after:
+                raise RuntimeError(f"interrupted after v14 statement {index}")
+
+    monkeypatch.setattr(v0014_history_identity_completion, "apply", interrupted_apply)
+    with pytest.raises(RuntimeError, match=f"v14 statement {failure_after}"):
+        retry.initialize()
+    assert _schema_objects(retry.path) == baseline
+
+    monkeypatch.setattr(v0014_history_identity_completion, "apply", original_apply)
     retry.initialize()
     retry.dispose()

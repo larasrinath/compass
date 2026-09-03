@@ -10,6 +10,7 @@ from fastapi import FastAPI, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.testclient import TestClient
 from linkedin_dashboard.api._filters import (
+    _MALFORMED_JSON_BODY,
     _MAX_PERCENT_DECODE_CHARS,
     _MAX_PERCENT_DECODE_PASSES,
     PrivacyFilterMiddleware,
@@ -1500,3 +1501,196 @@ def test_nested_encoded_url_credentials_and_unicode_headers_fail_closed(
         assert secret not in response.text
         assert secret not in response.headers.get("x-unicode-diagnostic", "")
     assert response.headers["x-unicode-diagnostic"] == "[redacted]"
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["client_key", "client-key", "client.key", "clientKey", "client key"],
+)
+def test_client_key_variants_are_sensitive_dict_and_embedded_keys(key: str) -> None:
+    sanitized = sanitize_for_frontend(
+        {
+            key: "direct-secret",
+            "message": (
+                f"safe-before {key}=Wrapper(first-secret,second-secret) safe-after"
+            ),
+            "safe": "visible",
+        }
+    )
+
+    serialized = _strict_json_dumps(sanitized)
+    assert "direct-secret" not in serialized
+    assert "first-secret" not in serialized
+    assert "second-secret" not in serialized
+    assert "safe-before" in serialized
+    assert "safe-after" in serialized
+    assert sanitized["safe"] == "visible"
+
+
+def test_client_key_variants_cross_json_sse_and_header_boundaries(tmp_path) -> None:
+    app = create_app(settings_for(tmp_path / "client-key-boundaries.db"))
+    variants = ["client_key", "client-key", "client.key", "clientKey", "client key"]
+    messages = [
+        f"safe-before {key}=Wrapper(private-{index},later-{index}) safe-after"
+        for index, key in enumerate(variants)
+    ]
+    payload = ("data: " + _strict_json_dumps({"messages": messages}) + "\n\n").encode()
+
+    @app.get("/api/test/client-key-json")
+    def client_key_json() -> JSONResponse:
+        return JSONResponse(
+            {"messages": messages}, headers={"X-Diagnostic": " | ".join(messages)}
+        )
+
+    @app.get("/api/test/client-key-sse")
+    def client_key_sse() -> StreamingResponse:
+        return StreamingResponse(
+            (bytes([byte]) for byte in payload), media_type="text/event-stream"
+        )
+
+    with client_for(app) as client:
+        json_response = client.get("/api/test/client-key-json")
+        sse_response = client.get("/api/test/client-key-sse")
+
+    for output in (
+        json_response.text,
+        sse_response.text,
+        json_response.headers["x-diagnostic"],
+    ):
+        assert "safe-before" in output
+        assert "safe-after" in output
+        for index in range(len(variants)):
+            assert f"private-{index}" not in output
+            assert f"later-{index}" not in output
+
+
+def test_parenthesized_diagnostics_are_fully_redacted_everywhere(tmp_path) -> None:
+    app = create_app(settings_for(tmp_path / "parenthesized-diagnostics.db"))
+    value = (
+        "safe-before runtime=Runtime(hostname='first-private', "
+        "cookie_path=Path('second-private'), metadata=(one, two)) safe-after"
+    )
+    payload = ("data: " + _strict_json_dumps({"message": value}) + "\n\n").encode()
+
+    @app.get("/api/test/parenthesized-json")
+    def parenthesized_json() -> JSONResponse:
+        return JSONResponse(
+            {"message": value},
+            headers={
+                "X-Diagnostic": value,
+                "X-ClientKey": "header-name-secret",
+            },
+        )
+
+    @app.get("/api/test/parenthesized-sse")
+    def parenthesized_sse() -> StreamingResponse:
+        return StreamingResponse(
+            (bytes([byte]) for byte in payload), media_type="text/event-stream"
+        )
+
+    with client_for(app) as client:
+        json_response = client.get("/api/test/parenthesized-json")
+        sse_response = client.get("/api/test/parenthesized-sse")
+
+    for output in (
+        json_response.text,
+        sse_response.text,
+        json_response.headers["x-diagnostic"],
+    ):
+        assert "safe-before" in output
+        assert "safe-after" in output
+        assert "first-private" not in output
+        assert "second-private" not in output
+        assert "metadata" not in output
+    assert "x-clientkey" not in json_response.headers
+
+
+@pytest.mark.parametrize(
+    ("method", "status"), [("HEAD", 200), ("GET", 204), ("GET", 304)]
+)
+def test_legal_bodyless_json_responses_remain_bodyless(
+    tmp_path, method: str, status: int
+) -> None:
+    app = create_app(settings_for(tmp_path / f"bodyless-{method}-{status}.db"))
+
+    @app.api_route("/api/test/bodyless-json", methods=[method])
+    def bodyless_json() -> Response:
+        return Response(
+            content=b'{"runtime":{"hostname":"must-not-escape"}}',
+            status_code=status,
+            media_type="application/json",
+            headers={
+                "X-Safe": "visible",
+                "X-Private-Key": "header-secret",
+            },
+        )
+
+    with client_for(app) as client:
+        response = client.request(method, "/api/test/bodyless-json")
+
+    assert response.status_code == status
+    assert response.content == b""
+    assert response.headers["x-safe"] == "visible"
+    assert "x-private-key" not in response.headers
+
+
+def test_unexpected_empty_body_bearing_json_still_fails_closed(tmp_path) -> None:
+    app = create_app(settings_for(tmp_path / "empty-json.db"))
+
+    @app.get("/api/test/empty-json")
+    def empty_json() -> Response:
+        return Response(content=b"", media_type="application/json")
+
+    with client_for(app) as client:
+        response = client.get("/api/test/empty-json")
+
+    assert response.status_code == 500
+    assert response.content == _MALFORMED_JSON_BODY
+
+
+def test_safe_application_relative_location_is_preserved_and_headers_sanitized(
+    tmp_path,
+) -> None:
+    app = create_app(settings_for(tmp_path / "safe-location.db"))
+
+    @app.get("/api/test/safe-location")
+    def safe_location() -> Response:
+        return Response(
+            status_code=307,
+            headers={
+                "Location": "/api/health?view=summary#status",
+                "X-Diagnostic": "/private/runtime.db",
+            },
+        )
+
+    with client_for(app) as client:
+        response = client.get("/api/test/safe-location", follow_redirects=False)
+
+    assert response.status_code == 307
+    assert response.headers["location"] == "/api/health?view=summary#status"
+    assert response.headers["x-diagnostic"] == "[redacted-path]"
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "/api/../private",
+        "/api/%2e%2e/private",
+        "/api/token/secret",
+        "/api/health?client_key=secret",
+        "file:///private/runtime.db",
+        "https://example.test/api/health",
+    ],
+)
+def test_unsafe_location_headers_are_rejected(tmp_path, location: str) -> None:
+    app = create_app(settings_for(tmp_path / "unsafe-location.db"))
+
+    @app.get("/api/test/unsafe-location")
+    def unsafe_location() -> Response:
+        return Response(status_code=307, headers={"Location": location})
+
+    with client_for(app) as client:
+        response = client.get("/api/test/unsafe-location", follow_redirects=False)
+
+    assert response.status_code == 307
+    assert "location" not in response.headers

@@ -108,7 +108,7 @@ _QUOTED_LABELED_VALUE = re.compile(
 _EMBEDDED_LABELED_VALUE = re.compile(
     r"(?P<label>"
     r"(?:(?P<quote>[\"'])(?P<quoted_name>[^\"'\r\n]{1,96})(?P=quote)"
-    r"|(?<![a-z0-9_.-])(?P<bare_name>[a-z][a-z0-9_.-]{0,95}))"
+    r"|(?<![a-z0-9_.-])(?P<bare_name>client[ ]+key|[a-z][a-z0-9_.-]{0,95}))"
     r"\s*[:=]\s*)",
     re.IGNORECASE,
 )
@@ -259,6 +259,7 @@ def _normalized_identifier_is_sensitive(value: str) -> bool:
         "accesstoken",
         "apikey",
         "authtoken",
+        "clientkey",
         "clientsecret",
         "cookiepath",
         "credential",
@@ -333,7 +334,7 @@ def _quoted_value_end(value: str, start: int) -> int:
 
 
 def _collection_value_end(value: str, start: int) -> int:
-    closing = {"{": "}", "[": "]"}
+    closing = {"{": "}", "[": "]", "(": ")"}
     stack = [closing[value[start]]]
     quote: str | None = None
     escaped = False
@@ -363,8 +364,12 @@ def _embedded_value_end(value: str, start: int) -> int:
         return start
     if value[start] in {'"', "'"}:
         return _quoted_value_end(value, start)
-    if value[start] in "{[":
+    if value[start] in "{[(":
         return _collection_value_end(value, start)
+    constructor = re.match(r"[a-z_][a-z0-9_.]*\s*(?P<open>\()", value[start:], re.I)
+    if constructor is not None:
+        opening = start + constructor.start("open")
+        return _collection_value_end(value, opening)
     boundary = re.search(r"[,;&#?\r\n]", value[start:])
     return len(value) if boundary is None else start + boundary.start()
 
@@ -780,13 +785,55 @@ def _sensitive_header_name(name: str) -> bool:
     )
 
 
+def _is_safe_application_location(value: str) -> bool:
+    """Allow only validated local API redirects at the response boundary."""
+    if any(character in value for character in "\r\n\\"):
+        return False
+    decoded, _, complete = _bounded_unquote(value)
+    if not complete:
+        return False
+    try:
+        parsed = urlsplit(decoded)
+    except ValueError:
+        return False
+    if parsed.scheme or parsed.netloc:
+        return False
+    if parsed.path != "/api" and not parsed.path.startswith("/api/"):
+        return False
+    if any(segment in {".", ".."} for segment in parsed.path.split("/")):
+        return False
+    if (
+        _FILE_URL.search(decoded)
+        or _WINDOWS_PATH.search(decoded)
+        or _COMMON_FILESYSTEM_PATH.search(parsed.path)
+        or ".linkedin-mcp" in decoded.casefold()
+        or str(Path.home()).casefold() in decoded.casefold()
+    ):
+        return False
+    if any(
+        _is_sensitive_identifier(segment)
+        for segment in parsed.path.split("/")
+        if segment
+    ):
+        return False
+    return (
+        _sanitize_url_components(decoded) == decoded
+        and _redact_embedded_labeled_values(decoded) == decoded
+    )
+
+
 def _sanitize_headers(headers: list[tuple[bytes, bytes]]) -> list[tuple[bytes, bytes]]:
     sanitized: list[tuple[bytes, bytes]] = []
     for raw_name, raw_value in headers:
         name = raw_name.decode("latin-1").casefold()
         if _sensitive_header_name(name):
             continue
-        if name in _STRUCTURAL_HEADER_NAMES:
+        if name == "location":
+            location = raw_value.decode("latin-1")
+            if not _is_safe_application_location(location):
+                continue
+            value = raw_value
+        elif name in _STRUCTURAL_HEADER_NAMES:
             value = raw_value
         else:
             safe_value = _redact_string(raw_value.decode("latin-1"))
@@ -963,7 +1010,12 @@ class PrivacyFilterMiddleware:
                 )
                 media_type = content_type.partition(";")[0].strip().casefold()
                 if _is_json_media_type(content_type):
-                    response_kind = "json"
+                    response_kind = (
+                        "json-bodyless"
+                        if scope.get("method") == "HEAD"
+                        or message.get("status") in {204, 304}
+                        else "json"
+                    )
                 elif media_type == "text/event-stream":
                     response_kind = "sse"
                     message["headers"] = [
@@ -991,6 +1043,13 @@ class PrivacyFilterMiddleware:
                         ),
                     }
                 )
+                return
+
+            if response_kind == "json-bodyless":
+                if message.get("more_body", False):
+                    return
+                await send(start)
+                await send({"type": "http.response.body", "body": b""})
                 return
 
             chunks.append(message.get("body", b""))

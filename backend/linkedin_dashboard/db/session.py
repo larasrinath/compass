@@ -27,6 +27,7 @@ from linkedin_dashboard.db.migrations import (
     v0011_purged_evidence_ancestry,
     v0012_score_session_provenance,
     v0013_history_root_immutability,
+    v0014_history_identity_completion,
 )
 from linkedin_dashboard.db.models import Base
 from linkedin_dashboard.settings import normalize_database_path
@@ -104,6 +105,10 @@ class Database:
             (
                 v0013_history_root_immutability.VERSION,
                 v0013_history_root_immutability.apply,
+            ),
+            (
+                v0014_history_identity_completion.VERSION,
+                v0014_history_identity_completion.apply,
             ),
         ):
             applied = connection.execute(
