@@ -185,7 +185,8 @@ class Job(Base):
     __tablename__ = "job"
     __table_args__ = (
         CheckConstraint(
-            "state IN ('queued','running','done','failed','interrupted','cancelled')",
+            "state IN "
+            "('pending','queued','running','done','failed','interrupted','cancelled')",
             name="ck_job_state",
         ),
     )
@@ -204,6 +205,75 @@ class Job(Base):
     finished_at: Mapped[str | None] = mapped_column(String(32))
     error: Mapped[str | None] = mapped_column(Text)
     correlation_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    claim_token: Mapped[str | None] = mapped_column(String(36))
+
+
+class JobAttempt(Base):
+    __tablename__ = "job_attempt"
+    __table_args__ = (
+        CheckConstraint(
+            "outcome IN ('running','ok','error','interrupted')",
+            name="ck_job_attempt_outcome",
+        ),
+        CheckConstraint("attempt_number >= 1", name="ck_job_attempt_number_positive"),
+        CheckConstraint(
+            "error_class IS NULL OR error_class IN "
+            "('AUTH_REQUIRED','BROWSER_BUSY','BROWSER_SETUP','RATE_LIMIT',"
+            "'INVALID_REFERENCE','PROFILE_NOT_FOUND','TIMEOUT','TRANSPORT','UNKNOWN')",
+            name="ck_job_attempt_error_class",
+        ),
+        CheckConstraint(
+            "outcome <> 'ok' OR (raw_response IS NOT NULL AND raw_response <> 'null')",
+            name="ck_job_attempt_ok_has_response",
+        ),
+        UniqueConstraint("job_id", "attempt_number", name="uq_job_attempt_number"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("job.id", ondelete="CASCADE"), nullable=False
+    )
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    worker_token: Mapped[str] = mapped_column(String(36), nullable=False)
+    started_at: Mapped[str] = mapped_column(String(32), nullable=False)
+    response_received_at: Mapped[str | None] = mapped_column(String(32))
+    finished_at: Mapped[str | None] = mapped_column(String(32))
+    outcome: Mapped[str] = mapped_column(String(16), nullable=False)
+    raw_response: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    raw_error: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    error_class: Mapped[str | None] = mapped_column(String(32))
+    safe_error_message: Mapped[str | None] = mapped_column(Text)
+    retry_at: Mapped[str | None] = mapped_column(String(32))
+
+
+class QueueControl(Base):
+    __tablename__ = "queue_control"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_queue_control_singleton"),
+        CheckConstraint("state IN ('active','paused')", name="ck_queue_control_state"),
+        CheckConstraint(
+            "rate_limit_count BETWEEN 0 AND 3",
+            name="ck_queue_control_rate_limit_count",
+        ),
+        CheckConstraint(
+            "(state = 'active' AND pause_reason IS NULL AND resume_at IS NULL "
+            "AND operator_resume_required = 0) OR "
+            "(state = 'paused' AND pause_reason IS NOT NULL)",
+            name="ck_queue_control_pause_consistency",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    pause_reason: Mapped[str | None] = mapped_column(String(32))
+    resume_at: Mapped[str | None] = mapped_column(String(32))
+    rate_limit_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    operator_resume_required: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    last_mcp_finished_at: Mapped[str | None] = mapped_column(String(32))
+    owner_token: Mapped[str | None] = mapped_column(String(36))
+    updated_at: Mapped[str] = mapped_column(String(32), nullable=False)
 
 
 class ProfileFetch(Base):

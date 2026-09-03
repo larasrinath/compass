@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+from collections.abc import Awaitable, Callable
 from http import HTTPStatus
 
 import psutil
@@ -139,11 +140,13 @@ class RuntimeBoundaryMiddleware:
         host: str,
         port: int,
         database: Database,
+        on_ready: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self.app = app
         self.host = normalize_loopback_host(host)
         self.port = port
         self.database = database
+        self.on_ready = on_ready
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] not in {"http", "websocket"}:
@@ -168,7 +171,10 @@ class RuntimeBoundaryMiddleware:
             return
 
         try:
-            self.database.initialize()
+            if self.on_ready is not None:
+                await self.on_ready()
+            else:
+                self.database.initialize()
         except Exception:
             if scope["type"] == "websocket":
                 await send({"type": "websocket.close", "code": 1011})

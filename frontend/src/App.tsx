@@ -1,5 +1,6 @@
-import { useQuery } from '@tanstack/react-query'
-import { getHealth } from './api/client'
+import { useMutation, useQuery } from '@tanstack/react-query'
+import { getHealth, getMcpStatus, resumeQueue } from './api/client'
+import { useJobEvents } from './hooks/useJobEvents'
 import './App.css'
 
 function StatusDot({ healthy }: { healthy: boolean }) {
@@ -17,6 +18,13 @@ function App() {
     queryFn: getHealth,
     refetchInterval: 15_000,
   })
+  const mcp = useQuery({
+    queryKey: ['mcp-status'],
+    queryFn: getMcpStatus,
+    retry: false,
+  })
+  const queue = useJobEvents()
+  const resume = useMutation({ mutationFn: resumeQueue })
 
   const backendHealthy = health.data?.status === 'ok'
 
@@ -43,7 +51,7 @@ function App() {
               Nothing is sent without your final review and explicit action.
             </p>
           </div>
-          <div className="step-chip">M0 · Foundations</div>
+          <div className="step-chip">M1 · Connected queue</div>
         </section>
 
         <section
@@ -78,13 +86,70 @@ function App() {
             </p>
           </article>
 
-          <article className="status-card muted">
+          <article className="status-card">
             <div className="status-heading">
-              <StatusDot healthy={false} />
+              <StatusDot healthy={mcp.data?.reachable === true} />
               <h3>LinkedIn MCP</h3>
             </div>
-            <p>MCP reachability arrives in M1. The dashboard never starts it.</p>
+            <p>
+              {mcp.isPending && 'Checking through the serialized queue…'}
+              {mcp.data?.reachable &&
+                `${mcp.data.tools.length} tools available. Server remains independently managed.`}
+              {mcp.isError && 'Status probe failed. The dashboard will not start the server.'}
+              {mcp.data && !mcp.data.reachable &&
+                `Unavailable (${mcp.data.last_error_class ?? 'unknown'}).`}
+            </p>
           </article>
+        </section>
+
+        <section aria-live="polite" className="queue-panel">
+          <div className="queue-heading">
+            <div>
+              <p className="eyebrow">Serialized activity</p>
+              <h2>Queue status</h2>
+            </div>
+            <span className="event-state">
+              Events {queue.connected ? 'connected' : 'reconnecting'}
+            </span>
+          </div>
+          {queue.state === 'paused' ? (
+            <div className="pause-banner" role="status">
+              <div>
+                <strong>Queue paused · {queue.pause_reason ?? 'operator hold'}</strong>
+                <p>
+                  {queue.resume_at
+                    ? `Recommended resume after ${new Date(queue.resume_at).toLocaleString()}.`
+                    : 'Resolve the local MCP condition, then resume explicitly.'}
+                </p>
+              </div>
+              <button
+                disabled={resume.isPending}
+                onClick={() => resume.mutate()}
+                type="button"
+              >
+                {resume.isPending ? 'Resuming…' : 'Resume queue'}
+              </button>
+            </div>
+          ) : null}
+          <div className="queue-list">
+            {queue.jobs.length === 0 ? (
+              <p className="queue-empty">No queued work. The browser slot is free.</p>
+            ) : (
+              queue.jobs.map((job) => (
+                <article className="queue-job" key={job.id}>
+                  <div>
+                    <strong>{job.kind.replaceAll('_', ' ')}</strong>
+                    <span>{job.state}</span>
+                  </div>
+                  <p>
+                    {job.state === 'queued' || job.state === 'pending'
+                      ? `Position ${job.position ?? '—'} of ${job.depth}`
+                      : `Running${job.percent == null ? '' : ` · ${Math.round(job.percent)}%`}`}
+                  </p>
+                </article>
+              ))
+            )}
+          </div>
         </section>
 
         <section className="guardrail-panel">

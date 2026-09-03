@@ -149,6 +149,95 @@ main {
   color: white;
 }
 
+.queue-panel {
+  margin-top: 24px;
+  padding: 28px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.queue-heading,
+.pause-banner,
+.queue-job,
+.queue-job div {
+  display: flex;
+  align-items: center;
+}
+
+.queue-heading,
+.pause-banner,
+.queue-job {
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.queue-heading h2 {
+  margin: 6px 0 0;
+  color: var(--ink);
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 30px;
+  font-weight: 500;
+}
+
+.event-state,
+.queue-job span {
+  color: var(--ink-faint);
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.pause-banner {
+  margin-top: 22px;
+  padding: 18px;
+  border-radius: 14px;
+  background: #fff3d4;
+  color: #55451b;
+}
+
+.pause-banner p,
+.queue-job p,
+.queue-empty {
+  margin: 5px 0 0;
+  color: var(--ink-soft);
+  font-size: 13px;
+}
+
+.pause-banner button {
+  flex: none;
+  border: 0;
+  border-radius: 999px;
+  padding: 10px 15px;
+  background: var(--ink);
+  color: white;
+  cursor: pointer;
+}
+
+.pause-banner button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.queue-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.queue-job {
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+
+.queue-job div {
+  gap: 10px;
+}
+
+.queue-job strong {
+  font-size: 14px;
+  text-transform: capitalize;
+}
+
 .guardrail-panel .eyebrow {
   color: #9ad8c0;
 }
@@ -203,6 +292,13 @@ footer {
   .hero-panel,
   .guardrail-panel {
     grid-template-columns: 1fr;
+  }
+
+  .queue-heading,
+  .pause-banner,
+  .queue-job {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .step-chip {

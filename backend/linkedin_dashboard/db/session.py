@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import os
 import re
 import sqlite3
@@ -33,6 +34,7 @@ from linkedin_dashboard.db.migrations import (
     v0013_history_root_immutability,
     v0014_history_identity_completion,
     v0015_approved_evidence_roots,
+    v0016_durable_queue,
 )
 from linkedin_dashboard.db.models import Base
 from linkedin_dashboard.settings import normalize_database_path
@@ -53,6 +55,7 @@ _MIGRATION_MODULES = (
     v0013_history_root_immutability,
     v0014_history_identity_completion,
     v0015_approved_evidence_roots,
+    v0016_durable_queue,
 )
 
 _SCHEMA_ACTIONS = {
@@ -80,6 +83,9 @@ _SCHEMA_ACTIONS = {
 _INITIALIZATION_LOCKS_GUARD = Lock()
 _INITIALIZATION_LOCKS: dict[Path, Lock] = {}
 _INITIALIZATION_LOCK_TIMEOUT_SECONDS = 30.0
+_WORKER_LOCKS_GUARD = Lock()
+_WORKER_LOCKS: dict[int, Path] = {}
+_WORKER_LOCK_PATHS: set[Path] = set()
 
 
 class Database:
@@ -168,6 +174,44 @@ class Database:
             finally:
                 self._initializing = False
                 initialization_lock.release()
+
+    def acquire_worker_lock(self) -> int:
+        """Hold the exclusive sidecar lock required before queue initialization."""
+        lock_path = self.path.with_name(f"{self.path.name}.queue.lock")
+        with _WORKER_LOCKS_GUARD:
+            if lock_path in _WORKER_LOCK_PATHS:
+                raise BlockingIOError("another queue owner is active")
+            _WORKER_LOCK_PATHS.add(lock_path)
+        descriptor: int | None = None
+        try:
+            _create_private_directories(lock_path.parent)
+            _require_private_directory(lock_path.parent)
+            descriptor = _open_owner_only_file(lock_path, create=True)
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as error:
+                raise BlockingIOError("another queue owner is active") from error
+            with _WORKER_LOCKS_GUARD:
+                _WORKER_LOCKS[descriptor] = lock_path
+            return descriptor
+        except BaseException:
+            if descriptor is not None:
+                os.close(descriptor)
+            with _WORKER_LOCKS_GUARD:
+                _WORKER_LOCK_PATHS.discard(lock_path)
+            raise
+
+    @staticmethod
+    def release_worker_lock(descriptor: int) -> None:
+        with _WORKER_LOCKS_GUARD:
+            lock_path = _WORKER_LOCKS.pop(descriptor, None)
+            if lock_path is None:
+                return
+            _WORKER_LOCK_PATHS.discard(lock_path)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
 
     def _initialize_schema(
         self,
