@@ -8,7 +8,13 @@ its process.
 
 The implementation follows [PROJECT_PLAN.md](PROJECT_PLAN.md). M0 establishes
 the loopback-only application shell, protected SQLite schema, append-only audit
-log, and response privacy boundary.
+log, and response privacy boundary. The M1 client boundary uses a fresh
+FastMCP 3.4.4 streamable-HTTP session for each explicit operation, preserves
+the full protocol response, and exposes typed read-only wrappers for people
+search and person/company profile retrieval. It never starts, stops, imports,
+or authenticates to the sibling server, and it never retries a tool call.
+Decoded MCP envelopes are rejected above 16 MiB; this post-decode guard does
+not cap the FastMCP SDK's transient transport-parsing memory for that one call.
 
 ## Prerequisites
 
