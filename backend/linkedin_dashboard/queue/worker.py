@@ -403,6 +403,7 @@ class DurableJobQueue:
                 raise LookupError("session does not exist")
             session.add(job)
         self.events.publish(self._job_event(job.id, "queued"))
+        self._publish_snapshot()
         self._wake.set()
         await self._notify_changed()
         return job.id
@@ -418,6 +419,7 @@ class DurableJobQueue:
             cancelled = isinstance(result, CursorResult) and result.rowcount == 1
         if cancelled:
             self.events.publish(self._job_event(job_id, "cancelled"))
+            self._publish_snapshot()
             self._wake.set()
             await self._notify_changed()
         return cancelled
@@ -467,6 +469,7 @@ class DurableJobQueue:
         )
         for job_id in resumed_ids:
             self.events.publish(self._job_event(job_id, "queued"))
+        self._publish_snapshot()
         self._wake.set()
         await self._notify_changed()
 
@@ -538,19 +541,28 @@ class DurableJobQueue:
                     select(Job.state, func.count(Job.id)).group_by(Job.state)
                 ).all()
             }
+            active_jobs = list(
+                session.scalars(
+                    select(Job)
+                    .where(Job.state.in_(("pending", "queued", "running")))
+                    .order_by(Job.queued_at, Job.id)
+                )
+            )
+            depth = len(active_jobs)
+            waiting_position = 0
+            jobs: list[dict[str, Any]] = []
+            for job in active_jobs:
+                position = None
+                if job.state in {"pending", "queued"}:
+                    waiting_position += 1
+                    position = waiting_position
+                jobs.append(self._job_data(job, position=position, depth=depth))
             return {
                 "state": control.state if control else "active",
                 "pause_reason": control.pause_reason if control else None,
                 "resume_at": control.resume_at if control else None,
                 "counts": counts,
-                "jobs": [
-                    self._safe_job_data(job)
-                    for job in session.scalars(
-                        select(Job)
-                        .where(Job.state.in_(("pending", "queued", "running")))
-                        .order_by(Job.queued_at, Job.id)
-                    )
-                ],
+                "jobs": jobs,
             }
 
     async def _worker_loop(self) -> None:
@@ -560,6 +572,10 @@ class DurableJobQueue:
             self._wake.clear()
             claimed, next_delay = self._claim_next()
             if claimed is None:
+                # Claiming can terminalize malformed or over-budget rows even
+                # when there is no executable job to announce. Reconcile all
+                # subscribers with that durable state before waiting again.
+                self._publish_snapshot()
                 await self._notify_changed()
                 if self._stopping:
                     return
@@ -572,6 +588,7 @@ class DurableJobQueue:
                     self._wake.set()
                 continue
             self.events.publish(self._job_event(claimed.id, "running"))
+            self._publish_snapshot()
             try:
                 await self._run_claimed(claimed)
             except asyncio.CancelledError:
@@ -1116,6 +1133,7 @@ class DurableJobQueue:
             event.data["error_class"] = error_class.value
             event.data["message"] = SAFE_ERROR_MESSAGES[error_class]
             self.events.publish(event)
+            self._publish_snapshot()
             await self._notify_changed()
         else:
             await self._terminal_event(job, "failed", error_class)
@@ -1220,6 +1238,7 @@ class DurableJobQueue:
             data["error_class"] = error_class.value
             data["message"] = SAFE_ERROR_MESSAGES[error_class]
         self.events.publish(event)
+        self._publish_snapshot()
         await self._notify_changed()
 
     async def _notify_changed(self) -> None:
@@ -1237,6 +1256,10 @@ class DurableJobQueue:
 
     def _safe_job_data(self, job: Job) -> dict[str, Any]:
         position, depth = self.queue_position(job.id)
+        return self._job_data(job, position=position, depth=depth)
+
+    @staticmethod
+    def _job_data(job: Job, *, position: int | None, depth: int) -> dict[str, Any]:
         return {
             "id": job.id,
             "kind": job.kind,
@@ -1246,6 +1269,10 @@ class DurableJobQueue:
             "error_class": job.error,
             "correlation_id": job.correlation_id,
         }
+
+    def _publish_snapshot(self) -> None:
+        """Publish a canonical view after any active-queue transition."""
+        self.events.publish(QueueEvent("snapshot", self.snapshot()))
 
     def queue_position(self, job_id: str) -> tuple[int | None, int]:
         with self.database.sessions() as session:

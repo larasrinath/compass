@@ -813,6 +813,73 @@ async def test_sse_broker_orders_position_progress_and_terminal_events(
 
 
 @pytest.mark.asyncio
+async def test_sse_snapshot_reconciles_positions_after_middle_job_cancel(
+    tmp_path,
+) -> None:
+    database = new_database(tmp_path / "position-events.db")
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class BlockingExecutor:
+        async def execute(self, payload, capture_raw, report_progress):
+            del payload, report_progress
+            started.set()
+            await release.wait()
+            result = {"url": "ok"}
+            await capture_raw(
+                {"content": [], "structuredContent": result, "isError": False},
+                None,
+            )
+            return result
+
+    queue = DurableJobQueue(database, BlockingExecutor(), inter_call_delay_seconds=0)
+    await queue.start()
+    session_id = add_session(database)
+    try:
+        async with queue.events.subscribe() as subscriber:
+            first = await queue.enqueue(
+                session_id, JobKind.SEARCH_PEOPLE, {"keywords": "first"}
+            )
+            await started.wait()
+            second = await queue.enqueue(
+                session_id, JobKind.SEARCH_PEOPLE, {"keywords": "second"}
+            )
+            third = await queue.enqueue(
+                session_id, JobKind.SEARCH_PEOPLE, {"keywords": "third"}
+            )
+
+            before = None
+            while before is None:
+                event = await asyncio.wait_for(subscriber.get(), timeout=1)
+                if event.event != "snapshot":
+                    continue
+                jobs = {job["id"]: job for job in event.data["jobs"]}
+                if set(jobs) == {first, second, third}:
+                    before = jobs
+
+            assert before[third]["position"] == 2
+            assert before[third]["depth"] == 3
+
+            assert await queue.cancel(second) is True
+            cancelled = await asyncio.wait_for(subscriber.get(), timeout=1)
+            reconciled = await asyncio.wait_for(subscriber.get(), timeout=1)
+
+            assert cancelled.event == "job"
+            assert cancelled.data["id"] == second
+            assert cancelled.data["state"] == "cancelled"
+            assert reconciled.event == "snapshot"
+            after = {job["id"]: job for job in reconciled.data["jobs"]}
+            assert set(after) == {first, third}
+
+            assert after[third]["position"] == 1
+            assert after[third]["depth"] == 2
+    finally:
+        release.set()
+        await queue.stop()
+        database.dispose()
+
+
+@pytest.mark.asyncio
 async def test_transient_sqlite_contention_does_not_kill_worker(tmp_path) -> None:
     database = new_database(tmp_path / "contention.db")
 
