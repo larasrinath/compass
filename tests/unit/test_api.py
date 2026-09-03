@@ -7,6 +7,8 @@ import pytest
 from fastapi import Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.testclient import TestClient
+from linkedin_dashboard.audit import append_audit_event
+from linkedin_dashboard.db.models import DashboardSession
 from linkedin_dashboard.main import create_app
 from linkedin_dashboard.settings import Settings
 
@@ -89,6 +91,34 @@ def test_non_json_streams_are_not_buffered_or_modified(tmp_path) -> None:
     assert response.text == "event: ready\ndata: ok\n\n"
 
 
+def test_sse_events_are_sanitized_across_chunk_boundaries(tmp_path) -> None:
+    app = create_app(settings_for(tmp_path / "private-stream.db"))
+    home = str(Path.home())
+
+    def chunks() -> Iterator[str]:
+        yield "event: ready\ndata: safe\n\n"
+        yield f'event: profile\ndata: {{"runtime":{{"cookie_path":"{home}/.link'
+        yield 'edin-mcp/profile"},"error":"http://operator:secret@127.0.0.1:'
+        yield '8000/mcp"}\n\n'
+        yield 'event: malformed\ndata: {"runtime":{"hostname":"private-host"}\n\n'
+
+    @app.get("/api/test/private-events")
+    def events() -> StreamingResponse:
+        return StreamingResponse(chunks(), media_type="text/event-stream")
+
+    with client_for(app) as client:
+        response = client.get("/api/test/private-events")
+
+    assert response.status_code == 200
+    assert response.text.startswith("event: ready\ndata: safe\n\n")
+    assert "runtime" not in response.text
+    assert home not in response.text
+    assert ".linkedin-mcp" not in response.text
+    assert "operator:secret" not in response.text
+    assert "private-host" not in response.text
+    assert "http://[redacted]@127.0.0.1:8000/mcp" in response.text
+
+
 def test_structured_json_suffix_crosses_privacy_filter(tmp_path) -> None:
     app = create_app(settings_for(tmp_path / "problem-json.db"))
 
@@ -125,6 +155,43 @@ def test_malformed_declared_json_fails_closed(tmp_path) -> None:
     assert response.json() == {"detail": "Response could not be safely serialized"}
     assert "secret" not in response.text
     assert ".linkedin-mcp" not in response.text
+
+
+def test_audit_api_redacts_credentials_embedded_in_strings(tmp_path) -> None:
+    app = create_app(settings_for(tmp_path / "audit-privacy.db"))
+    with client_for(app) as client:
+        with app.state.database.sessions.begin() as db_session:
+            db_session.add(
+                DashboardSession(
+                    id="session-api-privacy",
+                    created_at="2026-09-02T12:00:00+00:00",
+                    label="Privacy",
+                    purge_after="2026-09-03T12:00:00+00:00",
+                    nav_budget=120,
+                    nav_used=0,
+                    send_enabled=False,
+                )
+            )
+        append_audit_event(
+            app.state.database,
+            session_id="session-api-privacy",
+            actor="system",
+            action="mcp.failed",
+            subject_type="mcp",
+            subject_id="local",
+            detail={
+                "error_message": "request to "
+                "http://operator:secret@127.0.0.1:8000/mcp failed",
+                "http://key-user:key-secret@127.0.0.1/private": "key test",
+            },
+        )
+        response = client.get("/api/audit")
+
+    assert response.status_code == 200
+    body = response.text
+    assert "operator:secret" not in body
+    assert "key-user:key-secret" not in body
+    assert "http://[redacted]@127.0.0.1:8000/mcp" in body
 
 
 def test_unsafe_method_origin_guard(tmp_path) -> None:

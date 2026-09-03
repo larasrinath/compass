@@ -4,7 +4,11 @@ import os
 import stat
 
 import pytest
-from linkedin_dashboard.db.migrations import v0001_constraints, v0002_integrity
+from linkedin_dashboard.db.migrations import (
+    v0001_constraints,
+    v0002_integrity,
+    v0003_send_invariants,
+)
 from linkedin_dashboard.db.models import (
     Base,
     Candidate,
@@ -16,7 +20,7 @@ from linkedin_dashboard.db.models import (
     SendAttempt,
 )
 from linkedin_dashboard.db.session import Database, get_journal_mode
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
 NOW = "2026-09-02T12:00:00+00:00"
@@ -94,12 +98,116 @@ def attempt(
     )
 
 
+def prepare_v0001_database(database: Database) -> None:
+    Base.metadata.create_all(database.engine)
+    with database.engine.begin() as connection:
+        connection.exec_driver_sql(
+            "CREATE TABLE schema_migration "
+            "(version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
+        )
+        v0001_constraints.apply(connection)
+        connection.execute(
+            text(
+                "INSERT INTO schema_migration(version, applied_at) "
+                "VALUES (:version, :applied_at)"
+            ),
+            {"version": v0001_constraints.VERSION, "applied_at": NOW},
+        )
+
+
+def insert_attempt_sql(
+    connection,
+    *,
+    attempt_id: str,
+    candidate_id: str,
+    draft_id: str,
+    state: str,
+    confirm_send: int = 1,
+    finished_at: str | None = None,
+    resolution: str = "unresolved",
+    resolved_at: str | None = None,
+    resolution_note: str | None = None,
+) -> None:
+    connection.execute(
+        text(
+            "INSERT INTO send_attempt "
+            "(id, candidate_id, draft_id, idempotency_key, body_sha256, "
+            "confirm_send, state, started_at, finished_at, resolution, "
+            "resolved_at, resolution_note) VALUES "
+            "(:id, :candidate_id, :draft_id, :key, :hash, :confirm_send, "
+            ":state, :started_at, :finished_at, :resolution, :resolved_at, :note)"
+        ),
+        {
+            "id": attempt_id,
+            "candidate_id": candidate_id,
+            "draft_id": draft_id,
+            "key": (attempt_id + "0" * 64)[:64],
+            "hash": "a" * 64,
+            "confirm_send": confirm_send,
+            "state": state,
+            "started_at": NOW,
+            "finished_at": finished_at,
+            "resolution": resolution,
+            "resolved_at": resolved_at,
+            "note": resolution_note,
+        },
+    )
+
+
 def test_database_uses_wal_and_owner_only_permissions(database: Database) -> None:
     with database.engine.connect() as connection:
         assert get_journal_mode(connection).casefold() == "wal"
 
     assert stat.S_IMODE(os.stat(database.path).st_mode) == 0o600
     assert database.writable()
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_live_sqlite_files_are_owner_only_before_and_after_connect(
+    tmp_path, existing: bool
+) -> None:
+    parent = tmp_path / "traversable"
+    parent.mkdir(mode=0o755)
+    os.chmod(parent, 0o755)
+    path = parent / "private.db"
+    if existing:
+        path.touch(mode=0o644)
+        os.chmod(path, 0o644)
+    database = Database(path)
+    first_connect_modes: list[int] = []
+
+    def observe_first_connect(dbapi_connection, connection_record) -> None:
+        del dbapi_connection, connection_record
+        first_connect_modes.append(stat.S_IMODE(database.path.stat().st_mode))
+
+    event.listen(database.engine, "connect", observe_first_connect)
+    marker = "PRIVATE-WAL-MARKER-7f00c2"
+    try:
+        database.initialize()
+        with database.engine.connect() as connection:
+            transaction = connection.begin()
+            connection.execute(
+                text(
+                    "INSERT INTO session "
+                    "(id, created_at, label, purge_after, nav_budget, nav_used, "
+                    "send_enabled) VALUES "
+                    "('session-sidecar', :now, :marker, :now, 120, 0, 0)"
+                ),
+                {"now": NOW, "marker": marker},
+            )
+            transaction.commit()
+            wal = database.path.with_name(f"{database.path.name}-wal")
+            shm = database.path.with_name(f"{database.path.name}-shm")
+
+            assert marker.encode() in wal.read_bytes()
+            assert stat.S_IMODE(database.path.stat().st_mode) == 0o600
+            assert stat.S_IMODE(wal.stat().st_mode) == 0o600
+            assert stat.S_IMODE(shm.stat().st_mode) == 0o600
+            assert stat.S_IMODE(parent.stat().st_mode) == 0o755
+    finally:
+        database.dispose()
+
+    assert first_connect_modes == [0o600]
 
 
 def test_existing_database_parent_permissions_are_unchanged(tmp_path) -> None:
@@ -130,22 +238,26 @@ def test_new_database_directories_are_owner_only(tmp_path) -> None:
     assert stat.S_IMODE(os.stat(second).st_mode) == 0o700
 
 
+def test_database_rejects_symlink_created_after_configuration(tmp_path) -> None:
+    path = tmp_path / "late-link.db"
+    target = tmp_path / "target.db"
+    target.touch(mode=0o644)
+    os.chmod(target, 0o644)
+    database = Database(path)
+    path.symlink_to(target)
+
+    try:
+        with pytest.raises(ValueError, match="symbolic link"):
+            database.initialize()
+    finally:
+        database.dispose()
+
+    assert stat.S_IMODE(target.stat().st_mode) == 0o644
+
+
 def test_existing_v0001_database_receives_integrity_migration(tmp_path) -> None:
     database = Database(tmp_path / "upgrade.db")
-    Base.metadata.create_all(database.engine)
-    with database.engine.begin() as connection:
-        connection.exec_driver_sql(
-            "CREATE TABLE schema_migration "
-            "(version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
-        )
-        v0001_constraints.apply(connection)
-        connection.execute(
-            text(
-                "INSERT INTO schema_migration(version, applied_at) "
-                "VALUES (:version, :applied_at)"
-            ),
-            {"version": v0001_constraints.VERSION, "applied_at": NOW},
-        )
+    prepare_v0001_database(database)
 
     try:
         database.initialize()
@@ -164,8 +276,54 @@ def test_existing_v0001_database_receives_integrity_migration(tmp_path) -> None:
     finally:
         database.dispose()
 
-    assert versions == [v0001_constraints.VERSION, v0002_integrity.VERSION]
+    assert versions == [
+        v0001_constraints.VERSION,
+        v0002_integrity.VERSION,
+        v0003_send_invariants.VERSION,
+    ]
     assert "NEW.candidate_id IS NOT OLD.candidate_id" in trigger_sql
+
+
+@pytest.mark.parametrize(
+    ("state", "confirm_send", "expected"),
+    [
+        ("SENDING", 2, "legacy boolean value"),
+        ("AMBIGUOUS", 1, "legacy send-attempt state"),
+    ],
+)
+def test_v0002_preflight_rejects_incompatible_legacy_rows_without_recording(
+    tmp_path, state: str, confirm_send: int, expected: str
+) -> None:
+    database = Database(tmp_path / f"legacy-{state}-{confirm_send}.db")
+    prepare_v0001_database(database)
+    candidate_id, draft_id = seed_candidate(database, f"legacy-{state}-{confirm_send}")
+    with database.engine.begin() as connection:
+        connection.exec_driver_sql("PRAGMA ignore_check_constraints=ON")
+        insert_attempt_sql(
+            connection,
+            attempt_id=f"attempt-legacy-{state}-{confirm_send}",
+            candidate_id=candidate_id,
+            draft_id=draft_id,
+            state=state,
+            confirm_send=confirm_send,
+        )
+        connection.exec_driver_sql("PRAGMA ignore_check_constraints=OFF")
+
+    try:
+        with pytest.raises(
+            RuntimeError,
+            match=rf"{v0002_integrity.VERSION}.*{expected}",
+        ):
+            database.initialize()
+        with database.engine.connect() as connection:
+            recorded = connection.execute(
+                text("SELECT 1 FROM schema_migration WHERE version=:version"),
+                {"version": v0002_integrity.VERSION},
+            ).scalar_one_or_none()
+    finally:
+        database.dispose()
+
+    assert recorded is None
 
 
 def test_partial_unique_index_rejects_a_second_live_send(database: Database) -> None:
@@ -319,6 +477,90 @@ def test_all_persisted_boolean_columns_reject_non_booleans(database: Database) -
                 connection.exec_driver_sql(statement)
 
 
+def test_send_attempt_cannot_be_inserted_pre_resolved(database: Database) -> None:
+    candidate_id, draft_id = seed_candidate(database, "pre-resolved")
+
+    with pytest.raises(DBAPIError, match="must start unresolved"):
+        with database.engine.begin() as connection:
+            insert_attempt_sql(
+                connection,
+                attempt_id="attempt-pre-resolved",
+                candidate_id=candidate_id,
+                draft_id=draft_id,
+                state="AMBIGUOUS",
+                finished_at=NOW,
+                resolution="confirmed_sent",
+                resolved_at=NOW,
+                resolution_note="already resolved",
+            )
+
+
+def test_ambiguous_attempt_must_be_finished_when_inserted(database: Database) -> None:
+    candidate_id, draft_id = seed_candidate(database, "unfinished-ambiguous")
+
+    with pytest.raises(DBAPIError, match="AMBIGUOUS must already be finished"):
+        with database.engine.begin() as connection:
+            insert_attempt_sql(
+                connection,
+                attempt_id="attempt-unfinished-ambiguous",
+                candidate_id=candidate_id,
+                draft_id=draft_id,
+                state="AMBIGUOUS",
+            )
+
+
+def test_malformed_legacy_ambiguous_attempt_cannot_be_rewritten(
+    database: Database,
+) -> None:
+    candidate_id, draft_id = seed_candidate(database, "malformed-ambiguous")
+    with database.engine.begin() as connection:
+        connection.exec_driver_sql("DROP TRIGGER send_attempt_insert_is_valid")
+        connection.exec_driver_sql("PRAGMA ignore_check_constraints=ON")
+        insert_attempt_sql(
+            connection,
+            attempt_id="attempt-malformed-ambiguous",
+            candidate_id=candidate_id,
+            draft_id=draft_id,
+            state="AMBIGUOUS",
+        )
+        connection.exec_driver_sql("PRAGMA ignore_check_constraints=OFF")
+
+    with pytest.raises(DBAPIError, match="identity and provenance are immutable"):
+        with database.engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE send_attempt SET body_sha256=:hash, state='SENDING' "
+                    "WHERE id='attempt-malformed-ambiguous'"
+                ),
+                {"hash": "f" * 64},
+            )
+
+
+def test_resolution_requires_finished_ambiguous_attempt(database: Database) -> None:
+    candidate_id, draft_id = seed_candidate(database, "invalid-resolution-timing")
+    with database.sessions.begin() as db_session:
+        db_session.add(
+            attempt(
+                attempt_id="attempt-invalid-resolution-timing",
+                candidate_id=candidate_id,
+                draft_id=draft_id,
+                state="SENDING",
+                confirm_send=True,
+            )
+        )
+
+    with pytest.raises(DBAPIError, match="finished AMBIGUOUS transition"):
+        with database.engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE send_attempt SET resolution='confirmed_sent', "
+                    "resolved_at=:now, resolution_note='invalid timing' "
+                    "WHERE id='attempt-invalid-resolution-timing'"
+                ),
+                {"now": NOW},
+            )
+
+
 @pytest.mark.parametrize(
     ("column", "value"),
     [
@@ -383,7 +625,7 @@ def test_unresolved_attempt_rejects_partial_resolution_updates(
             )
         )
 
-    with pytest.raises(DBAPIError, match="complete transition"):
+    with pytest.raises(DBAPIError, match="finished AMBIGUOUS transition"):
         with database.engine.begin() as connection:
             connection.execute(
                 text(f"UPDATE send_attempt SET {column}=:value WHERE id=:id"),

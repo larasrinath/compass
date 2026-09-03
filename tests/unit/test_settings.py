@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from linkedin_dashboard import main as main_module
 from linkedin_dashboard.settings import Settings, is_loopback_host
@@ -54,6 +56,35 @@ def test_non_loopback_mcp_url_is_rejected(tmp_path) -> None:
             mcp_url="https://mcp.example.com/mcp",
             db_path=tmp_path / "dashboard.db",
         )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://operator@127.0.0.1:8000/mcp",
+        "http://operator:secret@127.0.0.1:8000/mcp",
+    ],
+)
+def test_mcp_url_userinfo_is_rejected(url: str, tmp_path) -> None:
+    with pytest.raises(ValidationError, match="userinfo or credentials"):
+        Settings(mcp_url=url, db_path=tmp_path / "dashboard.db")
+
+
+def test_database_path_inside_repository_is_rejected() -> None:
+    repository_path = Path(__file__).resolve().parents[2] / "unsafe.db"
+
+    with pytest.raises(ValidationError, match="outside the project repository"):
+        Settings(db_path=repository_path)
+
+
+def test_database_path_final_symlink_is_rejected(tmp_path) -> None:
+    target = tmp_path / "target.db"
+    target.touch()
+    link = tmp_path / "linked.db"
+    link.symlink_to(target)
+
+    with pytest.raises(ValidationError, match="symbolic link"):
+        Settings(db_path=link)
 
 
 def test_ipv6_frontend_origin_uses_bracketed_authority(tmp_path) -> None:

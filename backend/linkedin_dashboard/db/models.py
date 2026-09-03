@@ -489,6 +489,16 @@ class SendAttempt(Base):
             name="ck_send_attempt_resolution_state",
         ),
         CheckConstraint(
+            "state <> 'AMBIGUOUS' OR finished_at IS NOT NULL",
+            name="ck_send_attempt_ambiguous_finished",
+        ),
+        CheckConstraint(
+            "(resolution = 'unresolved' AND resolved_at IS NULL "
+            "AND resolution_note IS NULL) OR "
+            "(resolution <> 'unresolved' AND resolved_at IS NOT NULL)",
+            name="ck_send_attempt_resolution_metadata",
+        ),
+        CheckConstraint(
             "confirm_send IN (0, 1)", name="ck_send_attempt_confirm_send_boolean"
         ),
         CheckConstraint(

@@ -7,6 +7,8 @@ from urllib.parse import urlparse
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
 
 def normalize_loopback_host(value: str) -> str:
     """Return the runtime-safe canonical form of a loopback host."""
@@ -51,6 +53,19 @@ def format_url_host(host: str) -> str:
     return f"[{host}]" if ":" in host else host
 
 
+def normalize_database_path(value: Path) -> Path:
+    """Canonicalize the parent without following the final database path."""
+    expanded = value.expanduser()
+    if not expanded.is_absolute():
+        expanded = Path.cwd() / expanded
+    path = expanded.parent.resolve() / expanded.name
+    if path.is_symlink():
+        raise ValueError("DB_PATH must not be a symbolic link")
+    if path == PROJECT_ROOT or path.is_relative_to(PROJECT_ROOT):
+        raise ValueError("DB_PATH must be outside the project repository")
+    return path
+
+
 class Settings(BaseSettings):
     """Process-local configuration that is never serialized to the frontend."""
 
@@ -80,6 +95,8 @@ class Settings(BaseSettings):
         parsed = urlparse(value)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise ValueError("MCP_URL must be an absolute HTTP URL")
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("MCP_URL must not contain userinfo or credentials")
         if not is_loopback_host(parsed.hostname):
             raise ValueError("MCP_URL must target a loopback host")
         return value
@@ -87,7 +104,7 @@ class Settings(BaseSettings):
     @field_validator("db_path")
     @classmethod
     def normalize_database_path(cls, value: Path) -> Path:
-        return value.expanduser().resolve()
+        return normalize_database_path(value)
 
     @property
     def frontend_origin(self) -> str:

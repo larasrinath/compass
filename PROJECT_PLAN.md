@@ -221,14 +221,14 @@ saying why; §29's checklist is run against this table at every milestone accept
 | ID | Requirement |
 |----|-------------|
 | NFR-001 | **Loopback only.** Backend binds `127.0.0.1`; the Vite dev server binds `127.0.0.1`. No `0.0.0.0` anywhere, enforced by a startup assertion. |
-| NFR-002 | **No secrets to the frontend.** The frontend never receives the MCP URL's credentials, the browser profile path, cookie paths, or any `runtime` diagnostics block. A response filter strips `section_errors[*].runtime` before serialization to the UI (it contains `source_profile_dir`, `portable_cookie_path`, hostname — `error_diagnostics.py:60-76`). |
+| NFR-002 | **No secrets to the frontend.** The frontend never receives MCP URL credentials, browser-profile or cookie paths, or any `runtime` diagnostics block. The final response boundary sanitizes JSON (including `application/*+json`) and SSE events across chunk boundaries, redacts credential-bearing URLs embedded in strings, and fails closed on malformed structured data. |
 | NFR-003 | **Serialization fidelity.** At most one in-flight MCP tool call from this process. Enforced by a single asyncio worker, not by convention. |
 | NFR-004 | **Politeness.** A configurable minimum inter-call delay (default 3 s) on top of the server's own `_NAV_DELAY` (`extractor.py:71`), plus an exponential session cool-down on `rate_limit`. |
 | NFR-005 | **Budget ceiling.** A hard per-session navigation budget (default 120) after which the queue refuses new work until the operator raises it explicitly. |
 | NFR-006 | **Timeouts.** The MCP client per-call timeout is 240 s, above the server's 180 s tool timeout (`config/schema.py:18`), so the server's own error surfaces rather than our transport's. |
 | NFR-007 | **Durability.** SQLite in WAL mode; every MCP response is written to disk before it is parsed. A crash mid-session loses no retrieved text. |
 | NFR-008 | **Reproducibility.** Given the same stored raw text, brief version and weights version, scoring is byte-identical. Scoring imports no clock, no RNG, no network. |
-| NFR-009 | **File permissions.** DB and export files created `0600`; the DB lives under `~/.linkedin-dashboard/` (never inside the repo). |
+| NFR-009 | **File permissions and path safety.** The DB, live `-wal`/`-shm` sidecars, and exports are `0600`; the DB lives under `~/.linkedin-dashboard/` by default, never inside the repo, and its final path may not be a symlink. Existing custom parent-directory permissions are not changed. |
 | NFR-010 | **Observability.** Structured JSON logs with a correlation id per MCP call, viewable in-app. |
 | NFR-011 | **Accessibility.** The confirmation modal is keyboard-operable, focus-trapped, and the "Send now" button is never the default-focused or Enter-activated element. |
 | NFR-012 | **Startup safety.** If the send feature gate is on and the app cannot verify a completed phase gate C record, sending is disabled and the reason is displayed. |
@@ -686,7 +686,10 @@ send_attempt(id PK, candidate_id FK, draft_id FK,
              resolution CHECK(resolution IN ('unresolved','confirmed_sent','confirmed_not_sent')) DEFAULT 'unresolved',
              resolved_at NULL, resolution_note TEXT NULL,
              -- A verdict only ever attaches to an uncertain attempt.
-             CHECK (resolution = 'unresolved' OR state = 'AMBIGUOUS'))
+             CHECK (resolution = 'unresolved' OR state = 'AMBIGUOUS'),
+             CHECK (state <> 'AMBIGUOUS' OR finished_at IS NOT NULL),
+             CHECK ((resolution = 'unresolved' AND resolved_at IS NULL AND resolution_note IS NULL)
+                 OR (resolution <> 'unresolved' AND resolved_at IS NOT NULL)))
 
 -- Which rows block a further dashboard send for a candidate [LD-01].
 -- `unresolved` and `confirmed_sent` both block; only `confirmed_not_sent` releases,
@@ -704,21 +707,41 @@ CREATE UNIQUE INDEX one_live_send_per_candidate
         );
 -- The DB, not the UI, is what makes FR-077 true.
 
--- A finished attempt is a permanent record. Only the three resolution columns
--- may ever be written after the fact; nothing can rewrite an AMBIGUOUS row back
--- into DRAFT, reuse its idempotency key, or edit the message it carried [LD-01].
+-- Every row starts unresolved with null resolution metadata, and an AMBIGUOUS
+-- row must already carry a finished_at timestamp.
+CREATE TRIGGER send_attempt_insert_is_valid
+BEFORE INSERT ON send_attempt
+FOR EACH ROW
+WHEN NEW.resolution <> 'unresolved'
+  OR NEW.resolved_at IS NOT NULL
+  OR NEW.resolution_note IS NOT NULL
+  OR (NEW.state = 'AMBIGUOUS' AND NEW.finished_at IS NULL)
+BEGIN
+  SELECT RAISE(ABORT, 'invalid initial send_attempt resolution state');
+END;
+
+-- A finished or AMBIGUOUS attempt is a permanent record. Only the three
+-- resolution columns may ever be written after the fact [LD-01]. `IS NOT`
+-- comparisons cover nullable columns; the implementation enumerates every
+-- non-resolution column, including id and candidate_id.
 CREATE TRIGGER send_attempt_is_immutable
 BEFORE UPDATE ON send_attempt
 FOR EACH ROW
-WHEN OLD.finished_at IS NOT NULL
- AND (   NEW.state           <> OLD.state
-      OR NEW.idempotency_key <> OLD.idempotency_key
-      OR NEW.body_sha256     <> OLD.body_sha256
-      OR NEW.confirm_send    <> OLD.confirm_send
-      OR NEW.draft_id        <> OLD.draft_id
+WHEN (OLD.finished_at IS NOT NULL OR OLD.state = 'AMBIGUOUS')
+ AND (   NEW.id              IS NOT OLD.id
+      OR NEW.candidate_id    IS NOT OLD.candidate_id
+      OR NEW.draft_id        IS NOT OLD.draft_id
+      OR NEW.idempotency_key IS NOT OLD.idempotency_key
+      OR NEW.body_sha256     IS NOT OLD.body_sha256
+      OR NEW.confirm_send    IS NOT OLD.confirm_send
+      OR NEW.state           IS NOT OLD.state
       OR NEW.tool_status  IS NOT OLD.tool_status
       OR NEW.tool_sent    IS NOT OLD.tool_sent
+      OR NEW.tool_recipient_selected IS NOT OLD.tool_recipient_selected
+      OR NEW.tool_url      IS NOT OLD.tool_url
       OR NEW.raw_response IS NOT OLD.raw_response
+      OR NEW.error_class  IS NOT OLD.error_class
+      OR NEW.error_message IS NOT OLD.error_message
       OR NEW.started_at   IS NOT OLD.started_at
       OR NEW.finished_at  IS NOT OLD.finished_at)
 BEGIN
@@ -726,13 +749,32 @@ BEGIN
     'send_attempt is immutable once finished; only resolution/resolved_at/resolution_note may be written');
 END;
 
--- A resolution is written once and never revised.
+-- A resolution is one atomic transition on an already-finished AMBIGUOUS row;
+-- the companion finality trigger rejects later changes to any resolution field.
+CREATE TRIGGER send_resolution_transition_is_valid
+BEFORE UPDATE ON send_attempt
+FOR EACH ROW
+WHEN OLD.resolution = 'unresolved'
+ AND (NEW.resolution IS NOT OLD.resolution
+      OR NEW.resolved_at IS NOT OLD.resolved_at
+      OR NEW.resolution_note IS NOT OLD.resolution_note)
+ AND NOT (OLD.state = 'AMBIGUOUS' AND OLD.finished_at IS NOT NULL
+          AND OLD.resolution = 'unresolved'
+          AND NEW.resolution IN ('confirmed_sent','confirmed_not_sent')
+          AND NEW.resolved_at IS NOT NULL)
+BEGIN
+  SELECT RAISE(ABORT, 'invalid send_attempt resolution transition');
+END;
+
 CREATE TRIGGER send_resolution_is_final
-BEFORE UPDATE OF resolution ON send_attempt
+BEFORE UPDATE ON send_attempt
 FOR EACH ROW
 WHEN OLD.resolution <> 'unresolved'
+ AND (NEW.resolution IS NOT OLD.resolution
+      OR NEW.resolved_at IS NOT OLD.resolved_at
+      OR NEW.resolution_note IS NOT OLD.resolution_note)
 BEGIN
-  SELECT RAISE(ABORT, 'send_attempt.resolution is already set and cannot be changed');
+  SELECT RAISE(ABORT, 'send_attempt resolution is final');
 END;
 
 -- Infrastructure -------------------------------------------------------------
@@ -1329,12 +1371,15 @@ The politeness delay (NFR-004) is additive to the server's own `_NAV_DELAY`.
 
 ## 19. Privacy and local-data handling
 
-1. **Data stays on the machine.** SQLite at `~/.linkedin-dashboard/session.db`, `0600`, never
-   inside the repo, never in a synced folder by default. Exports go to a path the operator picks.
+1. **Data stays on the machine.** SQLite at `~/.linkedin-dashboard/session.db`; the main DB and
+   live WAL/SHM files are `0600`, never inside the repo, and never reached through a final-path
+   symlink. A custom pre-existing parent keeps its mode. Exports go to a path the operator picks.
 2. **The frontend gets no infrastructure detail.** NFR-002's response filter strips
    `section_errors[*].runtime`, which contains `source_profile_dir`, `portable_cookie_path`,
-   `hostname` and `suggested_gist_command` (`error_diagnostics.py:60-76`). A test asserts no
-   API response body contains the string `.linkedin-mcp` or the operator's home path.
+   `hostname` and `suggested_gist_command` (`error_diagnostics.py:60-76`). The same final filter
+   sanitizes JSON and SSE, including split events and credential-bearing URLs inside arbitrary
+   strings. Tests assert no API response body contains `.linkedin-mcp`, the operator's home path,
+   a `runtime` block, or URL userinfo.
 3. **The LLM boundary is the real privacy decision.** Sending profile text to a hosted model
    is a disclosure of third-party personal data. Therefore:
    - The default provider is `NullProvider` — **nothing leaves the machine**.

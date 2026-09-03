@@ -3,7 +3,12 @@ import { getHealth } from './api/client'
 import './App.css'
 
 function StatusDot({ healthy }: { healthy: boolean }) {
-  return <span className={healthy ? 'status-dot healthy' : 'status-dot'} />
+  return (
+    <span
+      aria-hidden="true"
+      className={healthy ? 'status-dot healthy' : 'status-dot'}
+    />
+  )
 }
 
 function App() {
@@ -18,7 +23,9 @@ function App() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <div className="brand-mark">in</div>
+        <div aria-hidden="true" className="brand-mark">
+          in
+        </div>
         <div>
           <p className="eyebrow">Private sourcing workspace</p>
           <h1>LinkedIn Dashboard</h1>
@@ -39,7 +46,12 @@ function App() {
           <div className="step-chip">M0 · Foundations</div>
         </section>
 
-        <section className="status-grid" aria-label="System readiness">
+        <section
+          aria-busy={health.isPending}
+          aria-label="System readiness"
+          aria-live="polite"
+          className="status-grid"
+        >
           <article className="status-card">
             <div className="status-heading">
               <StatusDot healthy={backendHealthy} />

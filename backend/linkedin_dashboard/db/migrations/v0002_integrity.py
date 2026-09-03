@@ -26,6 +26,42 @@ _IMMUTABLE_CHANGE = " OR ".join(
     f"NEW.{column} IS NOT OLD.{column}" for column in _PROTECTED_SEND_COLUMNS
 )
 
+_PREFLIGHTS = (
+    (
+        "legacy boolean value",
+        """
+        SELECT EXISTS (
+            SELECT 1 FROM session WHERE send_enabled NOT IN (0, 1)
+            UNION ALL
+            SELECT 1 FROM score WHERE is_current NOT IN (0, 1)
+            UNION ALL
+            SELECT 1 FROM draft_claim WHERE grounded NOT IN (0, 1)
+            UNION ALL
+            SELECT 1 FROM send_attempt
+             WHERE confirm_send NOT IN (0, 1)
+                OR (tool_sent IS NOT NULL AND tool_sent NOT IN (0, 1))
+                OR (tool_recipient_selected IS NOT NULL
+                    AND tool_recipient_selected NOT IN (0, 1))
+        )
+        """,
+    ),
+    (
+        "legacy send-attempt state",
+        """
+        SELECT EXISTS (
+            SELECT 1 FROM send_attempt
+             WHERE (state = 'AMBIGUOUS' AND finished_at IS NULL)
+                OR (resolution = 'unresolved'
+                    AND (resolved_at IS NOT NULL OR resolution_note IS NOT NULL))
+                OR (resolution <> 'unresolved'
+                    AND (state <> 'AMBIGUOUS'
+                         OR finished_at IS NULL
+                         OR resolved_at IS NULL))
+        )
+        """,
+    ),
+)
+
 
 def _boolean_trigger(
     table: str, columns: tuple[tuple[str, bool], ...], operation: str
@@ -125,8 +161,16 @@ STATEMENTS = (
 
 
 def apply(connection: Connection) -> None:
+    preflight_integrity(connection, version=VERSION)
     connection.exec_driver_sql(
         "DROP TRIGGER IF EXISTS send_resolution_transition_is_valid"
     )
     for statement in STATEMENTS:
         connection.exec_driver_sql(statement)
+
+
+def preflight_integrity(connection: Connection, *, version: str) -> None:
+    """Refuse an upgrade whose legacy rows have no proven normalization."""
+    for label, statement in _PREFLIGHTS:
+        if connection.exec_driver_sql(statement).scalar_one():
+            raise RuntimeError(f"cannot apply {version}: incompatible {label}")
