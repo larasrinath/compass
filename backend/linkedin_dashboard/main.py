@@ -5,7 +5,6 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI
-from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from linkedin_dashboard import __version__
 from linkedin_dashboard.api._filters import PrivacyFilterMiddleware
@@ -13,6 +12,7 @@ from linkedin_dashboard.api.audit import router as audit_router
 from linkedin_dashboard.api.health import router as health_router
 from linkedin_dashboard.correlation import CorrelationIdMiddleware
 from linkedin_dashboard.db.session import Database
+from linkedin_dashboard.security import ConfiguredHostMiddleware, OriginGuardMiddleware
 from linkedin_dashboard.settings import Settings
 
 
@@ -39,9 +39,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = app_settings
     app.state.database = database
 
+    app.add_middleware(ConfiguredHostMiddleware, allowed_host=app_settings.host)
     app.add_middleware(
-        TrustedHostMiddleware,
-        allowed_hosts=["127.0.0.1", "localhost", "[::1]", "testserver"],
+        OriginGuardMiddleware,
+        allowed_origin=app_settings.frontend_origin,
     )
     app.add_middleware(PrivacyFilterMiddleware)
     app.add_middleware(CorrelationIdMiddleware)

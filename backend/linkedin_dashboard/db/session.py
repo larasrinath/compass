@@ -9,7 +9,7 @@ from sqlalchemy import Engine, create_engine, event, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session, sessionmaker
 
-from linkedin_dashboard.db.migrations import v0001_constraints
+from linkedin_dashboard.db.migrations import v0001_constraints, v0002_integrity
 from linkedin_dashboard.db.models import Base
 
 
@@ -27,27 +27,31 @@ class Database:
         )
 
     def initialize(self) -> None:
-        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        os.chmod(self.path.parent, 0o700)
+        _create_private_directories(self.path.parent)
         Base.metadata.create_all(self.engine)
         with self.engine.begin() as connection:
             connection.exec_driver_sql(
                 "CREATE TABLE IF NOT EXISTS schema_migration "
                 "(version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
             )
-            applied = connection.execute(
-                text("SELECT 1 FROM schema_migration WHERE version = :version"),
-                {"version": v0001_constraints.VERSION},
-            ).scalar_one_or_none()
-            if applied is None:
-                v0001_constraints.apply(connection)
-                connection.execute(
-                    text(
-                        "INSERT INTO schema_migration(version, applied_at) "
-                        "VALUES (:version, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))"
-                    ),
-                    {"version": v0001_constraints.VERSION},
-                )
+            for version, apply in (
+                (v0001_constraints.VERSION, v0001_constraints.apply),
+                (v0002_integrity.VERSION, v0002_integrity.apply),
+            ):
+                applied = connection.execute(
+                    text("SELECT 1 FROM schema_migration WHERE version = :version"),
+                    {"version": version},
+                ).scalar_one_or_none()
+                if applied is None:
+                    apply(connection)
+                    connection.execute(
+                        text(
+                            "INSERT INTO schema_migration(version, applied_at) "
+                            "VALUES (:version, "
+                            "strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))"
+                        ),
+                        {"version": version},
+                    )
         os.chmod(self.path, stat.S_IRUSR | stat.S_IWUSR)
 
     def writable(self) -> bool:
@@ -82,6 +86,27 @@ def _create_engine(path: Path) -> Engine:
         cursor.close()
 
     return engine
+
+
+def _create_private_directories(directory: Path) -> None:
+    """Create missing DB parents privately without changing existing parents."""
+    missing: list[Path] = []
+    cursor = directory
+    while not cursor.exists():
+        missing.append(cursor)
+        cursor = cursor.parent
+
+    if not cursor.is_dir():
+        raise NotADirectoryError(cursor)
+
+    for path in reversed(missing):
+        try:
+            path.mkdir(mode=0o700)
+        except FileExistsError:
+            if not path.is_dir():
+                raise
+        else:
+            os.chmod(path, 0o700)
 
 
 def get_journal_mode(connection: Connection) -> str:

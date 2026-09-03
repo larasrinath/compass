@@ -27,6 +27,11 @@ class Base(DeclarativeBase):
 
 class DashboardSession(Base):
     __tablename__ = "session"
+    __table_args__ = (
+        CheckConstraint(
+            "send_enabled IN (0, 1)", name="ck_session_send_enabled_boolean"
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     created_at: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -315,6 +320,7 @@ class CandidateScore(Base):
             "confidence_band IN ('low','medium','high')",
             name="ck_score_confidence_band",
         ),
+        CheckConstraint("is_current IN (0, 1)", name="ck_score_is_current_boolean"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -435,6 +441,9 @@ class MessageDraft(Base):
 
 class DraftClaim(Base):
     __tablename__ = "draft_claim"
+    __table_args__ = (
+        CheckConstraint("grounded IN (0, 1)", name="ck_draft_claim_grounded_boolean"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     draft_id: Mapped[str] = mapped_column(
@@ -478,6 +487,17 @@ class SendAttempt(Base):
         CheckConstraint(
             "resolution = 'unresolved' OR state = 'AMBIGUOUS'",
             name="ck_send_attempt_resolution_state",
+        ),
+        CheckConstraint(
+            "confirm_send IN (0, 1)", name="ck_send_attempt_confirm_send_boolean"
+        ),
+        CheckConstraint(
+            "tool_sent IS NULL OR tool_sent IN (0, 1)",
+            name="ck_send_attempt_tool_sent_boolean",
+        ),
+        CheckConstraint(
+            "tool_recipient_selected IS NULL OR tool_recipient_selected IN (0, 1)",
+            name="ck_send_attempt_tool_recipient_selected_boolean",
         ),
     )
 

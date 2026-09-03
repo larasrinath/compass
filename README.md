@@ -42,9 +42,8 @@ uv run ruff check .
 uv run ruff format --check .
 uv run ty check
 uv run pytest
-cd frontend && npm run lint && npm run build
+cd frontend && npm test && npm run lint && npm run build
 ```
 
 Copy `.env.example` to `.env` only when overriding defaults. The application
 database is created with mode `0600` at `~/.linkedin-dashboard/session.db`.
-

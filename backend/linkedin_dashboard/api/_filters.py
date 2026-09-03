@@ -19,6 +19,15 @@ _DROP_KEYS = {
     "source_profile_dir",
 }
 
+_MALFORMED_JSON_BODY = b'{"detail":"Response could not be safely serialized"}'
+
+
+def _is_json_media_type(content_type: str) -> bool:
+    media_type = content_type.partition(";")[0].strip().casefold()
+    return media_type == "application/json" or (
+        media_type.startswith("application/") and media_type.endswith("+json")
+    )
+
 
 def sanitize_for_frontend(value: Any) -> Any:
     """Recursively remove process-local diagnostics and path material."""
@@ -67,7 +76,7 @@ class PrivacyFilterMiddleware:
                     ),
                     "",
                 )
-                filter_json = content_type.casefold().startswith("application/json")
+                filter_json = _is_json_media_type(content_type)
                 if not filter_json:
                     await send(message)
                 return
@@ -92,7 +101,14 @@ class PrivacyFilterMiddleware:
                     separators=(",", ":"),
                 ).encode("utf-8")
             except (UnicodeDecodeError, json.JSONDecodeError):
-                pass
+                body = _MALFORMED_JSON_BODY
+                start["status"] = 500
+                headers = [
+                    (key, value)
+                    for key, value in headers
+                    if key.decode("latin-1").casefold() != "content-type"
+                ]
+                headers.append((b"content-type", b"application/json"))
 
             headers = [
                 (key, value)
