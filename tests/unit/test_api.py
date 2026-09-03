@@ -177,7 +177,7 @@ def test_sse_incremental_parser_handles_bom_and_mixed_line_endings() -> None:
         output.append(parser.feed(bytes([byte]), final=index == len(stream) - 1))
 
     text = b"".join(output).decode("utf-8")
-    assert text.startswith('event: profile\ndata: {"url":"//[redacted]@host/x"}\n\n')
+    assert text.startswith('event: profile\ndata: {"url":"[redacted-path]"}\n\n')
     assert 'event: malformed\ndata: {"detail":' in text
     assert text.endswith("event: final\ndata: safe")
     assert "runtime" not in text
@@ -470,13 +470,107 @@ def test_credential_urls_are_redacted_in_values_and_keys_without_corruption() ->
     )
 
     assert sanitized == {
-        "[redacted-path]": ("https://[redacted]@host.example/path"),
+        "[redacted-path]": "https://[redacted]@host.example/path",
         "safe": [
             "https://host.example/path@segment",
             "https://host.example/path//name@segment",
             "mailto:user@example.com",
         ],
     }
+
+
+def test_linkedin_urls_sanitize_query_fragment_and_matrix_credentials() -> None:
+    sanitized = sanitize_for_frontend(
+        {
+            "url": (
+                "https://www.linkedin.com/in/safe-person;token=matrix-secret/"
+                "?safe=visible&access_token=query-secret"
+                "#section?password=fragment-secret&tab=experience"
+            ),
+            "relative_url": (
+                "/in/safe-person;authToken=relative-matrix/"
+                "?safe=yes#token=relative-fragment"
+            ),
+            "profile_url": "//fileserver/private/profile",
+        }
+    )
+
+    serialized = _strict_json_dumps(sanitized)
+    for secret in (
+        "matrix-secret",
+        "query-secret",
+        "fragment-secret",
+        "relative-matrix",
+        "relative-fragment",
+        "fileserver/private/profile",
+    ):
+        assert secret not in serialized
+    assert "safe=visible" in serialized
+    assert "tab=experience" in serialized
+    assert "safe=yes" in serialized
+    assert sanitized["profile_url"] == "[redacted-path]"
+
+
+@pytest.mark.parametrize("separator", [":", "="])
+def test_credential_labels_accept_colon_and_equals(separator: str) -> None:
+    sanitized = sanitize_for_frontend(
+        {
+            "message": (
+                f"proxy_password{separator} proxy-secret "
+                f"li_at{separator} cookie-secret "
+                f"Authorization{separator} Bearer bearer-secret"
+            )
+        }
+    )
+
+    serialized = _strict_json_dumps(sanitized)
+    assert "proxy-secret" not in serialized
+    assert "cookie-secret" not in serialized
+    assert "bearer-secret" not in serialized
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "file://authority-only",
+        "file://user:secret@authority/private",
+        "file:relative-private",
+        "//server/share/private",
+        "//127.0.0.1/C$/private",
+    ],
+)
+def test_all_file_and_protocol_relative_filesystem_urls_are_redacted(
+    value: str,
+) -> None:
+    assert sanitize_for_frontend({"url": value}) == {"url": "[redacted-path]"}
+
+
+def test_response_headers_sanitize_url_components_and_colon_labels(tmp_path) -> None:
+    app = create_app(settings_for(tmp_path / "header-components.db"))
+
+    @app.get("/api/test/header-components")
+    def header_components() -> JSONResponse:
+        return JSONResponse(
+            {"ok": True},
+            headers={
+                "X-Diagnostic": (
+                    "https://www.linkedin.com/in/safe;token=matrix-secret"
+                    "?safe=yes#password=fragment-secret "
+                    "proxy_password: label-secret file://authority-only"
+                )
+            },
+        )
+
+    with client_for(app) as client:
+        response = client.get("/api/test/header-components")
+
+    header = response.headers["x-diagnostic"]
+    assert "matrix-secret" not in header
+    assert "fragment-secret" not in header
+    assert "label-secret" not in header
+    assert "file://" not in header
+    assert "authority-only" not in header
+    assert "safe=yes" in header
 
 
 def test_json_response_redacts_query_labeled_file_and_header_secrets(
@@ -550,11 +644,12 @@ def test_json_response_redacts_query_labeled_file_and_header_secrets(
 def test_byte_split_sse_redacts_query_labeled_and_file_secrets(tmp_path) -> None:
     app = create_app(settings_for(tmp_path / "expanded-sse-privacy.db"))
     payload = (
-        b'data: {"url":"https://example.test/?token=query-secret",'
-        b'"message":"proxy_password=proxy-secret Authorization: Bearer '
+        b'data: {"url":"https://www.linkedin.com/in/safe;token=matrix-secret/'
+        b'?safe=yes#password=fragment-secret",'
+        b'"message":"proxy_password: proxy-secret Authorization=Bearer '
         b'bearer-secret Cookie: li_at=cookie-secret",'
         b'"file":"file://localhost/opt/private/data",'
-        b'"share":"//fileserver/private/share"}\n\n'
+        b'"profile_url":"//fileserver/private/share"}\n\n'
     )
 
     @app.get("/api/test/expanded-sse-privacy")
@@ -572,7 +667,8 @@ def test_byte_split_sse_redacts_query_labeled_and_file_secrets(tmp_path) -> None
         response = client.get("/api/test/expanded-sse-privacy")
 
     for secret in (
-        "query-secret",
+        "matrix-secret",
+        "fragment-secret",
         "proxy-secret",
         "bearer-secret",
         "cookie-secret",
@@ -582,6 +678,7 @@ def test_byte_split_sse_redacts_query_labeled_and_file_secrets(tmp_path) -> None
         assert secret not in response.text
     assert "x-accesstoken" not in response.headers
     assert "header-cookie-secret" not in response.headers["x-diagnostic"]
+    assert "safe=yes" in response.text
 
 
 def test_audit_api_redacts_credentials_embedded_in_strings(tmp_path) -> None:
@@ -668,6 +765,37 @@ def test_ipv6_frontend_origin_guard_matches_configured_vite_origin(tmp_path) -> 
 
     assert configured.status_code == 200
     assert wrong_port.status_code == 403
+
+
+@pytest.mark.parametrize("frontend_host", ["127.0.0.1", "::1"])
+def test_default_http_port_origin_guard_uses_canonical_origin(
+    tmp_path, frontend_host: str
+) -> None:
+    settings = Settings(
+        frontend_host=frontend_host,
+        frontend_port=80,
+        db_path=tmp_path / "default-port-origin.db",
+    )
+    app = create_app(settings)
+
+    @app.post("/api/test/default-port-mutate")
+    def mutate() -> dict[str, bool]:
+        return {"accepted": True}
+
+    canonical_origin = "http://[::1]" if frontend_host == "::1" else "http://127.0.0.1"
+    explicit_port = f"{canonical_origin}:80"
+    with client_for(app) as client:
+        configured = client.post(
+            "/api/test/default-port-mutate",
+            headers={"Origin": canonical_origin},
+        )
+        noncanonical = client.post(
+            "/api/test/default-port-mutate",
+            headers={"Origin": explicit_port},
+        )
+
+    assert configured.status_code == 200
+    assert noncanonical.status_code == 403
 
 
 @pytest.mark.parametrize(

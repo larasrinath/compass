@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import stat
 from collections.abc import Callable
 from errno import ELOOP
@@ -9,7 +10,7 @@ from threading import Lock
 from typing import Any
 
 from sqlalchemy import Engine, create_engine, event, text
-from sqlalchemy.engine import Connection
+from sqlalchemy.engine import URL, Connection
 from sqlalchemy.orm import Session, sessionmaker
 
 from linkedin_dashboard.db.migrations import (
@@ -20,6 +21,7 @@ from linkedin_dashboard.db.migrations import (
     v0005_send_history,
     v0006_send_state_timing,
     v0007_send_provenance,
+    v0008_history_hardening,
 )
 from linkedin_dashboard.db.models import Base
 from linkedin_dashboard.settings import normalize_database_path
@@ -83,6 +85,7 @@ class Database:
             (v0005_send_history.VERSION, v0005_send_history.apply),
             (v0006_send_state_timing.VERSION, v0006_send_state_timing.apply),
             (v0007_send_provenance.VERSION, v0007_send_provenance.apply),
+            (v0008_history_hardening.VERSION, v0008_history_hardening.apply),
         ):
             applied = connection.execute(
                 text("SELECT 1 FROM schema_migration WHERE version = :version"),
@@ -120,7 +123,7 @@ class Database:
 
 def _create_engine(path: Path, expected_fd: Callable[[], int | None]) -> Engine:
     engine = create_engine(
-        f"sqlite:///{path}",
+        URL.create("sqlite", database=str(path)),
         connect_args={"check_same_thread": False},
     )
 
@@ -146,6 +149,7 @@ def _create_engine(path: Path, expected_fd: Callable[[], int | None]) -> Engine:
         cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("PRAGMA busy_timeout=5000")
         cursor.close()
+        dbapi_connection.set_authorizer(_sqlite_authorizer)
 
     @event.listens_for(engine, "checkout")
     def validate_sqlite_checkout(
@@ -256,7 +260,12 @@ def _require_private_directory(directory: Path) -> None:
 
 def _open_owner_only_file(path: Path, *, create: bool) -> int:
     """Open a regular file without following its final path component."""
-    flags = os.O_RDWR | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = (
+        os.O_RDWR
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
     if create:
         try:
             descriptor = os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o600)
@@ -307,14 +316,42 @@ def _require_single_link(file_stat: os.stat_result, path: Path) -> None:
 
 
 def _secure_existing_sidecars(path: Path) -> None:
-    for suffix in ("-wal", "-shm"):
+    for suffix in ("-wal", "-shm", "-journal"):
         sidecar = Path(f"{path}{suffix}")
+        try:
+            sidecar_stat = sidecar.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(sidecar_stat.st_mode):
+            raise ValueError(f"database sidecar must not be a symbolic link: {sidecar}")
+        if not stat.S_ISREG(sidecar_stat.st_mode):
+            raise ValueError(f"database sidecar is not a regular file: {sidecar}")
+        _require_single_link(sidecar_stat, sidecar)
         try:
             descriptor = _open_owner_only_file(sidecar, create=False)
         except FileNotFoundError:
             continue
         else:
             os.close(descriptor)
+
+
+def _sqlite_authorizer(
+    action: int,
+    argument_one: str | None,
+    argument_two: str | None,
+    database_name: str | None,
+    trigger_name: str | None,
+) -> int:
+    """Keep recursive history triggers enabled on every managed connection."""
+    del database_name, trigger_name
+    if (
+        action == sqlite3.SQLITE_PRAGMA
+        and (argument_one or "").casefold() == "recursive_triggers"
+        and argument_two is not None
+        and argument_two.strip(" \t'\"").casefold() not in {"1", "on", "true", "yes"}
+    ):
+        return sqlite3.SQLITE_DENY
+    return sqlite3.SQLITE_OK
 
 
 def get_journal_mode(connection: Connection) -> str:

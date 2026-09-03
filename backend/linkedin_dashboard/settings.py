@@ -125,4 +125,5 @@ class Settings(BaseSettings):
     @property
     def frontend_origin(self) -> str:
         host = format_url_host(self.frontend_host)
-        return f"http://{host}:{self.frontend_port}"
+        port = "" if self.frontend_port == 80 else f":{self.frontend_port}"
+        return f"http://{host}{port}"

@@ -14,6 +14,7 @@ from linkedin_dashboard.db.migrations import (
     v0005_send_history,
     v0006_send_state_timing,
     v0007_send_provenance,
+    v0008_history_hardening,
 )
 from linkedin_dashboard.db.models import (
     Candidate,
@@ -194,9 +195,8 @@ def test_database_uses_wal_and_owner_only_permissions(database: Database) -> Non
         assert connection.exec_driver_sql("PRAGMA recursive_triggers").scalar_one() == 1
 
     with database.engine.connect() as connection:
-        connection.exec_driver_sql("PRAGMA recursive_triggers=OFF")
-
-    with database.engine.connect() as connection:
+        with pytest.raises(DBAPIError, match="not authorized"):
+            connection.exec_driver_sql("PRAGMA recursive_triggers=OFF")
         assert connection.exec_driver_sql("PRAGMA recursive_triggers").scalar_one() == 1
 
     assert stat.S_IMODE(os.stat(database.path).st_mode) == 0o600
@@ -480,7 +480,7 @@ def test_hard_linked_database_is_rejected_without_mutating_original(tmp_path) ->
     assert not linked.with_name(f"{linked.name}-shm").exists()
 
 
-@pytest.mark.parametrize("suffix", ["-wal", "-shm"])
+@pytest.mark.parametrize("suffix", ["-wal", "-shm", "-journal"])
 def test_hard_linked_existing_sidecar_is_rejected_before_sqlite(
     tmp_path, suffix: str
 ) -> None:
@@ -540,6 +540,7 @@ def test_existing_v0001_database_receives_integrity_migration(tmp_path) -> None:
         v0005_send_history.VERSION,
         v0006_send_state_timing.VERSION,
         v0007_send_provenance.VERSION,
+        v0008_history_hardening.VERSION,
     ]
     assert "NEW.candidate_id IS NOT OLD.candidate_id" in trigger_sql
 
@@ -752,7 +753,7 @@ def test_partial_unique_index_rejects_a_second_live_send(database: Database) -> 
             )
 
 
-def test_ambiguous_dry_run_does_not_block_a_real_send(database: Database) -> None:
+def test_failed_dry_run_does_not_block_a_real_send(database: Database) -> None:
     candidate_id, draft_id = seed_candidate(database, "dry")
     with database.sessions.begin() as db_session:
         db_session.add_all(
@@ -761,7 +762,7 @@ def test_ambiguous_dry_run_does_not_block_a_real_send(database: Database) -> Non
                     attempt_id="attempt-dry-1",
                     candidate_id=candidate_id,
                     draft_id=draft_id,
-                    state="AMBIGUOUS",
+                    state="DRY_RUN_FAILED",
                     confirm_send=False,
                     finished_at=NOW,
                 ),
@@ -1137,7 +1138,7 @@ def test_insert_or_replace_cannot_overwrite_send_history(
     existing_id = f"attempt-replace-{conflict}"
     replacement_id = existing_id if conflict == "primary_key" else f"new-{existing_id}"
     existing_key = (existing_id + "0" * 64)[:64]
-    with pytest.raises(DBAPIError, match="full-session purge"):
+    with pytest.raises(DBAPIError, match=r"already exists|full-session purge"):
         with database.engine.begin() as connection:
             connection.execute(
                 text(
@@ -1222,7 +1223,10 @@ def test_confirmation_provenance_cannot_be_rewritten(
             )
         )
 
-    with pytest.raises(DBAPIError, match="must match its approved draft"):
+    with pytest.raises(
+        DBAPIError,
+        match=r"send_confirmation is immutable|must match its approved draft",
+    ):
         with database.engine.begin() as connection:
             connection.execute(
                 text(
@@ -1343,7 +1347,10 @@ def test_send_identity_cannot_change_while_completing(
 
     with pytest.raises(
         DBAPIError,
-        match=r"identity and provenance are immutable|must match its approved draft",
+        match=(
+            r"identity and provenance are immutable|must match its approved draft|"
+            r"confirm_send state family"
+        ),
     ):
         with database.engine.begin() as connection:
             connection.execute(
@@ -1392,18 +1399,18 @@ def test_send_result_can_complete_without_changing_identity(database: Database) 
 
 
 @pytest.mark.parametrize(
-    ("state", "finished_at"),
+    ("state", "confirm_send", "finished_at"),
     [
-        ("SENDING", None),
-        ("SENT", NOW),
-        ("FAILED_CONCLUSIVE", NOW),
-        ("AMBIGUOUS", NOW),
-        ("DRY_RUN_OK", NOW),
-        ("DRY_RUN_FAILED", NOW),
+        ("SENDING", 1, None),
+        ("SENT", 1, NOW),
+        ("FAILED_CONCLUSIVE", 1, NOW),
+        ("AMBIGUOUS", 1, NOW),
+        ("DRY_RUN_OK", 0, NOW),
+        ("DRY_RUN_FAILED", 0, NOW),
     ],
 )
 def test_every_send_state_accepts_only_its_valid_timing(
-    database: Database, state: str, finished_at: str | None
+    database: Database, state: str, confirm_send: int, finished_at: str | None
 ) -> None:
     candidate_id, draft_id = seed_candidate(database, f"state-{state}")
     with database.engine.begin() as connection:
@@ -1413,7 +1420,7 @@ def test_every_send_state_accepts_only_its_valid_timing(
             candidate_id=candidate_id,
             draft_id=draft_id,
             state=state,
-            confirm_send=0,
+            confirm_send=confirm_send,
             finished_at=finished_at,
         )
 
@@ -1426,7 +1433,7 @@ def test_every_send_state_accepts_only_its_valid_timing(
                 candidate_id=candidate_id,
                 draft_id=draft_id,
                 state=state,
-                confirm_send=0,
+                confirm_send=confirm_send,
                 finished_at=invalid_finished_at,
             )
 
@@ -1496,7 +1503,7 @@ def test_v0006_preflight_rejects_legacy_state_timing(
             candidate_id=candidate_id,
             draft_id=draft_id,
             state=state,
-            confirm_send=0,
+            confirm_send=1,
             finished_at=finished_at,
         )
         connection.exec_driver_sql("PRAGMA ignore_check_constraints=OFF")

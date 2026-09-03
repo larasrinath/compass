@@ -503,6 +503,12 @@ class SendAttempt(Base):
             "confirm_send IN (0, 1)", name="ck_send_attempt_confirm_send_boolean"
         ),
         CheckConstraint(
+            "(confirm_send = 1 AND state IN "
+            "('SENDING','SENT','FAILED_CONCLUSIVE','AMBIGUOUS')) OR "
+            "(confirm_send = 0 AND state IN ('DRY_RUN_OK','DRY_RUN_FAILED'))",
+            name="ck_send_attempt_confirm_send_state",
+        ),
+        CheckConstraint(
             "tool_sent IS NULL OR tool_sent IN (0, 1)",
             name="ck_send_attempt_tool_sent_boolean",
         ),

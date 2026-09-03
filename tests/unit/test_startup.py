@@ -96,6 +96,7 @@ def test_documented_module_entrypoint_starts_on_loopback(tmp_path) -> None:
                     f"http://127.0.0.1:{port}/api/health", timeout=0.25
                 ) as response:
                     assert response.status == 200
+                    assert "Server" not in response.headers
                     break
             except (URLError, TimeoutError):
                 time.sleep(0.05)

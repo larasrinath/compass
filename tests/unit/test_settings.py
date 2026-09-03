@@ -110,6 +110,25 @@ def test_literal_loopbacks_never_use_dns(monkeypatch, tmp_path) -> None:
 
 
 @pytest.mark.parametrize(
+    ("host", "origin"),
+    [
+        ("127.0.0.1", "http://127.0.0.1"),
+        ("::1", "http://[::1]"),
+    ],
+)
+def test_frontend_origin_omits_default_http_port(
+    tmp_path, host: str, origin: str
+) -> None:
+    settings = Settings(
+        frontend_host=host,
+        frontend_port=80,
+        db_path=tmp_path / "port-80.db",
+    )
+
+    assert settings.frontend_origin == origin
+
+
+@pytest.mark.parametrize(
     "url",
     [
         "http://127.0.0.1:not-a-port/mcp",

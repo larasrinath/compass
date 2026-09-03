@@ -47,19 +47,22 @@ function urlHost(host) {
   return host.includes(':') ? `[${host}]` : host
 }
 
+function httpOrigin(host, port) {
+  return `http://${urlHost(host)}${port === 80 ? '' : `:${port}`}`
+}
+
 export function backendProxyTarget(env = process.env) {
   const surface = 'Dashboard backend proxy'
   const host = assertLoopbackHost(env.HOST ?? '127.0.0.1', surface)
   const port = validatedPort(env.PORT ?? '8787', surface)
-  return `http://${urlHost(host)}:${port}`
+  return httpOrigin(host, port)
 }
 
 export function frontendBinding(env = process.env) {
   const surface = 'Vite frontend'
   const host = assertLoopbackHost(env.FRONTEND_HOST ?? '127.0.0.1', surface)
   const port = validatedPort(env.FRONTEND_PORT ?? '5173', surface)
-  const authority = host.includes(':') ? `[${host}]` : host
-  return { host, port, origin: `http://${authority}:${port}` }
+  return { host, port, origin: httpOrigin(host, port) }
 }
 
 export function loopbackOnlyPlugin(expectedFrontend) {

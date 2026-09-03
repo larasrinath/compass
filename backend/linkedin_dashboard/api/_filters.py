@@ -4,7 +4,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote_plus, urlsplit
+from urllib.parse import unquote_plus, urlsplit, urlunsplit
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -44,20 +44,29 @@ _WINDOWS_PATH = re.compile(
     flags=re.IGNORECASE,
 )
 _FILE_URL = re.compile(
-    r"\bfile:(?://[^/\s\"'<>]*)?/(?:[^\s\"'<>]+)",
+    r"\bfile:(?://[^\s\"'<>]*)?(?:[^\s\"'<>]*)",
     flags=re.IGNORECASE,
 )
 _NETWORK_URL = re.compile(r"(?:(?:https?):)?//[^\s\"'<>]+", re.IGNORECASE)
 _UNIX_PATH = re.compile(r"(?<![a-z0-9/])/(?!/)[^\s\"'<>]+", re.IGNORECASE)
-_QUERY_PARAMETER = re.compile(
-    r"(?P<separator>[?&])(?P<key>[^=&#]*)(?P<equals>=)(?P<value>[^&#]*)"
+_COMPONENT_PARAMETER = re.compile(
+    r"(?P<separator>^|[?&;])(?P<key>[^=?&#;]*)"
+    r"(?P<equals>=)(?P<value>[^?&#;]*)"
+)
+_MATRIX_PARAMETER = re.compile(
+    r"(?P<separator>;)(?P<key>[^=;/]*)"
+    r"(?P<equals>=)(?P<value>[^;/]*)"
 )
 _LABELED_SECRET = re.compile(
-    r"(?P<label>\b(?:proxy[_-]?password|li_at)\s*=\s*)[^;\s,&]+",
+    r"(?P<label>\b(?:access[_-]?token|api[_-]?key|auth(?:orization|[_-]?token)?|"
+    r"client[_-]?secret|cookie|credential|key|li_at|password|"
+    r"proxy[_-]?(?:password|username)|refresh[_-]?token|secret|"
+    r"session[_-]?token|token)\s*[:=]\s*)"
+    r"(?:bearer\s+)?[^;\s,&?#/]+",
     re.IGNORECASE,
 )
 _AUTHORIZATION_BEARER = re.compile(
-    r"(?P<label>\bauthorization\s*:\s*bearer\s+)[^;\s,]+",
+    r"(?P<label>\bauthorization\s*[:=]\s*bearer\s+)[^;\s,]+",
     re.IGNORECASE,
 )
 _SENSITIVE_QUERY_KEYS = {
@@ -134,10 +143,13 @@ def _is_linkedin_relative_url(value: str, field_name: str | None) -> bool:
     if field_name not in _LINKEDIN_URL_KEYS or "\\" in value:
         return False
     parsed = urlsplit(value)
+    path_without_matrix = "/".join(
+        segment.partition(";")[0] for segment in parsed.path.split("/")
+    )
     return (
         not parsed.scheme
         and not parsed.netloc
-        and bool(_LINKEDIN_RELATIVE_PATH.fullmatch(parsed.path))
+        and bool(_LINKEDIN_RELATIVE_PATH.fullmatch(path_without_matrix))
     )
 
 
@@ -154,14 +166,44 @@ def _is_sensitive_identifier(value: str) -> bool:
     )
 
 
-def _sanitize_url_query(value: str) -> str:
+def _sanitize_parameter_component(value: str) -> str:
     def redact_parameter(match: re.Match[str]) -> str:
         key = match.group("key")
         if not _is_sensitive_identifier(key):
             return match.group(0)
         return f"{match.group('separator')}{key}{match.group('equals')}[redacted]"
 
-    return _QUERY_PARAMETER.sub(redact_parameter, value)
+    return _COMPONENT_PARAMETER.sub(redact_parameter, value)
+
+
+def _sanitize_url_components(value: str) -> str:
+    """Redact credentials from query, fragment, and path matrix parameters."""
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return "[redacted-url]"
+
+    def redact_matrix(match: re.Match[str]) -> str:
+        key = match.group("key")
+        if not _is_sensitive_identifier(key):
+            return match.group(0)
+        return f"{match.group('separator')}{key}{match.group('equals')}[redacted]"
+
+    path = _MATRIX_PARAMETER.sub(redact_matrix, parsed.path)
+    query = _sanitize_parameter_component(parsed.query)
+    fragment = _sanitize_parameter_component(parsed.fragment)
+    return urlunsplit((parsed.scheme, parsed.netloc, path, query, fragment))
+
+
+def _is_permitted_linkedin_network_url(value: str, field_name: str | None) -> bool:
+    if field_name not in _LINKEDIN_URL_KEYS:
+        return False
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return False
+    host = (parsed.hostname or "").casefold()
+    return host == "linkedin.com" or host.endswith(".linkedin.com")
 
 
 def _redact_string(
@@ -170,7 +212,7 @@ def _redact_string(
     field_name: str | None = None,
 ) -> str:
     if _is_linkedin_relative_url(value, field_name):
-        return value
+        return _sanitize_url_components(value)
 
     def redact_authority(match: re.Match[str]) -> str:
         authority = match.group("authority")
@@ -179,23 +221,26 @@ def _redact_string(
         host = authority.rsplit("@", 1)[1]
         return f"{match.group('prefix')}[redacted]@{host}"
 
-    sanitized = _LABELED_SECRET.sub(r"\g<label>[redacted]", value)
-    sanitized = _AUTHORIZATION_BEARER.sub(r"\g<label>[redacted]", sanitized)
-    sanitized = _FILE_URL.sub("[redacted-path]", sanitized)
-    sanitized = _URL_AUTHORITY.sub(redact_authority, sanitized)
+    sanitized = _FILE_URL.sub("[redacted-path]", value)
     sanitized = sanitized.replace(str(Path.home()), "[redacted-home]")
     sanitized = sanitized.replace(".linkedin-mcp", "[redacted-profile]")
 
     preserved_urls: list[str] = []
 
     def preserve_network_url(match: re.Match[str]) -> str:
-        url = _sanitize_url_query(match.group(0))
-        if url.startswith("//") and field_name not in _LINKEDIN_URL_KEYS:
+        url = _sanitize_url_components(match.group(0))
+        if url.startswith("//") and not _is_permitted_linkedin_network_url(
+            url, field_name
+        ):
             return "[redacted-path]"
+        url = _URL_AUTHORITY.sub(redact_authority, url)
         preserved_urls.append(url)
         return f"[preserved-url-{len(preserved_urls) - 1}]"
 
     sanitized = _NETWORK_URL.sub(preserve_network_url, sanitized)
+    sanitized = _URL_AUTHORITY.sub(redact_authority, sanitized)
+    sanitized = _LABELED_SECRET.sub(r"\g<label>[redacted]", sanitized)
+    sanitized = _AUTHORIZATION_BEARER.sub(r"\g<label>[redacted]", sanitized)
     sanitized = _WINDOWS_PATH.sub("[redacted-path]", sanitized)
     sanitized = _UNIX_PATH.sub("[redacted-path]", sanitized)
     for index, url in enumerate(preserved_urls):

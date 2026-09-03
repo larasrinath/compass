@@ -83,6 +83,14 @@ test('formats validated IPv4 and IPv6 backend proxy targets', () => {
     backendProxyTarget({ HOST: '[::1]', PORT: '9001' }),
     'http://[::1]:9001',
   )
+  assert.equal(
+    backendProxyTarget({ HOST: '127.0.0.1', PORT: '80' }),
+    'http://127.0.0.1',
+  )
+  assert.equal(
+    backendProxyTarget({ HOST: '::1', PORT: '80' }),
+    'http://[::1]',
+  )
   assert.throws(
     () => backendProxyTarget({ HOST: '0.0.0.0', PORT: '8787' }),
     /explicit loopback/,
@@ -101,6 +109,14 @@ test('validates frontend binding and brackets its IPv6 origin', () => {
   assert.deepEqual(
     frontendBinding({ FRONTEND_HOST: '[::1]', FRONTEND_PORT: '5175' }),
     { host: '::1', port: 5175, origin: 'http://[::1]:5175' },
+  )
+  assert.deepEqual(
+    frontendBinding({ FRONTEND_HOST: '127.0.0.1', FRONTEND_PORT: '80' }),
+    { host: '127.0.0.1', port: 80, origin: 'http://127.0.0.1' },
+  )
+  assert.deepEqual(
+    frontendBinding({ FRONTEND_HOST: '::1', FRONTEND_PORT: '80' }),
+    { host: '::1', port: 80, origin: 'http://[::1]' },
   )
   assert.throws(
     () => frontendBinding({ FRONTEND_HOST: '0.0.0.0', FRONTEND_PORT: '5173' }),
