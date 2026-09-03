@@ -9,10 +9,15 @@ from urllib.parse import unquote_plus, urlsplit, urlunsplit
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 _DROP_KEYS = {
+    "access_key",
     "access_token",
+    "api_key",
+    "auth_token",
     "authorization",
     "browser_profile_path",
     "cookie_path",
+    "credential",
+    "credentials",
     "cwd",
     "db_path",
     "dir",
@@ -23,11 +28,14 @@ _DROP_KEYS = {
     "path",
     "portable_cookie_path",
     "proxy_password",
+    "proxy_username",
+    "refresh_token",
     "runtime",
     "runtime_storage_state_path",
     "source_profile_dir",
     "suggested_gist_command",
     "user_data_dir",
+    "x_api_key",
     "working_directory",
 }
 _DROP_KEY_SUFFIXES = ("_dir", "_directory", "_path")
@@ -58,10 +66,11 @@ _MATRIX_PARAMETER = re.compile(
     r"(?P<equals>=)(?P<value>[^;/]*)"
 )
 _LABELED_SECRET = re.compile(
-    r"(?P<label>\b(?:access[_-]?token|api[_-]?key|auth(?:orization|[_-]?token)?|"
-    r"client[_-]?secret|cookie|credential|key|li_at|password|"
-    r"proxy[_-]?(?:password|username)|refresh[_-]?token|secret|"
-    r"session[_-]?token|token)\s*[:=]\s*)"
+    r"(?P<label>\b(?:access[ _-]?(?:credentials?|key|token)|api[ _-]?key|"
+    r"auth(?:orization|[ _-]?token)?|client[ _-]?(?:key|secret)|"
+    r"cookie(?:[ _-]?path)?|credentials?|key|li_at|password|"
+    r"proxy[ _-]?(?:password|username)|refresh[ _-]?token|secret|"
+    r"session[ _-]?token|token|x[ _-]?api[ _-]?key)\s*[:=]\s*)"
     r"(?:bearer\s+)?[^;\s,&?#/]+",
     re.IGNORECASE,
 )
@@ -77,12 +86,19 @@ _SENSITIVE_QUERY_KEYS = {
     "authorization",
     "authtoken",
     "cookie",
+    "cookiepath",
+    "credential",
+    "credentials",
     "key",
     "liat",
     "password",
     "proxypassword",
+    "proxyusername",
+    "refreshtoken",
     "secret",
+    "sessiontoken",
     "token",
+    "xapikey",
 }
 _LINKEDIN_URL_KEYS = {
     "profile_url",
@@ -154,22 +170,80 @@ def _is_linkedin_relative_url(value: str, field_name: str | None) -> bool:
 
 
 def _compact_identifier(value: str) -> str:
-    return re.sub(r"[^a-z0-9]", "", unquote_plus(value).casefold())
+    return re.sub(r"[^a-z0-9]", "", _fully_unquote(value).casefold())
+
+
+def _fully_unquote(value: str) -> str:
+    decoded = value
+    for _ in range(4):
+        next_value = unquote_plus(decoded)
+        if next_value == decoded:
+            break
+        decoded = next_value
+    return decoded
 
 
 def _is_sensitive_identifier(value: str) -> bool:
     compact = _compact_identifier(value)
+    sensitive_markers = (
+        "accesscredential",
+        "accesskey",
+        "accesstoken",
+        "apikey",
+        "authtoken",
+        "clientsecret",
+        "cookiepath",
+        "credential",
+        "password",
+        "proxypassword",
+        "proxyusername",
+        "refreshtoken",
+        "sessiontoken",
+        "xapikey",
+    )
     return (
         compact in _SENSITIVE_QUERY_KEYS
-        or compact.endswith(("token", "password", "secret", "cookie"))
+        or any(marker in compact for marker in sensitive_markers)
+        or compact.endswith(
+            (
+                "token",
+                "tokens",
+                "password",
+                "passwords",
+                "secret",
+                "secrets",
+                "cookie",
+                "cookies",
+                "credential",
+                "credentials",
+            )
+        )
         or compact.startswith("auth")
+    )
+
+
+def _parameter_value_is_sensitive(value: str) -> bool:
+    decoded = _fully_unquote(value)
+    normalized = decoded.casefold()
+    return (
+        bool(_LABELED_SECRET.search(decoded))
+        or bool(_AUTHORIZATION_BEARER.search(decoded))
+        or bool(_FILE_URL.search(decoded))
+        or bool(_WINDOWS_PATH.search(decoded))
+        or bool(_UNIX_PATH.search(decoded))
+        or normalized.startswith("//")
+        or ".linkedin-mcp" in normalized
+        or str(Path.home()).casefold() in normalized
     )
 
 
 def _sanitize_parameter_component(value: str) -> str:
     def redact_parameter(match: re.Match[str]) -> str:
         key = match.group("key")
-        if not _is_sensitive_identifier(key):
+        if not (
+            _is_sensitive_identifier(key)
+            or _parameter_value_is_sensitive(match.group("value"))
+        ):
             return match.group(0)
         return f"{match.group('separator')}{key}{match.group('equals')}[redacted]"
 
@@ -185,7 +259,10 @@ def _sanitize_url_components(value: str) -> str:
 
     def redact_matrix(match: re.Match[str]) -> str:
         key = match.group("key")
-        if not _is_sensitive_identifier(key):
+        if not (
+            _is_sensitive_identifier(key)
+            or _parameter_value_is_sensitive(match.group("value"))
+        ):
             return match.group(0)
         return f"{match.group('separator')}{key}{match.group('equals')}[redacted]"
 

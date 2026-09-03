@@ -681,6 +681,75 @@ def test_byte_split_sse_redacts_query_labeled_and_file_secrets(tmp_path) -> None
     assert "safe=yes" in response.text
 
 
+def test_percent_decoded_parameter_values_and_diagnostic_keys_are_private() -> None:
+    sanitized = sanitize_for_frontend(
+        {
+            "url": (
+                "https://www.linkedin.com/in/safe-person;"
+                "detail=%252FUsers%252Foperator%252F.linkedin-mcp%252Fprofile/"
+                "?safe=visible&note=credential%253Ddeep-secret"
+                "#tab=experience&debug=proxy_username%3Doperator-secret"
+            ),
+            "relative_url": (
+                "/in/safe-person/?next=cookie_path%3D%252Ftmp%252Fcookies.json"
+            ),
+            "credential": "json-credential-secret",
+            "proxy_username": "json-proxy-user",
+            "x_api_key": "json-api-secret",
+            "safe": "ordinary value",
+        }
+    )
+
+    serialized = _strict_json_dumps(sanitized)
+    for secret in (
+        "deep-secret",
+        "operator-secret",
+        "json-credential-secret",
+        "json-proxy-user",
+        "json-api-secret",
+        "Users%252Foperator",
+        "cookies.json",
+    ):
+        assert secret not in serialized
+    assert "safe=visible" in serialized
+    assert "tab=experience" in serialized
+    assert sanitized["safe"] == "ordinary value"
+
+
+def test_decoded_url_privacy_covers_sse_headers_and_benign_header_names(
+    tmp_path,
+) -> None:
+    app = create_app(settings_for(tmp_path / "decoded-privacy.db"))
+    payload = (
+        b'data: {"url":"/in/safe-person/?note=access_token%253Dsse-secret",'
+        b'"profile_url":"https://www.linkedin.com/in/safe;'
+        b'debug=%252Fhome%252Foperator%252F.linkedin-mcp%252Fprofile/"}\n\n'
+    )
+
+    @app.get("/api/test/decoded-privacy")
+    def decoded_privacy() -> StreamingResponse:
+        return StreamingResponse(
+            (bytes([byte]) for byte in payload),
+            media_type="text/event-stream",
+            headers={
+                "X-Diagnostic": (
+                    "https://www.linkedin.com/in/safe/?note=x-api-key%253Dheader-secret"
+                ),
+                "X-Monkey": "benign-monkey",
+                "X-Keynote": "benign-keynote",
+            },
+        )
+
+    with client_for(app) as client:
+        response = client.get("/api/test/decoded-privacy")
+
+    assert "sse-secret" not in response.text
+    assert "linkedin-mcp" not in response.text
+    assert "header-secret" not in response.headers["x-diagnostic"]
+    assert response.headers["x-monkey"] == "benign-monkey"
+    assert response.headers["x-keynote"] == "benign-keynote"
+
+
 def test_audit_api_redacts_credentials_embedded_in_strings(tmp_path) -> None:
     app = create_app(settings_for(tmp_path / "audit-privacy.db"))
     with client_for(app) as client:

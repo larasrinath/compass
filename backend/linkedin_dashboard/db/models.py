@@ -391,6 +391,7 @@ class Evidence(Base):
     matcher: Mapped[str] = mapped_column(String(32), nullable=False)
     matched_term: Mapped[str] = mapped_column(Text, nullable=False)
     polarity: Mapped[str] = mapped_column(String(16), nullable=False)
+    purged_at: Mapped[str | None] = mapped_column(String(32))
 
 
 class ShortlistDecision(Base):

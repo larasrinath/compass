@@ -22,6 +22,7 @@ from linkedin_dashboard.db.migrations import (
     v0006_send_state_timing,
     v0007_send_provenance,
     v0008_history_hardening,
+    v0009_integrity_completion,
 )
 from linkedin_dashboard.db.models import Base
 from linkedin_dashboard.settings import normalize_database_path
@@ -86,6 +87,7 @@ class Database:
             (v0006_send_state_timing.VERSION, v0006_send_state_timing.apply),
             (v0007_send_provenance.VERSION, v0007_send_provenance.apply),
             (v0008_history_hardening.VERSION, v0008_history_hardening.apply),
+            (v0009_integrity_completion.VERSION, v0009_integrity_completion.apply),
         ):
             applied = connection.execute(
                 text("SELECT 1 FROM schema_migration WHERE version = :version"),
@@ -132,24 +134,12 @@ def _create_engine(path: Path, expected_fd: Callable[[], int | None]) -> Engine:
         dbapi_connection: Any, connection_record: Any
     ) -> None:  # pragma: no cover - SQLAlchemy callback signature
         del connection_record
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA recursive_triggers=ON")
-        recursive_triggers = cursor.execute("PRAGMA recursive_triggers").fetchone()[0]
-        if recursive_triggers != 1:
-            cursor.close()
-            raise RuntimeError("SQLite recursive triggers could not be enabled")
         database_fd = expected_fd()
         if database_fd is None:
-            cursor.close()
             raise RuntimeError("database connections require secure initialization")
-        cursor.close()
         _revalidate_storage(dbapi_connection, path, database_fd)
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute("PRAGMA busy_timeout=5000")
-        cursor.close()
         dbapi_connection.set_authorizer(_sqlite_authorizer)
+        _configure_required_pragmas(dbapi_connection)
 
     @event.listens_for(engine, "checkout")
     def validate_sqlite_checkout(
@@ -159,19 +149,35 @@ def _create_engine(path: Path, expected_fd: Callable[[], int | None]) -> Engine:
         database_fd = expected_fd()
         if database_fd is None:
             raise RuntimeError("database connections require secure initialization")
-        cursor = dbapi_connection.cursor()
-        try:
-            cursor.execute("PRAGMA recursive_triggers=ON")
-            recursive_triggers = cursor.execute("PRAGMA recursive_triggers").fetchone()[
-                0
-            ]
-        finally:
-            cursor.close()
-        if recursive_triggers != 1:
-            raise RuntimeError("SQLite recursive triggers could not be enabled")
         _revalidate_storage(dbapi_connection, path, database_fd)
+        dbapi_connection.set_authorizer(_sqlite_authorizer)
+        _configure_required_pragmas(dbapi_connection)
 
     return engine
+
+
+def _configure_required_pragmas(dbapi_connection: Any) -> None:
+    """Restore and prove every SQLite invariant required by persistence guards."""
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA foreign_keys=ON")
+        if cursor.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
+            raise RuntimeError("SQLite foreign keys could not be enabled")
+
+        cursor.execute("PRAGMA recursive_triggers=ON")
+        if cursor.execute("PRAGMA recursive_triggers").fetchone()[0] != 1:
+            raise RuntimeError("SQLite recursive triggers could not be enabled")
+
+        journal_mode = cursor.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+        if str(journal_mode).casefold() != "wal":
+            raise RuntimeError("SQLite WAL journal mode could not be enabled")
+        verified_mode = cursor.execute("PRAGMA journal_mode").fetchone()[0]
+        if str(verified_mode).casefold() != "wal":
+            raise RuntimeError("SQLite WAL journal mode could not be verified")
+
+        cursor.execute("PRAGMA busy_timeout=5000")
+    finally:
+        cursor.close()
 
 
 def _revalidate_storage(dbapi_connection: Any, path: Path, expected_fd: int) -> None:
@@ -342,15 +348,20 @@ def _sqlite_authorizer(
     database_name: str | None,
     trigger_name: str | None,
 ) -> int:
-    """Keep recursive history triggers enabled on every managed connection."""
+    """Prevent managed SQL from dismantling required SQLite invariants."""
     del database_name, trigger_name
-    if (
-        action == sqlite3.SQLITE_PRAGMA
-        and (argument_one or "").casefold() == "recursive_triggers"
-        and argument_two is not None
-        and argument_two.strip(" \t'\"").casefold() not in {"1", "on", "true", "yes"}
-    ):
-        return sqlite3.SQLITE_DENY
+    if action == sqlite3.SQLITE_PRAGMA and argument_two is not None:
+        pragma = (argument_one or "").casefold()
+        setting = argument_two.strip(" \t'\"").casefold()
+        if pragma in {"foreign_keys", "recursive_triggers"} and setting not in {
+            "1",
+            "on",
+            "true",
+            "yes",
+        }:
+            return sqlite3.SQLITE_DENY
+        if pragma == "journal_mode" and setting != "wal":
+            return sqlite3.SQLITE_DENY
     return sqlite3.SQLITE_OK
 
 

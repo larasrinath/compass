@@ -6,7 +6,10 @@ import stat
 from pathlib import Path
 
 import pytest
-from linkedin_dashboard.db.migrations import v0008_history_hardening
+from linkedin_dashboard.db.migrations import (
+    v0008_history_hardening,
+    v0009_integrity_completion,
+)
 from linkedin_dashboard.db.models import (
     Candidate,
     DashboardSession,
@@ -137,6 +140,64 @@ def test_managed_connections_deny_disabling_recursive_triggers(
         with pytest.raises(DBAPIError, match="not authorized"):
             connection.exec_driver_sql(f"PRAGMA recursive_triggers={disabled}")
         assert connection.exec_driver_sql("PRAGMA recursive_triggers").scalar_one() == 1
+
+
+@pytest.mark.parametrize(
+    ("pragma", "unsafe_value"),
+    [
+        ("foreign_keys", "OFF"),
+        ("foreign_keys", "0"),
+        ("recursive_triggers", "OFF"),
+        ("journal_mode", "DELETE"),
+        ("journal_mode", "MEMORY"),
+    ],
+)
+def test_managed_connections_deny_unsafe_pragma_changes(
+    database: Database, pragma: str, unsafe_value: str
+) -> None:
+    with database.engine.connect() as connection:
+        with pytest.raises(DBAPIError, match="not authorized"):
+            connection.exec_driver_sql(f"PRAGMA {pragma}={unsafe_value}")
+
+        expected = "wal" if pragma == "journal_mode" else 1
+        actual = connection.exec_driver_sql(f"PRAGMA {pragma}").scalar_one()
+        assert str(actual).casefold() == str(expected)
+
+
+def test_checkout_restores_poisoned_pragmas_and_authorizer(database: Database) -> None:
+    candidate_id, draft_id = _seed_candidate(database, "poisoned-checkout")
+    with database.sessions.begin() as db_session:
+        db_session.add(_confirmation("poisoned-checkout-token", candidate_id, draft_id))
+    raw = database.engine.raw_connection()
+    dbapi = raw.driver_connection
+    assert dbapi is not None
+    dbapi.set_authorizer(None)
+    dbapi.execute("PRAGMA foreign_keys=OFF")
+    dbapi.execute("PRAGMA recursive_triggers=OFF")
+    assert dbapi.execute("PRAGMA journal_mode=DELETE").fetchone()[0] == "delete"
+    raw.close()
+
+    with database.engine.connect() as connection:
+        assert connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one() == 1
+        assert connection.exec_driver_sql("PRAGMA recursive_triggers").scalar_one() == 1
+        assert connection.exec_driver_sql("PRAGMA journal_mode").scalar_one() == "wal"
+        with pytest.raises(DBAPIError, match="not authorized"):
+            connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+        with pytest.raises(DBAPIError, match="session id already exists"):
+            connection.exec_driver_sql(
+                "INSERT OR REPLACE INTO session "
+                "(id, created_at, label, purge_after, nav_budget, nav_used, "
+                "send_enabled) VALUES "
+                "('session-poisoned-checkout', 'now', 'replacement', 'later', "
+                "120, 0, 0)"
+            )
+        assert (
+            connection.exec_driver_sql(
+                "SELECT COUNT(*) FROM send_confirmation "
+                "WHERE token='poisoned-checkout-token'"
+            ).scalar_one()
+            == 1
+        )
 
 
 @pytest.mark.parametrize("kind", ["symlink", "hardlink", "fifo"])
@@ -322,6 +383,28 @@ def test_confirmation_consumption_is_one_way_and_exactly_once(
                 )
 
 
+def test_new_confirmation_cannot_start_consumed(database: Database) -> None:
+    candidate_id, draft_id = _seed_candidate(database, "confirmation-preconsumed")
+    with pytest.raises(DBAPIError, match="must start unconsumed"):
+        with database.engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO send_confirmation "
+                    "(token, candidate_id, draft_id, body_sha256, created_at, "
+                    "expires_at, consumed_at) VALUES "
+                    "('preconsumed-token', :candidate, :draft, :hash, :now, "
+                    ":later, :now)"
+                ),
+                {
+                    "candidate": candidate_id,
+                    "draft": draft_id,
+                    "hash": "a" * 64,
+                    "now": NOW,
+                    "later": LATER,
+                },
+            )
+
+
 @pytest.mark.parametrize("record", ["confirmation", "attempt"])
 @pytest.mark.parametrize("column", ["username", "profile_url", "profile_urn"])
 def test_recipient_identity_freezes_at_approval_and_through_completed_history(
@@ -381,6 +464,57 @@ def test_candidate_replace_cannot_retarget_approved_recipient_with_triggers_off(
             )
 
 
+@pytest.mark.parametrize("recursive_triggers", ["ON", "OFF"])
+@pytest.mark.parametrize("conflict", ["id", "username"])
+def test_candidate_update_replace_cannot_delete_approved_recipient(
+    database: Database, recursive_triggers: str, conflict: str
+) -> None:
+    candidate_id, draft_id = _seed_candidate(
+        database, f"candidate-update-{recursive_triggers}-{conflict}"
+    )
+    with database.sessions.begin() as db_session:
+        db_session.add(
+            _confirmation(f"candidate-update-{conflict}", candidate_id, draft_id)
+        )
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO candidate "
+                "(id, session_id, username, profile_url, first_seen_at, stage, "
+                "retrieval_status) VALUES "
+                "(:id, :session, :username, :url, :now, 'discovered', 'pending')"
+            ),
+            {
+                "id": f"candidate-victim-{conflict}",
+                "session": f"session-candidate-update-{recursive_triggers}-{conflict}",
+                "username": f"victim-{conflict}",
+                "url": f"https://www.linkedin.com/in/victim-{conflict}/",
+                "now": NOW,
+            },
+        )
+    path = database.path
+    database.dispose()
+
+    assignment = "id=?" if conflict == "id" else "username=?"
+    value = (
+        candidate_id
+        if conflict == "id"
+        else f"person-candidate-update-{recursive_triggers}-{conflict}"
+    )
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
+        with pytest.raises(sqlite3.IntegrityError, match="recipient identity"):
+            connection.execute(
+                f"UPDATE OR REPLACE candidate SET {assignment} WHERE id=?",
+                (value, f"candidate-victim-{conflict}"),
+            )
+        assert connection.execute(
+            "SELECT COUNT(*) FROM send_confirmation WHERE candidate_id=?",
+            (candidate_id,),
+        ).fetchone() == (1,)
+
+
 @pytest.mark.parametrize("operation", ["insert", "update", "delete"])
 def test_draft_claims_are_immutable_after_approval(
     database: Database, operation: str
@@ -437,6 +571,102 @@ def test_referenced_draft_replace_is_blocked_with_recursive_triggers_off(
                 "(?, ?, 1, 'Retargeted', ?, 10, 'manual', 'pass', '{}', ?)",
                 (draft_id, candidate_id, "b" * 64, NOW),
             )
+
+
+@pytest.mark.parametrize("recursive_triggers", ["ON", "OFF"])
+@pytest.mark.parametrize("conflict", ["id", "version"])
+def test_draft_update_replace_cannot_delete_referenced_draft(
+    database: Database, recursive_triggers: str, conflict: str
+) -> None:
+    suffix = f"draft-update-{recursive_triggers}-{conflict}"
+    candidate_id, draft_id = _seed_candidate(database, suffix)
+    with database.sessions.begin() as db_session:
+        db_session.add(
+            _confirmation(f"draft-update-{conflict}", candidate_id, draft_id)
+        )
+        db_session.add(
+            MessageDraft(
+                id=f"draft-victim-{conflict}",
+                candidate_id=candidate_id,
+                version=2,
+                body="Victim",
+                body_sha256="b" * 64,
+                char_count=6,
+                generator="manual",
+                grounding_status="pass",
+                grounding_report={},
+                created_at=NOW,
+            )
+        )
+    path = database.path
+    database.dispose()
+
+    assignment = "id=?" if conflict == "id" else "version=?"
+    value: str | int = draft_id if conflict == "id" else 1
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
+        with pytest.raises(
+            sqlite3.IntegrityError, match="message_draft already exists"
+        ):
+            connection.execute(
+                f"UPDATE OR REPLACE message_draft SET {assignment} WHERE id=?",
+                (value, f"draft-victim-{conflict}"),
+            )
+        assert connection.execute(
+            "SELECT COUNT(*) FROM send_confirmation WHERE draft_id=?", (draft_id,)
+        ).fetchone() == (1,)
+
+
+@pytest.mark.parametrize("recursive_triggers", ["ON", "OFF"])
+@pytest.mark.parametrize("operation", ["insert", "update"])
+def test_session_replace_cannot_delete_existing_history(
+    database: Database, recursive_triggers: str, operation: str
+) -> None:
+    candidate_id, draft_id = _seed_candidate(
+        database, f"session-replace-{recursive_triggers}-{operation}"
+    )
+    session_id = f"session-session-replace-{recursive_triggers}-{operation}"
+    with database.sessions.begin() as db_session:
+        db_session.add(
+            _confirmation(f"session-replace-{operation}", candidate_id, draft_id)
+        )
+        if operation == "update":
+            db_session.add(
+                DashboardSession(
+                    id="session-replace-victim",
+                    created_at=NOW,
+                    label="Victim",
+                    purge_after=LATER,
+                    nav_budget=120,
+                    nav_used=0,
+                    send_enabled=False,
+                )
+            )
+    path = database.path
+    database.dispose()
+
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
+        with pytest.raises(sqlite3.IntegrityError, match="session id already exists"):
+            if operation == "insert":
+                connection.execute(
+                    "INSERT OR REPLACE INTO session "
+                    "(id, created_at, label, purge_after, nav_budget, nav_used, "
+                    "send_enabled) VALUES (?, ?, 'Replacement', ?, 120, 0, 0)",
+                    (session_id, NOW, LATER),
+                )
+            else:
+                connection.execute(
+                    "UPDATE OR REPLACE session SET id=? "
+                    "WHERE id='session-replace-victim'",
+                    (session_id,),
+                )
+        assert connection.execute(
+            "SELECT COUNT(*) FROM send_confirmation WHERE candidate_id=?",
+            (candidate_id,),
+        ).fetchone() == (1,)
 
 
 def test_linked_evidence_is_immutable_after_approval(database: Database) -> None:
@@ -506,6 +736,155 @@ def test_linked_evidence_is_immutable_after_approval(database: Database) -> None
         with pytest.raises(DBAPIError, match="approved evidence is immutable"):
             with database.engine.begin() as connection:
                 connection.exec_driver_sql(statement)
+
+
+@pytest.mark.parametrize("approval_record", ["confirmation", "sent_attempt"])
+def test_approved_evidence_supports_only_one_way_raw_purge(
+    database: Database, approval_record: str
+) -> None:
+    suffix = f"raw-purge-{approval_record}"
+    candidate_id, draft_id = _seed_candidate(database, suffix)
+    raw_snippet = f"private profile snippet {approval_record}"
+    with database.engine.begin() as connection:
+        connection.exec_driver_sql(
+            "INSERT INTO role_brief "
+            "(id, session_id, version, created_at, job_description, target_titles, "
+            "location, industries, positive_keywords, negative_keywords, message_tone, "
+            "weights_version) VALUES "
+            f"('brief-{suffix}', 'session-{suffix}', 1, 'now', 'job', '[]', "
+            "'anywhere', '[]', '[]', '[]', 'plain', 'v1')"
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO parsed_field "
+            "(id, candidate_id, field_key, value, section_name, span_start, span_end, "
+            "snippet, origin, parser_version, created_at) VALUES "
+            f"('parsed-{suffix}', 'candidate-{suffix}', 'skill', "
+            f"'{raw_snippet}', 'experience', 0, 20, '{raw_snippet}', "
+            "'deterministic', 'v1', 'now')"
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO score "
+            "(id, candidate_id, brief_id, weights_version, stage, score, score_lower, "
+            "score_upper, confidence, confidence_band, computed_at, is_current) VALUES "
+            f"('score-{suffix}', 'candidate-{suffix}', 'brief-{suffix}', 'v1', "
+            "'provisional', 1, 1, 1, 1, 'high', 'now', 1)"
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO score_signal "
+            "(id, score_id, signal_id, weight, verdict, raw_subscore, contribution, "
+            "availability) VALUES "
+            f"('signal-{suffix}', 'score-{suffix}', 'skill', 1, 'matched', 1, 1, 1)"
+        )
+        connection.execute(
+            text(
+                "INSERT INTO evidence "
+                "(id, score_signal_id, parsed_field_id, section_name, span_start, "
+                "span_end, snippet, matcher, matched_term, polarity) VALUES "
+                "(:evidence, :signal, :parsed, 'experience', 0, 20, :snippet, "
+                "'exact', :snippet, 'supporting')"
+            ),
+            {
+                "evidence": f"evidence-{suffix}",
+                "signal": f"signal-{suffix}",
+                "parsed": f"parsed-{suffix}",
+                "snippet": raw_snippet,
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO draft_claim "
+                "(id, draft_id, claim_text, evidence_id, grounded) VALUES "
+                "(:claim, :draft, 'Grounded claim', :evidence, 1)"
+            ),
+            {
+                "claim": f"claim-{suffix}",
+                "draft": draft_id,
+                "evidence": f"evidence-{suffix}",
+            },
+        )
+        if approval_record == "confirmation":
+            connection.execute(
+                insert(SendConfirmation),
+                {
+                    "token": f"token-{suffix}",
+                    "candidate_id": candidate_id,
+                    "draft_id": draft_id,
+                    "body_sha256": "a" * 64,
+                    "created_at": NOW,
+                    "expires_at": LATER,
+                },
+            )
+        else:
+            connection.execute(
+                insert(SendAttempt),
+                {
+                    "id": f"attempt-{suffix}",
+                    "candidate_id": candidate_id,
+                    "draft_id": draft_id,
+                    "idempotency_key": f"attempt-{suffix}".ljust(64, "0"),
+                    "body_sha256": "a" * 64,
+                    "confirm_send": True,
+                    "state": "SENT",
+                    "started_at": NOW,
+                    "finished_at": LATER,
+                    "resolution": "unresolved",
+                },
+            )
+
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE evidence SET snippet=:sentinel, matched_term=:sentinel, "
+                "parsed_field_id=NULL, purged_at=:purged_at WHERE id=:evidence"
+            ),
+            {
+                "sentinel": v0009_integrity_completion.PURGED_EVIDENCE_SENTINEL,
+                "purged_at": LATER,
+                "evidence": f"evidence-{suffix}",
+            },
+        )
+        connection.execute(
+            text("DELETE FROM parsed_field WHERE id=:parsed"),
+            {"parsed": f"parsed-{suffix}"},
+        )
+
+    with database.engine.connect() as connection:
+        evidence_row = connection.execute(
+            text(
+                "SELECT snippet, matched_term, parsed_field_id, purged_at "
+                "FROM evidence WHERE id=:evidence"
+            ),
+            {"evidence": f"evidence-{suffix}"},
+        ).one()
+        claim_evidence = connection.execute(
+            text("SELECT evidence_id FROM draft_claim WHERE id=:claim"),
+            {"claim": f"claim-{suffix}"},
+        ).scalar_one()
+        stored_raw = connection.execute(
+            text(
+                "SELECT COUNT(*) FROM parsed_field "
+                "WHERE value LIKE :raw OR snippet LIKE :raw"
+            ),
+            {"raw": f"%{raw_snippet}%"},
+        ).scalar_one()
+
+    assert tuple(evidence_row) == (
+        v0009_integrity_completion.PURGED_EVIDENCE_SENTINEL,
+        v0009_integrity_completion.PURGED_EVIDENCE_SENTINEL,
+        None,
+        LATER,
+    )
+    assert claim_evidence == f"evidence-{suffix}"
+    assert stored_raw == 0
+
+    for statement in (
+        "UPDATE evidence SET purged_at=NULL WHERE id=:evidence",
+        "UPDATE evidence SET snippet='restored' WHERE id=:evidence",
+        "DELETE FROM evidence WHERE id=:evidence",
+    ):
+        with pytest.raises(DBAPIError, match=r"purged evidence|approved evidence"):
+            with database.engine.begin() as connection:
+                connection.execute(text(statement), {"evidence": f"evidence-{suffix}"})
 
 
 def test_full_session_purge_preserves_all_new_history_guards(
@@ -758,5 +1137,135 @@ def test_v0008_each_statement_is_atomic_and_retryable(
 
     assert _schema_objects(database.path) == baseline
     monkeypatch.setattr(v0008_history_hardening, "apply", original_apply)
+    database.initialize()
+    database.dispose()
+
+
+_V0009_TRIGGER_NAMES = (
+    "session_insert_id_collision",
+    "session_update_id_collision",
+    "candidate_update_send_reference_collision",
+    "referenced_message_draft_update_collision",
+    "send_confirmation_insert_unconsumed",
+    "evidence_purge_state_insert",
+    "evidence_purge_state_update",
+    "purged_evidence_is_immutable",
+    "approved_evidence_update",
+)
+
+
+def _prepare_pre_v0009_schema(database: Database, *, drop_column: bool) -> None:
+    with database.engine.begin() as connection:
+        connection.execute(
+            text("DELETE FROM schema_migration WHERE version=:version"),
+            {"version": v0009_integrity_completion.VERSION},
+        )
+        for trigger_name in _V0009_TRIGGER_NAMES:
+            connection.exec_driver_sql(f'DROP TRIGGER "{trigger_name}"')
+        approved_update = next(
+            statement
+            for statement in v0008_history_hardening.STATEMENTS
+            if "CREATE TRIGGER approved_evidence_update" in statement
+        )
+        connection.exec_driver_sql(approved_update)
+        if drop_column:
+            connection.exec_driver_sql("ALTER TABLE evidence DROP COLUMN purged_at")
+
+
+def test_v0009_upgrade_accepts_historical_consumed_confirmation(
+    tmp_path: Path,
+) -> None:
+    database = Database(tmp_path / "historical-consumed.db")
+    database.initialize()
+    candidate_id, draft_id = _seed_candidate(database, "historical-consumed")
+    with database.sessions.begin() as db_session:
+        db_session.add(
+            _confirmation("historical-consumed-token", candidate_id, draft_id)
+        )
+    with database.engine.begin() as connection:
+        connection.exec_driver_sql(
+            "UPDATE send_confirmation SET consumed_at='2026-09-02T12:00:00+00:00' "
+            "WHERE token='historical-consumed-token'"
+        )
+    _prepare_pre_v0009_schema(database, drop_column=True)
+    database.dispose()
+
+    upgraded = Database(database.path)
+    try:
+        upgraded.initialize()
+        with upgraded.engine.connect() as connection:
+            assert (
+                connection.exec_driver_sql(
+                    "SELECT consumed_at FROM send_confirmation "
+                    "WHERE token='historical-consumed-token'"
+                ).scalar_one()
+                == NOW
+            )
+            columns = {
+                row[1]
+                for row in connection.exec_driver_sql(
+                    "PRAGMA table_info(evidence)"
+                ).fetchall()
+            }
+            assert "purged_at" in columns
+    finally:
+        upgraded.dispose()
+
+
+@pytest.mark.parametrize(
+    "failure_after", range(1, len(v0009_integrity_completion.STATEMENTS) + 1)
+)
+def test_v0009_each_trigger_statement_is_atomic_and_retryable(
+    tmp_path: Path, monkeypatch, failure_after: int
+) -> None:
+    database = Database(tmp_path / f"interrupted-v9-{failure_after}.db")
+    database.initialize()
+    _prepare_pre_v0009_schema(database, drop_column=False)
+    baseline = _schema_objects(database.path)
+    database.dispose()
+    database = Database(database.path)
+    original_apply = v0009_integrity_completion.apply
+
+    def interrupted_apply(connection) -> None:
+        for index, statement in enumerate(
+            v0009_integrity_completion.STATEMENTS, start=1
+        ):
+            connection.exec_driver_sql(statement)
+            if index == failure_after:
+                raise RuntimeError(f"interrupted after v9 statement {index}")
+
+    monkeypatch.setattr(v0009_integrity_completion, "apply", interrupted_apply)
+    with pytest.raises(RuntimeError, match=f"v9 statement {failure_after}"):
+        database.initialize()
+
+    assert _schema_objects(database.path) == baseline
+    monkeypatch.setattr(v0009_integrity_completion, "apply", original_apply)
+    database.initialize()
+    database.dispose()
+
+
+def test_v0009_column_addition_is_atomic_and_retryable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    database = Database(tmp_path / "interrupted-v9-column.db")
+    database.initialize()
+    _prepare_pre_v0009_schema(database, drop_column=True)
+    database.dispose()
+    database = Database(database.path)
+    original_apply = v0009_integrity_completion.apply
+
+    def interrupted_apply(connection) -> None:
+        v0009_integrity_completion._ensure_purged_at_column(connection)
+        raise RuntimeError("interrupted after v9 column")
+
+    monkeypatch.setattr(v0009_integrity_completion, "apply", interrupted_apply)
+    with pytest.raises(RuntimeError, match="v9 column"):
+        database.initialize()
+    with sqlite3.connect(database.path) as connection:
+        assert "purged_at" not in {
+            row[1] for row in connection.execute("PRAGMA table_info(evidence)")
+        }
+
+    monkeypatch.setattr(v0009_integrity_completion, "apply", original_apply)
     database.initialize()
     database.dispose()
