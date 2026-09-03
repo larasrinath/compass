@@ -169,6 +169,17 @@ _LINKEDIN_RELATIVE_PATH = re.compile(
     r")$",
     re.IGNORECASE,
 )
+_LINKEDIN_RELATIVE_REFERENCE = re.compile(
+    r"(?<![a-z0-9])/(?:"
+    r"(?:in|company)/[^\s/?#]+/?|"
+    r"jobs/view/[0-9]+/?|"
+    r"feed/update/[^\s/?#]+/?|"
+    r"posts/[^\s/?#]+/?|"
+    r"messaging/(?:compose/?)?|"
+    r"search/(?:results/[^\s?#]*)?"
+    r")(?=$|[\s,;|])",
+    re.IGNORECASE,
+)
 _OPENAPI_ROUTE_KEY = re.compile(
     r"^/api(?:/[a-z0-9._~!$&'()*+,;=:@{}-]+)*$",
     re.IGNORECASE,
@@ -754,41 +765,120 @@ def _redact_string(
     return sanitized
 
 
-def _redact_provenance_text(value: str) -> str:
-    """Preserve benign technical claims while removing actual private material."""
+_PROVENANCE_MASK = "█"
 
-    def redact_unlabeled_text(text: str) -> str:
-        output: list[str] = []
-        cursor = 0
-        for match in _SAFE_PROVENANCE_PROSE.finditer(text):
-            output.append(_redact_string(text[cursor : match.start()]))
-            output.append(match.group(0))
-            cursor = match.end()
-        output.append(_redact_string(text[cursor:]))
-        return "".join(output)
 
-    output: list[str] = []
-    emit_cursor = 0
+def redact_provenance_text(value: str) -> tuple[str, tuple[tuple[int, int], ...]]:
+    """Mask private runs without changing Unicode code-point offsets.
+
+    The ranges are returned so an owned DTO can withhold any claim whose exact
+    evidence overlaps a mask.  The general response sanitizer remains
+    intentionally length-changing; this contract applies only to marked GET
+    provenance endpoints.
+    """
+    ranges: list[tuple[int, int]] = []
+    protected = tuple(
+        (match.start(), match.end())
+        for pattern in (_SAFE_PROVENANCE_PROSE, _LINKEDIN_RELATIVE_REFERENCE)
+        for match in pattern.finditer(value)
+    )
+
+    def add(start: int, end: int, *, force: bool = False) -> None:
+        if end <= start:
+            return
+        if force:
+            ranges.append((start, end))
+            return
+        fragments = [(start, end)]
+        for safe_start, safe_end in protected:
+            remaining: list[tuple[int, int]] = []
+            for fragment_start, fragment_end in fragments:
+                if safe_end <= fragment_start or safe_start >= fragment_end:
+                    remaining.append((fragment_start, fragment_end))
+                    continue
+                if fragment_start < safe_start:
+                    remaining.append((fragment_start, safe_start))
+                if safe_end < fragment_end:
+                    remaining.append((safe_end, fragment_end))
+            fragments = remaining
+        ranges.extend(fragments)
+
     search_cursor = 0
     while match := _EMBEDDED_LABELED_VALUE.search(value, search_cursor):
         label_name = match.group("quoted_name") or match.group("bare_name")
         value_start = match.end()
-        if not _embedded_label_is_sensitive(label_name) or (
+        if _embedded_label_is_sensitive(label_name) and not (
             _provenance_label_starts_benign_phrase(label_name, value, value_start)
         ):
+            value_end = _provenance_labeled_value_end(value, value_start)
+            add(value_start, value_end, force=True)
+            search_cursor = value_end
+        else:
             search_cursor = match.end()
-            continue
 
-        value_end = _provenance_labeled_value_end(value, value_start)
-        output.append(redact_unlabeled_text(value[emit_cursor : match.start()]))
-        output.extend((match.group("label"), "[redacted]"))
-        emit_cursor = value_end
-        search_cursor = value_end
+    for pattern in (
+        _QUOTED_FILESYSTEM_PATH,
+        _FILE_URL,
+        _FILESYSTEM_PATH_WITH_SPACES,
+        _WINDOWS_PATH,
+        _UNIX_PATH,
+    ):
+        for match in pattern.finditer(value):
+            end = match.end()
+            while end > match.start() and value[end - 1] in ",;|":
+                end -= 1
+            if pattern is _FILESYSTEM_PATH_WITH_SPACES and any(
+                match.start() < safe_end and safe_start < end
+                for safe_start, safe_end in protected
+            ):
+                # The spaces pattern is deliberately broad and can span two
+                # ordinary LinkedIn references plus the prose between them.
+                # Narrow path matchers below still inspect every unsafe token.
+                continue
+            run = value[match.start() : end]
+            if pattern in {_FILESYSTEM_PATH_WITH_SPACES, _UNIX_PATH} and bool(
+                _LINKEDIN_RELATIVE_PATH.fullmatch(run)
+            ):
+                continue
+            add(match.start(), end)
+    for token in (str(Path.home()), ".linkedin-mcp"):
+        start = 0
+        while (found := value.find(token, start)) >= 0:
+            add(found, found + len(token))
+            start = found + len(token)
+    for match in _NETWORK_URL.finditer(value):
+        if _redact_string(match.group(0)) != match.group(0):
+            add(match.start(), match.end())
+    # Embedded labeled values above own their exact structural boundary.  This
+    # final pass catches only an otherwise-unlabelled Bearer credential.
+    for pattern in (_BEARER_SECRET,):
+        for match in pattern.finditer(value):
+            if re.match(
+                r"Bearer (?:tokens?\b|token validation\b)",
+                match.group(0),
+                re.IGNORECASE,
+            ):
+                continue
+            add(
+                match.start("label") + len(match.group("label")),
+                match.end(),
+                force=True,
+            )
 
-    if not output:
-        return redact_unlabeled_text(value)
-    output.append(redact_unlabeled_text(value[emit_cursor:]))
-    return "".join(output)
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(ranges):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    characters = list(value)
+    for start, end in merged:
+        characters[start:end] = [_PROVENANCE_MASK] * (end - start)
+    return "".join(characters), tuple(merged)
+
+
+def _redact_provenance_text(value: str) -> str:
+    return redact_provenance_text(value)[0]
 
 
 def _provenance_label_starts_benign_phrase(
@@ -960,7 +1050,8 @@ def _is_provenance_text_location(location: tuple[str, ...]) -> bool:
         return True
     if container == "evidence" and leaf in _PROVENANCE_TEXT_FIELDS:
         return True
-    return container in {"parsed_field", "parsed_fields"} and leaf in {
+    provenance_containers = {"parsed_field", "parsed_fields", "fields", "spans"}
+    return container in provenance_containers and leaf in {
         "text",
         "value",
         *_PROVENANCE_TEXT_FIELDS,

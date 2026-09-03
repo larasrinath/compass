@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  enrichCandidate,
   getCompanyLookup,
   getSearch,
   listCandidates,
@@ -21,14 +22,17 @@ const NETWORKS = [
 export function SearchPage({
   session,
   brief,
+  onCandidateOpen,
   queue,
 }: {
   session: SessionRecord
   brief: BriefRecord | null | undefined
+  onCandidateOpen: (candidateId: string) => void
   queue: ReturnTypeOfJobEvents
 }) {
   const client = useQueryClient()
   const errorRef = useRef<HTMLDivElement>(null)
+  const enrichmentErrorRef = useRef<HTMLDivElement>(null)
   const [keywords, setKeywords] = useState(() =>
     brief
       ? [
@@ -89,6 +93,15 @@ export function SearchPage({
     mutationFn: () => startCompanyLookup(session.id, companySlug),
     onSuccess: (result) => setLookupId(result.lookup_id),
     onError: () => requestAnimationFrame(() => errorRef.current?.focus()),
+  })
+  const enrich = useMutation({
+    mutationFn: (candidateId: string) =>
+      enrichCandidate(candidateId, ['experience']),
+    onSuccess: async () => {
+      await client.invalidateQueries({ queryKey: ['candidates', session.id] })
+    },
+    onError: () =>
+      requestAnimationFrame(() => enrichmentErrorRef.current?.focus()),
   })
 
   function queuePosition(jobId: string): string | null {
@@ -372,15 +385,69 @@ export function SearchPage({
           </div>
           <span>Neutral first-seen order</span>
         </div>
+        {enrich.isError ? (
+          <div
+            className="form-error"
+            ref={enrichmentErrorRef}
+            role="alert"
+            tabIndex={-1}
+          >
+            <strong>Profile retrieval was not queued.</strong>
+            <span>{enrich.error.message}</span>
+          </div>
+        ) : null}
         {candidates.data?.length ? (
           <div className="candidate-grid">
             {candidates.data.map((candidate) => (
               <article className="candidate-card" key={candidate.id}>
                 <div>
-                  <span className="status-label discovered">Discovered</span>
+                  <span className={`status-label ${candidate.stage}`}>
+                    {candidate.stage === 'discovered' ? 'Discovered' : candidate.stage}
+                  </span>
                   <h3>{candidate.display_name || candidate.username}</h3>
-                  <p>Profile not retrieved · found in {candidate.source_count} searches</p>
+                  <p>
+                    {candidate.active_job_id
+                      ? 'Profile retrieval queued'
+                      : candidate.retrieval_status === 'failed'
+                        ? 'Profile retrieval failed'
+                        : candidate.stage === 'discovered'
+                          ? 'Profile not retrieved'
+                      : `Profile ${candidate.retrieval_status}`}{' '}
+                    · found in {candidate.source_count} searches
+                  </p>
                 </div>
+                {candidate.active_job_id ? (
+                  <button className="primary-action" disabled type="button">
+                    Retrieval queued
+                  </button>
+                ) : candidate.retrieval_status === 'failed' ? (
+                  <button
+                    className="quiet-action"
+                    onClick={() => onCandidateOpen(candidate.id)}
+                    type="button"
+                  >
+                    Review retrieval failure
+                  </button>
+                ) : candidate.stage === 'discovered' ? (
+                  <button
+                    className="primary-action"
+                    disabled={
+                      enrich.isPending && enrich.variables === candidate.id
+                    }
+                    onClick={() => enrich.mutate(candidate.id)}
+                    type="button"
+                  >
+                    Retrieve main profile + experience
+                  </button>
+                ) : (
+                  <button
+                    className="quiet-action"
+                    onClick={() => onCandidateOpen(candidate.id)}
+                    type="button"
+                  >
+                    Review retrieved details
+                  </button>
+                )}
                 <a
                   href={candidate.profile_url}
                   rel="noopener noreferrer"

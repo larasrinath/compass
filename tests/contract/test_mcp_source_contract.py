@@ -37,6 +37,25 @@ def _nested_async_signature(path: Path, function_name: str) -> list[str]:
     raise AssertionError(f"{function_name} was not found in {path}")
 
 
+def _dict_literal_keys(path: Path, variable_name: str) -> tuple[str, ...]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if not isinstance(node, ast.AnnAssign):
+            continue
+        target = node.target
+        if (
+            isinstance(target, ast.Name)
+            and target.id == variable_name
+            and isinstance(node.value, ast.Dict)
+        ):
+            return tuple(
+                key.value
+                for key in node.value.keys
+                if isinstance(key, ast.Constant) and isinstance(key.value, str)
+            )
+    raise AssertionError(f"{variable_name} was not found in {path}")
+
+
 def test_read_only_tool_signatures_match_sibling_source_without_importing_it() -> None:
     checkout = _server_checkout()
     person = checkout / "linkedin_mcp_server" / "tools" / "person.py"
@@ -86,6 +105,16 @@ def test_runtime_never_imports_or_supervises_the_sibling_server() -> None:
     assert "from linkedin_mcp_server" not in source
     assert "subprocess" not in source
     assert "create_subprocess" not in source
+
+
+def test_profile_section_order_matches_sibling_source() -> None:
+    fields = _server_checkout() / "linkedin_mcp_server" / "scraping" / "fields.py"
+    if not fields.is_file():
+        pytest.skip("sibling linkedin-mcp-server checkout is absent")
+
+    from linkedin_dashboard.services.enrichment import PERSON_SECTIONS
+
+    assert PERSON_SECTIONS == _dict_literal_keys(fields, "PERSON_SECTIONS")
 
 
 def test_person_identifier_normalizer_matches_pinned_sibling_contract() -> None:

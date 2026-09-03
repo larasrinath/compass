@@ -37,6 +37,10 @@ from linkedin_dashboard.db.migrations import (
     v0016_durable_queue,
     v0017_role_discovery,
     v0018_candidate_identity,
+    v0019_profile_enrichment,
+    v0020_m3_integrity_corrections,
+    v0021_m3_final_integrity,
+    v0022_terminal_projection_authority,
 )
 from linkedin_dashboard.db.models import Base
 from linkedin_dashboard.db.unicode_identity import (
@@ -64,6 +68,10 @@ _MIGRATION_MODULES = (
     v0016_durable_queue,
     v0017_role_discovery,
     v0018_candidate_identity,
+    v0019_profile_enrichment,
+    v0020_m3_integrity_corrections,
+    v0021_m3_final_integrity,
+    v0022_terminal_projection_authority,
 )
 
 _SCHEMA_ACTIONS = {

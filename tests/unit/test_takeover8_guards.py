@@ -734,18 +734,18 @@ def test_provenance_requires_explicit_handler_marker_and_still_redacts_secrets(
         },
     }
 
-    @app.get("/api/candidates/owned/sections/main_profile")
+    @app.get("/api/test/owned-provenance")
     @preserve_provenance_text
     def owned_json() -> JSONResponse:
         return JSONResponse(payload)
 
-    @app.get("/api/candidates/spoof/sections/main_profile")
+    @app.get("/api/test/spoof-provenance")
     def spoof_json() -> JSONResponse:
         return JSONResponse(payload)
 
     event = ("data: " + json.dumps(payload) + "\n\n").encode()
 
-    @app.get("/api/candidates/owned-sse/sections/main_profile")
+    @app.get("/api/test/owned-provenance-sse")
     @preserve_provenance_text
     def owned_sse() -> StreamingResponse:
         return StreamingResponse(
@@ -753,9 +753,9 @@ def test_provenance_requires_explicit_handler_marker_and_still_redacts_secrets(
         )
 
     with TestClient(app, base_url="http://127.0.0.1") as client:
-        owned = client.get("/api/candidates/owned/sections/main_profile")
-        spoof = client.get("/api/candidates/spoof/sections/main_profile")
-        stream = client.get("/api/candidates/owned-sse/sections/main_profile")
+        owned = client.get("/api/test/owned-provenance")
+        spoof = client.get("/api/test/spoof-provenance")
+        stream = client.get("/api/test/owned-provenance-sse")
 
     owned_payload = owned.json()
     assert owned_payload["raw_text"] == prose
@@ -814,20 +814,21 @@ def test_provenance_redacts_sensitive_labels_before_benign_allowlist(
         "user=alice credential=Key: Kubernetes region=us\n"
         "prefix cookie_path=/api/v1, suffix=visible"
     )
+    mask = lambda value: "█" * len(value)  # noqa: E731 - expected shape helper
     expected = (
         "/api/v1\n"
         "see Bearer token validation docs\n"
         "Key: Kubernetes secrets store\n"
-        "cookie_path=[redacted]\n"
-        "api_key=[redacted]\n"
-        "authorization=[redacted]\n"
-        "credential=[redacted]\n"
-        "source_profile_dir=[redacted]\n"
-        "user=alice credential=[redacted] region=us\n"
-        "prefix cookie_path=[redacted], suffix=visible"
+        f"cookie_path={mask('/api/v1')}\n"
+        f"api_key={mask('Bearer tokens')}\n"
+        f"authorization={mask('Bearer token validation')}\n"
+        f"credential={mask('Key: Kubernetes')}\n"
+        f"source_profile_dir={mask('/health')}\n"
+        f"user=alice credential={mask('Key: Kubernetes')} region=us\n"
+        f"prefix cookie_path={mask('/api/v1')}, suffix=visible"
     )
 
-    @app.get("/api/candidates/label-first/sections/main_profile")
+    @app.get("/api/test/label-first-provenance")
     @preserve_provenance_text
     def marked_json() -> JSONResponse:
         return JSONResponse({"sections": {"main_profile": source}})
@@ -836,7 +837,7 @@ def test_provenance_redacts_sensitive_labels_before_benign_allowlist(
         "data: " + json.dumps({"sections": {"main_profile": source}}) + "\n\n"
     ).encode()
 
-    @app.get("/api/candidates/label-first-sse/sections/main_profile")
+    @app.get("/api/test/label-first-provenance-sse")
     @preserve_provenance_text
     def marked_sse() -> StreamingResponse:
         return StreamingResponse(
@@ -844,10 +845,8 @@ def test_provenance_redacts_sensitive_labels_before_benign_allowlist(
         )
 
     with TestClient(app, base_url="http://127.0.0.1") as client:
-        json_response = client.get("/api/candidates/label-first/sections/main_profile")
-        sse_response = client.get(
-            "/api/candidates/label-first-sse/sections/main_profile"
-        )
+        json_response = client.get("/api/test/label-first-provenance")
+        sse_response = client.get("/api/test/label-first-provenance-sse")
 
     sse_payload = json.loads(
         "\n".join(

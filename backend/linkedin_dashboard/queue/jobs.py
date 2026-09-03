@@ -45,7 +45,7 @@ class PersonProfilePayload(_StrictPayload):
     kind: Literal[JobKind.GET_PERSON_PROFILE] = JobKind.GET_PERSON_PROFILE
     linkedin_username: str = Field(min_length=1, max_length=200)
     sections: list[str] = Field(min_length=1, max_length=32)
-    max_scrolls: int | None = Field(default=None, ge=0, le=100)
+    max_scrolls: int | None = Field(default=None, ge=1, le=50)
     parent_job_id: str | None = Field(default=None, max_length=36)
 
     @field_validator("sections")
@@ -109,8 +109,9 @@ def navigation_cost(payload: JobPayload) -> int:
     if isinstance(payload, ListToolsPayload):
         return 0
     if isinstance(payload, PersonProfilePayload):
-        # A continuation consumes the remainder of the original reservation.
-        return 0 if payload.parent_job_id is not None else len(payload.sections)
+        # main_profile is an unavoidable navigation in every external call,
+        # including a missing-section continuation.
+        return 1 + sum(section != "main_profile" for section in payload.sections)
     if isinstance(payload, CompanyProfilePayload):
         return len(payload.sections) if payload.sections is not None else 1
     return 1
@@ -147,7 +148,13 @@ def missing_profile_sections(
     # The extractor aborts in requested order at the first rate-limit marker.
     # An attempted empty section may be absent from both result maps, so
     # requested-minus-returned would replay work that was already attempted.
-    for index, name in enumerate(payload.sections):
+    # main_profile is implicit but first in the upstream declaration order. If
+    # it rate-limits, every explicit section remains missing.
+    explicit_sections = [
+        section for section in payload.sections if section != "main_profile"
+    ]
+    effective_sections = ["main_profile", *explicit_sections]
+    for index, name in enumerate(effective_sections):
         error = errors.get(name)
         if (
             isinstance(error, dict)
@@ -155,7 +162,30 @@ def missing_profile_sections(
         ):
             return [
                 section
-                for section in payload.sections[index:]
+                for section in effective_sections[index:]
                 if section != "main_profile"
             ]
     return []
+
+
+def unattempted_profile_navigation_count(
+    payload: JobPayload, result_payload: dict[str, Any]
+) -> int:
+    """Count reserved suffix sections skipped after the rate-limit sentinel."""
+    if not isinstance(payload, PersonProfilePayload):
+        return 0
+    errors = result_payload.get("section_errors")
+    if not isinstance(errors, dict):
+        return 0
+    effective = [
+        "main_profile",
+        *(section for section in payload.sections if section != "main_profile"),
+    ]
+    for index, name in enumerate(effective):
+        error = errors.get(name)
+        if (
+            isinstance(error, dict)
+            and str(error.get("error_type", "")).casefold() == "rate_limit"
+        ):
+            return len(effective) - index - 1
+    return 0

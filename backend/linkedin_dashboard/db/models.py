@@ -194,6 +194,10 @@ class Candidate(Base):
             "retrieval_status IN ('pending','ok','partial','rate_limited','failed')",
             name="ck_candidate_retrieval_status",
         ),
+        CheckConstraint(
+            "profile_urn_quarantined IN (0, 1)",
+            name="ck_candidate_profile_urn_quarantined",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -204,6 +208,10 @@ class Candidate(Base):
     profile_url: Mapped[str] = mapped_column(Text, nullable=False)
     display_name: Mapped[str | None] = mapped_column(Text)
     profile_urn: Mapped[str | None] = mapped_column(Text)
+    profile_urn_quarantined: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
+    profile_contract_error: Mapped[str | None] = mapped_column(Text)
     first_seen_at: Mapped[str] = mapped_column(String(32), nullable=False)
     stage: Mapped[str] = mapped_column(String(16), nullable=False)
     retrieval_status: Mapped[str] = mapped_column(String(16), nullable=False)
@@ -304,6 +312,7 @@ class JobAttempt(Base):
     worker_token: Mapped[str] = mapped_column(String(36), nullable=False)
     started_at: Mapped[str] = mapped_column(String(32), nullable=False)
     response_received_at: Mapped[str | None] = mapped_column(String(32))
+    external_call_started_at: Mapped[str | None] = mapped_column(String(32))
     finished_at: Mapped[str | None] = mapped_column(String(32))
     outcome: Mapped[str] = mapped_column(String(16), nullable=False)
     raw_response: Mapped[dict[str, Any] | None] = mapped_column(JSON)
@@ -343,12 +352,57 @@ class QueueControl(Base):
     updated_at: Mapped[str] = mapped_column(String(32), nullable=False)
 
 
+class NavigationReservation(Base):
+    __tablename__ = "navigation_reservation"
+    __table_args__ = (
+        CheckConstraint("cost > 0", name="ck_navigation_reservation_cost"),
+        CheckConstraint(
+            "refunded_navigations BETWEEN 0 AND cost",
+            name="ck_navigation_reservation_refund",
+        ),
+        CheckConstraint(
+            "state IN ('reserved','charged','released')",
+            name="ck_navigation_reservation_state",
+        ),
+    )
+
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("job.id", ondelete="CASCADE"), primary_key=True
+    )
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("session.id", ondelete="CASCADE"), nullable=False
+    )
+    cost: Mapped[int] = mapped_column(Integer, nullable=False)
+    refunded_navigations: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    reserved_at: Mapped[str] = mapped_column(String(32), nullable=False)
+    charged_at: Mapped[str | None] = mapped_column(String(32))
+    released_at: Mapped[str | None] = mapped_column(String(32))
+
+
 class ProfileFetch(Base):
     __tablename__ = "profile_fetch"
     __table_args__ = (
+        UniqueConstraint("job_id", name="uq_profile_fetch_job"),
         CheckConstraint(
-            "outcome IN ('ok','partial','rate_limited','error')",
+            "outcome IS NULL OR outcome IN ('ok','partial','rate_limited','error')",
             name="ck_profile_fetch_outcome",
+        ),
+        CheckConstraint(
+            "request_stage IN ('stage1','stage2','resume')",
+            name="ck_profile_fetch_request_stage",
+        ),
+        CheckConstraint(
+            "(request_stage = 'resume' AND parent_fetch_id IS NOT NULL) OR "
+            "(request_stage IN ('stage1','stage2') AND parent_fetch_id IS NULL)",
+            name="ck_profile_fetch_parent_stage",
+        ),
+        CheckConstraint(
+            "(projection_payload IS NULL AND projection_source IS NULL) OR "
+            "(raw_response IS NOT NULL AND raw_response <> 'null')",
+            name="ck_profile_fetch_projection_requires_raw",
         ),
     )
 
@@ -365,9 +419,43 @@ class ProfileFetch(Base):
     started_at: Mapped[str] = mapped_column(String(32), nullable=False)
     finished_at: Mapped[str | None] = mapped_column(String(32))
     duration_ms: Mapped[int | None] = mapped_column(Integer)
-    outcome: Mapped[str] = mapped_column(String(16), nullable=False)
+    outcome: Mapped[str | None] = mapped_column(String(16))
     raw_response: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    projection_payload: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    projection_source: Mapped[str | None] = mapped_column(String(32))
+    contract_error: Mapped[str | None] = mapped_column(Text)
     returned_url: Mapped[str | None] = mapped_column(Text)
+    processed_at: Mapped[str | None] = mapped_column(String(32))
+    request_stage: Mapped[str] = mapped_column(String(16), nullable=False)
+    parent_fetch_id: Mapped[str | None] = mapped_column(
+        ForeignKey("profile_fetch.id", ondelete="CASCADE")
+    )
+    root_fetch_id: Mapped[str] = mapped_column(
+        ForeignKey("profile_fetch.id", ondelete="CASCADE"), nullable=False
+    )
+
+
+class ProfileIdentityObservation(Base):
+    __tablename__ = "profile_identity_observation"
+    __table_args__ = (
+        CheckConstraint(
+            "verdict IN ('accepted','same','missing','conflict','url_mismatch')",
+            name="ck_profile_identity_observation_verdict",
+        ),
+        UniqueConstraint("fetch_id", name="uq_profile_identity_observation_fetch"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("candidate.id", ondelete="CASCADE"), nullable=False
+    )
+    fetch_id: Mapped[str] = mapped_column(
+        ForeignKey("profile_fetch.id", ondelete="CASCADE"), nullable=False
+    )
+    returned_url: Mapped[str | None] = mapped_column(Text)
+    observed_urn: Mapped[str | None] = mapped_column(Text)
+    verdict: Mapped[str] = mapped_column(String(32), nullable=False)
+    observed_at: Mapped[str] = mapped_column(String(32), nullable=False)
 
 
 class ProfileSection(Base):
@@ -408,6 +496,7 @@ class SectionError(Base):
     error_type: Mapped[str] = mapped_column(String(64), nullable=False)
     error_message: Mapped[str] = mapped_column(Text, nullable=False)
     extra: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    source_item: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
 
 class SectionReference(Base):
@@ -423,6 +512,10 @@ class SectionReference(Base):
     text: Mapped[str | None] = mapped_column(Text)
     context: Mapped[str | None] = mapped_column(Text)
     value: Mapped[str | None] = mapped_column(Text)
+    fetch_id: Mapped[str | None] = mapped_column(
+        ForeignKey("profile_fetch.id", ondelete="CASCADE")
+    )
+    source_position: Mapped[int | None] = mapped_column(Integer)
 
 
 class ParsedField(Base):
@@ -447,6 +540,12 @@ class ParsedField(Base):
     origin: Mapped[str] = mapped_column(String(32), nullable=False)
     parser_version: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[str] = mapped_column(String(32), nullable=False)
+    # Added as a nullable upgrade column so an old, manually-populated M2
+    # database can still open.  A database trigger requires it for every new
+    # field, and the M3 service never constructs a field without this lineage.
+    profile_section_id: Mapped[str | None] = mapped_column(
+        ForeignKey("profile_section.id", ondelete="CASCADE")
+    )
 
 
 class CandidateScore(Base):

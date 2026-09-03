@@ -38,6 +38,48 @@ errors, and the serialized queue through SSE. Company URN lookup is also a
 queued read. Discovery does not retrieve profiles, rank candidates, or expose
 shortlist, drafting, or message controls.
 
+M3 adds operator-triggered, staged profile enrichment. Stage 1 retrieves the
+implicit main profile and experience; Stage 2 accepts at most three additional
+sections in the MCP server's canonical order. Every call remains a durable,
+read-only queue job. Its complete committed tool response is stored before any
+section, reference, error, or parsed field is projected. A rate-limited result
+is never replayed: the operator may explicitly resume only the missing suffix,
+with the parent and continuation fetches linked in immutable history. Unknown
+sections fail loudly and are not retried.
+Admission reserves each job's complete navigation cost in the same transaction
+as the job and fetch history; batch admission is all-or-nothing. Claiming moves
+that reservation into `nav_used`. An interrupted delay refunds it only when the
+durable attempt phase proves the executor was never entered; once entered, the
+charge is retained conservatively even if no response arrives.
+
+The six local parsers cover main profile, experience, skills, education,
+projects, and certifications. Parsed values are exact substrings of an
+immutable raw section and carry zero-based, half-open Unicode code-point spans
+plus the exact section-history identifier. `NullProvider` is the only LLM
+provider through M5; proposed spans from any future provider must pass exact
+substring verification before becoming evidence. The candidate detail view
+shows parsed fields beside the source sections and highlights verified spans.
+For provenance responses, sensitive diagnostic runs are replaced by one BMP
+mask character per original code point so preceding offsets remain stable. If
+redaction overlaps evidence, the API withholds the value and offsets and the UI
+shows a neutral “Provenance withheld” state. The frontend slices spans with
+`Array.from`, preserving astral-character alignment, and renders source text
+only as React text nodes.
+
+Profile URNs are write-once routing hints, never scoring inputs. An exact,
+fetch-bound immutable observation must be committed before the compare-and-set
+that accepts the first non-null URN. Routing requires that accepted observation
+and no divergent observation; the column alone never authorizes routing. A
+later conflict or independently verified returned-profile URL
+mismatch permanently quarantines routing while preserving an immutable
+observation and audit record. Database attestations bind every projected
+section, error, reference, and parsed span to the exact committed MCP envelope.
+The eight-profile parser corpus under `tests/fixtures/profile_parsing` is
+explicitly synthetic representative data. It provides a 16-field regression
+denominator, not real-profile acceptance evidence; the ≥90% title/company
+metric on a consented non-private recorded corpus remains a manual acceptance
+blocker.
+
 ## Prerequisites
 
 - Python 3.12.4–3.14 and [uv](https://docs.astral.sh/uv/)

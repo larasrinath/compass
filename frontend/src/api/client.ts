@@ -201,10 +201,14 @@ export interface CandidateRecord {
   username: string
   profile_url: string
   display_name: string | null
-  stage: 'discovered'
+  stage: 'discovered' | 'stage1' | 'stage2'
   retrieval_status: string
   profile_urn: string | null
   profile_urn_is_scored: false
+  profile_urn_quarantined: boolean
+  profile_urn_routing_allowed: boolean
+  profile_contract_error: string | null
+  active_job_id: string | null
   source_count: number
   sources: CandidateSource[]
 }
@@ -216,6 +220,80 @@ export interface CompanyLookup {
   status: string
   candidates: Array<{ urn_id: string; text: string }>
   note: string | null
+}
+
+export interface ParsedFieldRecord {
+  id: string
+  field_key: string
+  value: string | null
+  section_name: string
+  profile_section_id: string
+  span_start: number | null
+  span_end: number | null
+  snippet: string | null
+  origin: 'deterministic' | 'llm_verified'
+  provenance_available: boolean
+  provenance_label: string
+}
+
+export interface CandidateDetail {
+  id: string
+  username: string
+  profile_url: string
+  display_name: string | null
+  profile_urn: string | null
+  profile_urn_is_scored: false
+  profile_urn_quarantined: boolean
+  profile_urn_routing_allowed: boolean
+  profile_contract_error: string | null
+  stage: CandidateRecord['stage']
+  retrieval_status: string
+  active_job_id: string | null
+  available_sections: Record<
+    string,
+    {
+      profile_section_id: string
+      retrieved_at: string
+      char_len: number
+      field_count: number
+    }
+  >
+  fields: ParsedFieldRecord[]
+  fetches: Array<{
+    id: string
+    job_id: string
+    requested_sections: string[]
+    started_at: string
+    finished_at: string | null
+    outcome: string | null
+    contract_error: string | null
+  }>
+  errors: Array<{
+    section_name: string
+    error_type: string
+    error_message: string
+    extra: Record<string, unknown>
+  }>
+}
+
+export interface CandidateSection {
+  candidate_id: string
+  section_name: string
+  profile_section_id: string
+  raw_text: string
+  span_unit: 'unicode_code_point'
+  spans: Array<{
+    id: string
+    field_key: string
+    profile_section_id: string
+    span_start: number | null
+    span_end: number | null
+    value: string | null
+    snippet: string | null
+    verbatim: string | null
+    provenance_available: boolean
+    provenance_label: string
+  }>
 }
 
 export const getSession = () => requestJson<SessionRecord | null>('/api/session')
@@ -254,6 +332,31 @@ export const runSearch = (input: SearchInput) =>
 export const listCandidates = (sessionId: string) =>
   requestJson<CandidateRecord[]>(
     `/api/candidates?session_id=${encodeURIComponent(sessionId)}`,
+  )
+
+export const getCandidate = (candidateId: string) =>
+  requestJson<CandidateDetail>(
+    `/api/candidates/${encodeURIComponent(candidateId)}`,
+  )
+
+export const getProfileSections = () =>
+  requestJson<string[]>('/api/profile-sections')
+
+export const enrichCandidate = (candidateId: string, sections: string[]) =>
+  requestJson<{ job_id: string; estimated_navigations: number }>(
+    `/api/candidates/${encodeURIComponent(candidateId)}/enrich`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ sections }),
+    },
+  )
+
+export const getCandidateSection = (
+  candidateId: string,
+  sectionName: string,
+) =>
+  requestJson<CandidateSection>(
+    `/api/candidates/${encodeURIComponent(candidateId)}/sections/${encodeURIComponent(sectionName)}`,
   )
 
 export const startCompanyLookup = (sessionId: string, slug: string) =>

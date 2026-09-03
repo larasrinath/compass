@@ -13,6 +13,7 @@ from linkedin_dashboard.db.models import (
     Job,
     JobAttempt,
     MessageDraft,
+    NavigationReservation,
     QueueControl,
     SendAttempt,
 )
@@ -365,13 +366,9 @@ async def test_budget_is_reserved_once_and_exhaustion_makes_no_call(tmp_path) ->
         first = await queue.enqueue(
             session_id, JobKind.SEARCH_PEOPLE, {"keywords": "within"}
         )
-        second = await queue.enqueue(
-            session_id, JobKind.SEARCH_PEOPLE, {"keywords": "over"}
-        )
+        with pytest.raises(RuntimeError, match="navigation budget shortfall"):
+            await queue.enqueue(session_id, JobKind.SEARCH_PEOPLE, {"keywords": "over"})
         assert (await queue.wait_for_terminal(first)).state == "done"
-        rejected = await queue.wait_for_terminal(second)
-        assert rejected.state == "failed"
-        assert rejected.error == "BUDGET_EXHAUSTED"
         assert len(executor.calls) == 1
         with database.sessions() as session:
             dashboard_session = session.get(DashboardSession, session_id)
@@ -379,6 +376,42 @@ async def test_budget_is_reserved_once_and_exhaustion_makes_no_call(tmp_path) ->
     finally:
         await queue.stop()
         database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_before_executor_entry_refunds_charged_navigation(
+    tmp_path,
+) -> None:
+    database = new_database(tmp_path / "pre-executor-shutdown.db")
+    executor = RecordingExecutor()
+    queue = DurableJobQueue(database, executor, inter_call_delay_seconds=60)
+    await queue.start()
+    session_id = add_session(database)
+    with database.sessions.begin() as session:
+        control = session.get(QueueControl, 1)
+        assert control is not None
+        control.last_mcp_finished_at = datetime.now(UTC).isoformat()
+    job_id = await queue.enqueue(
+        session_id, JobKind.SEARCH_PEOPLE, {"keywords": "reserved"}
+    )
+    for _ in range(100):
+        with database.sessions() as session:
+            job = session.get(Job, job_id)
+            if job is not None and job.state == "running":
+                break
+        await asyncio.sleep(0.01)
+    else:
+        raise AssertionError("job was not claimed")
+    await queue.stop()
+    with database.sessions() as session:
+        dashboard_session = session.get(DashboardSession, session_id)
+        reservation = session.get(NavigationReservation, job_id)
+        attempt = session.scalar(select(JobAttempt).where(JobAttempt.job_id == job_id))
+        assert dashboard_session is not None and dashboard_session.nav_used == 0
+        assert reservation is not None and reservation.state == "released"
+        assert attempt is not None and attempt.external_call_started_at is None
+    assert executor.calls == []
+    database.dispose()
 
 
 @pytest.mark.asyncio
@@ -960,6 +993,10 @@ async def test_shutdown_is_bounded_when_executor_suppresses_cancellation(
     with database.sessions() as session:
         job = session.get(Job, job_id)
         assert job is not None and job.state == "interrupted"
+        dashboard_session = session.get(DashboardSession, session_id)
+        attempt = session.scalar(select(JobAttempt).where(JobAttempt.job_id == job_id))
+        assert dashboard_session is not None and dashboard_session.nav_used == 1
+        assert attempt is not None and attempt.external_call_started_at is not None
     standby = DurableJobQueue(database, RecordingExecutor(), inter_call_delay_seconds=0)
     with pytest.raises(BlockingIOError):
         await standby.start()

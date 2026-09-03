@@ -9,10 +9,11 @@ import {
 } from './api/client'
 import { useJobEvents } from './hooks/useJobEvents'
 import { BriefPage } from './pages/BriefPage'
+import { CandidateDetailPage } from './pages/CandidateDetailPage'
 import { SearchPage } from './pages/SearchPage'
 import './App.css'
 
-type View = 'brief' | 'search'
+type View = 'brief' | 'search' | 'candidate'
 
 function StatusDot({ healthy }: { healthy: boolean }) {
   return (
@@ -29,6 +30,7 @@ function App() {
     window.location.pathname === '/search' ? 'search' : 'brief',
   )
   const [sessionLabel, setSessionLabel] = useState('Focused candidate search')
+  const [candidateId, setCandidateId] = useState<string | null>(null)
   const health = useQuery({ queryKey: ['health'], queryFn: getHealth })
   const mcp = useQuery({
     queryKey: ['mcp-status'],
@@ -53,8 +55,11 @@ function App() {
     document.title =
       view === 'brief'
         ? 'Role brief · LinkedIn Dashboard'
-        : 'Find candidates · LinkedIn Dashboard'
-    const path = view === 'brief' ? '/brief' : '/search'
+        : view === 'candidate'
+          ? 'Candidate detail · LinkedIn Dashboard'
+          : 'Find candidates · LinkedIn Dashboard'
+    const path =
+      view === 'brief' ? '/brief' : view === 'candidate' ? '/candidate' : '/search'
     if (window.location.pathname !== path) {
       window.history.replaceState(null, '', path)
     }
@@ -101,7 +106,7 @@ function App() {
           <span>01</span> Role brief
         </button>
         <button
-          aria-current={view === 'search' ? 'page' : undefined}
+          aria-current={view !== 'brief' ? 'page' : undefined}
           disabled={!brief.data}
           onClick={() => setView('search')}
           type="button"
@@ -159,8 +164,22 @@ function App() {
               key={brief.data?.id ?? 'new-brief'}
               session={session.data}
             />
+          ) : view === 'candidate' && candidateId ? (
+            <CandidateDetailPage
+              candidateId={candidateId}
+              onBack={() => setView('search')}
+              queue={queue}
+            />
           ) : (
-            <SearchPage brief={brief.data} queue={queue} session={session.data} />
+            <SearchPage
+              brief={brief.data}
+              onCandidateOpen={(id) => {
+                setCandidateId(id)
+                setView('candidate')
+              }}
+              queue={queue}
+              session={session.data}
+            />
           )
         ) : (
           <p aria-live="polite">Opening your local workspace…</p>

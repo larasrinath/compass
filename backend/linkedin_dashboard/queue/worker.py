@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -15,9 +15,12 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 from linkedin_dashboard.correlation import current_correlation_id
 from linkedin_dashboard.db.models import (
+    Candidate,
     DashboardSession,
     Job,
     JobAttempt,
+    NavigationReservation,
+    ProfileFetch,
     QueueControl,
 )
 from linkedin_dashboard.db.session import Database
@@ -34,6 +37,7 @@ from linkedin_dashboard.queue.jobs import (
     navigation_cost,
     persisted_payload,
     tool_arguments,
+    unattempted_profile_navigation_count,
     validate_payload,
 )
 
@@ -299,10 +303,20 @@ class DurableJobQueue:
                 )
             else:
                 control.owner_token = owner_token
-            running_ids = list(
-                session.scalars(select(Job.id).where(Job.state == "running"))
+            running_jobs = list(
+                session.scalars(select(Job).where(Job.state == "running"))
             )
+            running_ids = [job.id for job in running_jobs]
             if running_ids:
+                for job in running_jobs:
+                    attempt = session.scalar(
+                        select(JobAttempt).where(
+                            JobAttempt.job_id == job.id,
+                            JobAttempt.outcome == "running",
+                        )
+                    )
+                    self._refund_if_external_not_started(session, job, attempt, now)
+                    self._terminalize_unstarted_profile(session, job, now)
                 session.execute(
                     update(Job)
                     .where(Job.id.in_(running_ids), Job.state == "running")
@@ -343,16 +357,27 @@ class DurableJobQueue:
             with self.database.sessions.begin() as session:
                 owned_jobs = list(
                     session.scalars(
-                        select(Job.id).where(
+                        select(Job).where(
                             Job.state == "running", Job.claim_token == owner_token
                         )
                     )
                 )
                 if owned_jobs:
+                    owned_ids = [job.id for job in owned_jobs]
+                    for job in owned_jobs:
+                        attempt = session.scalar(
+                            select(JobAttempt).where(
+                                JobAttempt.job_id == job.id,
+                                JobAttempt.outcome == "running",
+                                JobAttempt.worker_token == owner_token,
+                            )
+                        )
+                        self._refund_if_external_not_started(session, job, attempt, now)
+                        self._terminalize_unstarted_profile(session, job, now)
                     session.execute(
                         update(Job)
                         .where(
-                            Job.id.in_(owned_jobs),
+                            Job.id.in_(owned_ids),
                             Job.state == "running",
                             Job.claim_token == owner_token,
                         )
@@ -365,7 +390,7 @@ class DurableJobQueue:
                     session.execute(
                         update(JobAttempt)
                         .where(
-                            JobAttempt.job_id.in_(owned_jobs),
+                            JobAttempt.job_id.in_(owned_ids),
                             JobAttempt.outcome == "running",
                             JobAttempt.worker_token == owner_token,
                         )
@@ -422,14 +447,52 @@ class DurableJobQueue:
             claim_token=None,
         )
         with self.database.sessions.begin() as session:
-            if session.get(DashboardSession, session_id) is None:
+            session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+            dashboard_session = session.get(DashboardSession, session_id)
+            if dashboard_session is None:
                 raise LookupError("session does not exist")
+            cost = navigation_cost(validated)
+            reserved = int(
+                session.scalar(
+                    select(
+                        func.coalesce(func.sum(NavigationReservation.cost), 0)
+                    ).where(
+                        NavigationReservation.session_id == session_id,
+                        NavigationReservation.state == "reserved",
+                    )
+                )
+                or 0
+            )
+            if (
+                dashboard_session.nav_used + reserved + cost
+                > dashboard_session.nav_budget
+            ):
+                remaining = (
+                    dashboard_session.nav_budget - dashboard_session.nav_used - reserved
+                )
+                available = max(0, remaining)
+                raise RuntimeError(
+                    f"navigation budget shortfall: need {cost}, have {available}"
+                )
             session.add(job)
+            session.flush()
+            if cost:
+                session.add(
+                    NavigationReservation(
+                        job_id=job.id,
+                        session_id=session_id,
+                        cost=cost,
+                        refunded_navigations=0,
+                        state="reserved",
+                        reserved_at=job.queued_at,
+                        charged_at=None,
+                        released_at=None,
+                    )
+                )
             if related_factory is not None:
                 # SQLAlchemy cannot infer ordering from scalar FK ids without
                 # relationships; materialize the parent while retaining this
                 # transaction's atomicity.
-                session.flush()
                 related_factory(session, job)
         self.events.publish(self._job_event(job.id, "queued"))
         self._publish_snapshot()
@@ -437,16 +500,121 @@ class DurableJobQueue:
         await self._notify_changed()
         return job.id
 
+    async def enqueue_many(
+        self,
+        session_id: str,
+        requests: Sequence[
+            tuple[
+                JobKind | str,
+                dict[str, Any],
+                Callable[[Any, Job], None] | None,
+            ]
+        ],
+    ) -> list[str]:
+        """Atomically reserve budget and persist a bounded batch of jobs."""
+        if not self._accepting:
+            raise RuntimeError("queue is not accepting jobs")
+        prepared: list[tuple[Job, JobPayload, Callable[[Any, Job], None] | None]] = []
+        for kind, payload, related_factory in requests:
+            validated = validate_payload(kind, payload)
+            if isinstance(validated, PersonProfilePayload) and validated.parent_job_id:
+                raise ValueError(
+                    "profile continuations can only be generated by worker"
+                )
+            normalized_kind = JobKind(kind)
+            prepared.append(
+                (
+                    Job(
+                        id=str(uuid4()),
+                        session_id=session_id,
+                        kind=normalized_kind.value,
+                        payload=persisted_payload(validated),
+                        state="queued",
+                        attempts=0,
+                        max_attempts=max_attempts_for(normalized_kind),
+                        queued_at=utc_now(),
+                        started_at=None,
+                        finished_at=None,
+                        error=None,
+                        correlation_id=current_correlation_id(),
+                        claim_token=None,
+                    ),
+                    validated,
+                    related_factory,
+                )
+            )
+        with self.database.sessions.begin() as session:
+            session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+            dashboard_session = session.get(DashboardSession, session_id)
+            if dashboard_session is None:
+                raise LookupError("session does not exist")
+            reserved = int(
+                session.scalar(
+                    select(
+                        func.coalesce(func.sum(NavigationReservation.cost), 0)
+                    ).where(
+                        NavigationReservation.session_id == session_id,
+                        NavigationReservation.state == "reserved",
+                    )
+                )
+                or 0
+            )
+            total = sum(navigation_cost(payload) for _, payload, _ in prepared)
+            remaining = (
+                dashboard_session.nav_budget - dashboard_session.nav_used - reserved
+            )
+            if total > remaining:
+                available = max(0, remaining)
+                raise RuntimeError(
+                    f"navigation budget shortfall: need {total}, have {available}"
+                )
+            for job, payload, related_factory in prepared:
+                session.add(job)
+                session.flush()
+                cost = navigation_cost(payload)
+                if cost:
+                    session.add(
+                        NavigationReservation(
+                            job_id=job.id,
+                            session_id=session_id,
+                            cost=cost,
+                            refunded_navigations=0,
+                            state="reserved",
+                            reserved_at=job.queued_at,
+                            charged_at=None,
+                            released_at=None,
+                        )
+                    )
+                if related_factory is not None:
+                    related_factory(session, job)
+        for job, _, _ in prepared:
+            self.events.publish(self._job_event(job.id, "queued"))
+        self._publish_snapshot()
+        self._wake.set()
+        await self._notify_changed()
+        return [job.id for job, _, _ in prepared]
+
     async def cancel(self, job_id: str) -> bool:
         now = utc_now()
+        kind: JobKind | None = None
         with self.database.sessions.begin() as session:
+            job = session.get(Job, job_id)
+            if job is not None:
+                try:
+                    kind = JobKind(job.kind)
+                except ValueError:
+                    kind = None
             result = session.execute(
                 update(Job)
                 .where(Job.id == job_id, Job.state == "queued")
                 .values(state="cancelled", finished_at=now)
             )
             cancelled = isinstance(result, CursorResult) and result.rowcount == 1
+            if cancelled and job is not None:
+                self._terminalize_unstarted_profile(session, job, now)
         if cancelled:
+            if self.result_processor is not None and kind is not None:
+                self.result_processor.process_failure(job_id, kind, ErrorClass.UNKNOWN)
             self.events.publish(self._job_event(job_id, "cancelled"))
             self._publish_snapshot()
             self._wake.set()
@@ -640,7 +808,10 @@ class DurableJobQueue:
 
     def _claim_next(self) -> tuple[ClaimedJob | None, float | None]:
         try:
-            return self._claim_next_transaction()
+            claimed = self._claim_next_transaction()
+            if claimed[0] is None and self.result_processor is not None:
+                self.result_processor.reconcile()
+            return claimed
         except (IntegrityError, OperationalError):
             # The database-wide partial unique index is the final concurrency
             # guard if two app instances accidentally start workers.
@@ -707,27 +878,40 @@ class DurableJobQueue:
                 try:
                     payload = validate_payload(JobKind(job.kind), job.payload or {})
                 except (ValueError, ValidationError):
+                    terminal_at = utc_now()
                     job.state = "failed"
-                    job.finished_at = utc_now()
+                    job.finished_at = terminal_at
                     job.error = ErrorClass.UNKNOWN.value
+                    self._terminalize_unstarted_profile(session, job, terminal_at)
                     continue
                 if job.attempts == 0:
+                    reservation = session.get(NavigationReservation, job.id)
                     try:
-                        cost = self._navigation_cost(session, job, payload)
+                        expected_cost = self._navigation_cost(session, job, payload)
                     except ValueError:
+                        terminal_at = utc_now()
                         job.state = "failed"
-                        job.finished_at = utc_now()
+                        job.finished_at = terminal_at
                         job.error = ErrorClass.UNKNOWN.value
+                        self._terminalize_unstarted_profile(session, job, terminal_at)
                         continue
-                    budget = session.get(DashboardSession, job.session_id)
-                    if budget is None or budget.nav_used + cost > budget.nav_budget:
+                    if expected_cost and (
+                        reservation is None
+                        or reservation.state != "reserved"
+                        or reservation.cost != expected_cost
+                    ):
+                        terminal_at = utc_now()
                         job.state = "failed"
-                        job.finished_at = utc_now()
-                        job.error = "BUDGET_EXHAUSTED"
+                        job.finished_at = terminal_at
+                        job.error = ErrorClass.UNKNOWN.value
+                        self._terminalize_unstarted_profile(session, job, terminal_at)
                         continue
+                    cost = expected_cost
+                    budget = session.get(DashboardSession, job.session_id)
                 else:
                     cost = 0
                     budget = None
+                    reservation = None
                 result = session.execute(
                     update(Job)
                     .where(Job.id == job.id, Job.state == "queued")
@@ -744,6 +928,9 @@ class DurableJobQueue:
                     continue
                 if budget is not None:
                     budget.nav_used += cost
+                if reservation is not None:
+                    reservation.state = "charged"
+                    reservation.charged_at = utc_now()
                 session.flush()
                 session.refresh(job)
                 attempt = JobAttempt(
@@ -753,6 +940,7 @@ class DurableJobQueue:
                     worker_token=owner_token,
                     started_at=utc_now(),
                     response_received_at=None,
+                    external_call_started_at=None,
                     finished_at=None,
                     outcome="running",
                     raw_response=None,
@@ -776,6 +964,54 @@ class DurableJobQueue:
                     None,
                 )
             return None, earliest_delay
+
+    @staticmethod
+    def _terminalize_unstarted_profile(session: Any, job: Job, now: str) -> None:
+        reservation = session.get(NavigationReservation, job.id)
+        if reservation is not None and reservation.state == "reserved":
+            reservation.state = "released"
+            reservation.released_at = now
+        if job.kind != JobKind.GET_PERSON_PROFILE.value:
+            return
+        fetch = session.scalar(
+            select(ProfileFetch).where(ProfileFetch.job_id == job.id)
+        )
+        if fetch is None or fetch.processed_at is not None:
+            return
+        fetch.outcome = "error"
+        fetch.finished_at = now
+        fetch.duration_ms = 0
+        fetch.processed_at = now
+        candidate = session.get(Candidate, fetch.candidate_id)
+        if candidate is not None:
+            candidate.retrieval_status = "failed"
+
+    @staticmethod
+    def _refund_if_external_not_started(
+        session: Any, job: Job, attempt: JobAttempt | None, now: str
+    ) -> None:
+        if attempt is None or attempt.external_call_started_at is not None:
+            return
+        prior_external_call = session.scalar(
+            select(JobAttempt.id)
+            .where(
+                JobAttempt.job_id == job.id,
+                JobAttempt.external_call_started_at.is_not(None),
+            )
+            .limit(1)
+        )
+        if prior_external_call is not None:
+            return
+        reservation = session.get(NavigationReservation, job.id)
+        if reservation is None or reservation.state != "charged":
+            return
+        refund = reservation.cost - reservation.refunded_navigations
+        dashboard_session = session.get(DashboardSession, job.session_id)
+        if dashboard_session is not None:
+            dashboard_session.nav_used = max(0, dashboard_session.nav_used - refund)
+        reservation.refunded_navigations += refund
+        reservation.state = "released"
+        reservation.released_at = now
 
     def _navigation_cost(self, session: Any, job: Job, payload: JobPayload) -> int:
         if not isinstance(payload, PersonProfilePayload) or not payload.parent_job_id:
@@ -809,11 +1045,25 @@ class DurableJobQueue:
             raise ValueError("continuation parent cannot be verified") from error
         if payload.sections != expected:
             raise ValueError("continuation does not match the missing suffix")
-        return 0
+        return navigation_cost(payload)
 
     async def _run_claimed(self, job: ClaimedJob) -> None:
         try:
             await self._politeness_delay(job)
+            external_started_at = utc_now()
+            with self.database.sessions.begin() as session:
+                self._require_fence(session, job)
+                marked = session.execute(
+                    update(JobAttempt)
+                    .where(
+                        JobAttempt.id == job.attempt_id,
+                        JobAttempt.outcome == "running",
+                        JobAttempt.external_call_started_at.is_(None),
+                    )
+                    .values(external_call_started_at=external_started_at)
+                )
+                if not isinstance(marked, CursorResult) or marked.rowcount != 1:
+                    raise _StaleClaim("external call phase lost its fence")
 
             async def capture_raw(
                 response: dict[str, Any] | None, error: dict[str, Any] | None
@@ -1071,6 +1321,17 @@ class DurableJobQueue:
             control.operator_resume_required = True
             control.last_mcp_finished_at = now
             control.updated_at = now
+            skipped_navigations = unattempted_profile_navigation_count(
+                job.payload, result
+            )
+            dashboard_session = session.get(DashboardSession, job.session_id)
+            if dashboard_session is not None and skipped_navigations:
+                dashboard_session.nav_used = max(
+                    0, dashboard_session.nav_used - skipped_navigations
+                )
+                reservation = session.get(NavigationReservation, job.id)
+                if reservation is not None:
+                    reservation.refunded_navigations += skipped_navigations
             if missing and isinstance(job.payload, PersonProfilePayload):
                 followup_payload = PersonProfilePayload(
                     linkedin_username=job.payload.linkedin_username,
@@ -1086,9 +1347,26 @@ class DurableJobQueue:
                     )
                 )
                 if duplicate is None:
-                    followup_id = str(uuid4())
-                    session.add(
-                        Job(
+                    child_cost = navigation_cost(followup_payload)
+                    other_reserved = int(
+                        session.scalar(
+                            select(
+                                func.coalesce(func.sum(NavigationReservation.cost), 0)
+                            ).where(
+                                NavigationReservation.session_id == job.session_id,
+                                NavigationReservation.state == "reserved",
+                            )
+                        )
+                        or 0
+                    )
+                    can_reserve = (
+                        dashboard_session is not None
+                        and dashboard_session.nav_used + other_reserved + child_cost
+                        <= dashboard_session.nav_budget
+                    )
+                    if can_reserve:
+                        followup_id = str(uuid4())
+                        followup_job = Job(
                             id=followup_id,
                             session_id=job.session_id,
                             kind=JobKind.GET_PERSON_PROFILE.value,
@@ -1103,7 +1381,54 @@ class DurableJobQueue:
                             correlation_id=job.correlation_id,
                             claim_token=None,
                         )
-                    )
+                        session.add(followup_job)
+                        session.add(
+                            NavigationReservation(
+                                job_id=followup_id,
+                                session_id=job.session_id,
+                                cost=child_cost,
+                                refunded_navigations=0,
+                                state="reserved",
+                                reserved_at=now,
+                                charged_at=None,
+                                released_at=None,
+                            )
+                        )
+                        parent_fetch = session.scalar(
+                            select(ProfileFetch).where(ProfileFetch.job_id == job.id)
+                        )
+                        if parent_fetch is not None:
+                            child_fetch_id = str(uuid4())
+                            session.add(
+                                ProfileFetch(
+                                    id=child_fetch_id,
+                                    candidate_id=parent_fetch.candidate_id,
+                                    job_id=followup_id,
+                                    tool=JobKind.GET_PERSON_PROFILE.value,
+                                    requested_sections=["main_profile", *missing],
+                                    args={
+                                        "linkedin_username": (
+                                            job.payload.linkedin_username
+                                        ),
+                                        "sections": missing,
+                                        **(
+                                            {"max_scrolls": job.payload.max_scrolls}
+                                            if job.payload.max_scrolls is not None
+                                            else {}
+                                        ),
+                                    },
+                                    started_at=now,
+                                    finished_at=None,
+                                    duration_ms=None,
+                                    outcome=None,
+                                    raw_response=None,
+                                    returned_url=None,
+                                    processed_at=None,
+                                    request_stage="resume",
+                                    parent_fetch_id=parent_fetch.id,
+                                    root_fetch_id=parent_fetch.root_fetch_id,
+                                )
+                            )
         if followup_id is not None:
             self.events.publish(self._job_event(followup_id, "pending"))
         self.events.publish(
@@ -1141,6 +1466,7 @@ class DurableJobQueue:
                 retry_delay is not None and current.attempts < current.max_attempts
             )
             target_state = "queued" if can_retry else "failed"
+            current_attempt = session.get(JobAttempt, job.attempt_id)
             attempt_result = session.execute(
                 update(JobAttempt)
                 .where(
@@ -1177,6 +1503,11 @@ class DurableJobQueue:
                 or job_result.rowcount != 1
             ):
                 raise _StaleClaim("failure transition lost its fence")
+            if not can_retry:
+                self._refund_if_external_not_started(
+                    session, current, current_attempt, now
+                )
+                self._terminalize_unstarted_profile(session, current, now)
             if error_class in {
                 ErrorClass.AUTH_REQUIRED,
                 ErrorClass.BROWSER_SETUP,
@@ -1235,6 +1566,11 @@ class DurableJobQueue:
                 or job_result.rowcount != 1
             ):
                 raise _StaleClaim("interrupt transition lost its fence")
+            current = session.get(Job, job.id)
+            attempt = session.get(JobAttempt, job.attempt_id)
+            if current is not None:
+                self._refund_if_external_not_started(session, current, attempt, now)
+                self._terminalize_unstarted_profile(session, current, now)
         await self._terminal_event(job, "interrupted", None)
 
     async def _fail_if_running(self, job: ClaimedJob, error_class: ErrorClass) -> None:
@@ -1279,6 +1615,11 @@ class DurableJobQueue:
                 or job_result.rowcount != 1
             ):
                 return
+            current = session.get(Job, job.id)
+            attempt = session.get(JobAttempt, job.attempt_id)
+            if current is not None:
+                self._refund_if_external_not_started(session, current, attempt, now)
+                self._terminalize_unstarted_profile(session, current, now)
         await self._terminal_event(job, "failed", error_class)
 
     async def _politeness_delay(self, job: ClaimedJob) -> None:
