@@ -30,6 +30,23 @@ export function assertLoopbackHost(host, surface) {
   return normalized
 }
 
+export function backendProxyTarget(env = process.env) {
+  const host = assertLoopbackHost(
+    env.HOST ?? '127.0.0.1',
+    'Dashboard backend proxy',
+  )
+  const rawPort = env.PORT ?? '8787'
+  if (!/^\d+$/.test(String(rawPort))) {
+    throw new Error(`Dashboard backend proxy port must be an integer; received ${rawPort}`)
+  }
+  const port = Number(rawPort)
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`Dashboard backend proxy port must be between 1 and 65535; received ${rawPort}`)
+  }
+  const authority = host.includes(':') ? `[${host}]` : host
+  return `http://${authority}:${port}`
+}
+
 export function loopbackOnlyPlugin() {
   return {
     name: 'linkedin-dashboard-loopback-only',

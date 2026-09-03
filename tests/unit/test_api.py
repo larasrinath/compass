@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from itertools import product
 from pathlib import Path
 
 import pytest
 from fastapi import Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.testclient import TestClient
+from linkedin_dashboard.api._filters import (
+    _SSEParser,
+    _strict_json_dumps,
+    sanitize_for_frontend,
+)
 from linkedin_dashboard.audit import append_audit_event
 from linkedin_dashboard.db.models import DashboardSession
 from linkedin_dashboard.main import create_app
@@ -56,6 +62,8 @@ def test_every_json_response_crosses_the_privacy_filter(tmp_path) -> None:
                         "hostname": "private-host",
                     },
                     "error_message": str(Path.home() / ".linkedin-mcp/profile failed"),
+                    "hostname": "internal-host",
+                    "suggested_gist_command": "upload-internal-diagnostics",
                 }
             },
             "mcp_url": "http://127.0.0.1:8000/mcp",
@@ -69,6 +77,8 @@ def test_every_json_response_crosses_the_privacy_filter(tmp_path) -> None:
     assert response.status_code == 200
     assert "runtime" not in payload["section_errors"]["experience"]
     assert "mcp_url" not in payload
+    assert "hostname" not in body
+    assert "suggested_gist_command" not in body
     assert str(Path.home()) not in body
     assert ".linkedin-mcp" not in body
 
@@ -119,6 +129,65 @@ def test_sse_events_are_sanitized_across_chunk_boundaries(tmp_path) -> None:
     assert "http://[redacted]@127.0.0.1:8000/mcp" in response.text
 
 
+def test_sse_incremental_parser_handles_bom_and_mixed_line_endings() -> None:
+    stream = (
+        b'\xef\xbb\xbfevent: profile\rdata: {"hostname":"private-host",'
+        b'"suggested_gist_command":"upload","url":"//first:secret@alias@host/x"}'
+        b"\n\r"
+        b"event: malformed\r\ndata: \xef\xbb\xbf"
+        b'{"runtime":{"cookie_path":"secret"}\r\n\n'
+        b"event: final\ndata: safe"
+    )
+    parser = _SSEParser()
+    output: list[bytes] = []
+
+    for index, byte in enumerate(stream):
+        output.append(parser.feed(bytes([byte]), final=index == len(stream) - 1))
+
+    text = b"".join(output).decode("utf-8")
+    assert text.startswith('event: profile\ndata: {"url":"//[redacted]@host/x"}\n\n')
+    assert 'event: malformed\ndata: {"detail":' in text
+    assert text.endswith("event: final\ndata: safe")
+    assert "runtime" not in text
+    assert "private-host" not in text
+    assert "suggested_gist_command" not in text
+    assert "first:secret@alias" not in text
+
+
+def test_sse_parser_strips_exactly_one_stream_leading_bom() -> None:
+    parser = _SSEParser()
+
+    assert parser.feed(b"\xef", final=False) == b""
+    assert parser.feed(b"\xbb", final=False) == b""
+    assert parser.feed(b"\xbfdata: ok\n\n", final=True) == b"data: ok\n\n"
+
+    second = _SSEParser().feed(b"\xef\xbb\xbf\xef\xbb\xbf: keep-second\n\n", final=True)
+    assert second.startswith(b"\xef\xbb\xbf")
+
+
+def test_sse_parser_supports_every_mixed_event_boundary_byte_by_byte() -> None:
+    line_endings = (b"\r", b"\n", b"\r\n")
+    for content_ending, blank_ending in product(line_endings, repeat=2):
+        if (content_ending, blank_ending) == (b"\r", b"\n"):
+            # Adjacent CR + LF is one CRLF ending, not two event-boundary lines.
+            continue
+        stream = b"data: one" + content_ending + blank_ending
+        parser = _SSEParser()
+        output: list[bytes] = []
+        for index, byte in enumerate(stream):
+            output.append(parser.feed(bytes([byte]), final=index == len(stream) - 1))
+        assert b"".join(output) == b"data: one\n\n"
+
+
+def test_sse_parser_does_not_dispatch_before_blank_line() -> None:
+    parser = _SSEParser()
+
+    assert parser.feed(b"data: delayed\r", final=False) == b""
+    assert parser.feed(b"\n", final=False) == b""
+    assert parser.feed(b"\r", final=False) == b""
+    assert parser.feed(b"\n", final=False) == b"data: delayed\n\n"
+
+
 def test_structured_json_suffix_crosses_privacy_filter(tmp_path) -> None:
     app = create_app(settings_for(tmp_path / "problem-json.db"))
 
@@ -155,6 +224,54 @@ def test_malformed_declared_json_fails_closed(tmp_path) -> None:
     assert response.json() == {"detail": "Response could not be safely serialized"}
     assert "secret" not in response.text
     assert ".linkedin-mcp" not in response.text
+
+
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_non_finite_declared_json_fails_closed(tmp_path, constant: str) -> None:
+    app = create_app(settings_for(tmp_path / f"non-finite-{constant}.db"))
+
+    @app.get("/api/test/non-finite")
+    def non_finite_json() -> Response:
+        return Response(
+            content=f'{{"value":{constant}}}'.encode(),
+            media_type="application/json",
+        )
+
+    with client_for(app) as client:
+        response = client.get("/api/test/non-finite")
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Response could not be safely serialized"}
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_values_cannot_be_encoded(value: float) -> None:
+    with pytest.raises(ValueError, match="Out of range float values"):
+        _strict_json_dumps({"value": value})
+
+
+def test_credential_urls_are_redacted_in_values_and_keys_without_corruption() -> None:
+    sanitized = sanitize_for_frontend(
+        {
+            "//first:secret@alias@host.example/path": (
+                "https://first:secret@alias@host.example/path"
+            ),
+            "safe": [
+                "https://host.example/path@segment",
+                "https://host.example/path//name@segment",
+                "mailto:user@example.com",
+            ],
+        }
+    )
+
+    assert sanitized == {
+        "//[redacted]@host.example/path": ("https://[redacted]@host.example/path"),
+        "safe": [
+            "https://host.example/path@segment",
+            "https://host.example/path//name@segment",
+            "mailto:user@example.com",
+        ],
+    }
 
 
 def test_audit_api_redacts_credentials_embedded_in_strings(tmp_path) -> None:

@@ -16,8 +16,7 @@ from linkedin_dashboard.security import ConfiguredHostMiddleware, OriginGuardMid
 from linkedin_dashboard.settings import Settings
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
-    app_settings = settings or Settings()
+def create_app(app_settings: Settings) -> FastAPI:
     database = Database(app_settings.db_path)
 
     @asynccontextmanager
@@ -49,9 +48,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health_router, prefix="/api")
     app.include_router(audit_router, prefix="/api")
     return app
-
-
-app = create_app()
 
 
 def run() -> None:

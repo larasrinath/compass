@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlparse
 
 from pydantic import Field, field_validator
@@ -81,7 +82,7 @@ class Settings(BaseSettings):
     frontend_port: int = Field(default=5173, ge=1, le=65535)
     mcp_url: str = "http://127.0.0.1:8000/mcp"
     db_path: Path = Path("~/.linkedin-dashboard/session.db")
-    llm_provider: str = "null"
+    llm_provider: Literal["null"] = "null"
     send_enabled: bool = False
 
     @field_validator("host", "frontend_host")
@@ -95,6 +96,12 @@ class Settings(BaseSettings):
         parsed = urlparse(value)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise ValueError("MCP_URL must be an absolute HTTP URL")
+        try:
+            parsed_port = parsed.port
+        except ValueError as error:
+            raise ValueError("MCP_URL must contain a valid port") from error
+        if parsed_port is not None and not 1 <= parsed_port <= 65535:
+            raise ValueError("MCP_URL must contain a valid port")
         if parsed.username is not None or parsed.password is not None:
             raise ValueError("MCP_URL must not contain userinfo or credentials")
         if not is_loopback_host(parsed.hostname):

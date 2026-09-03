@@ -8,6 +8,7 @@ from linkedin_dashboard.db.migrations import (
     v0001_constraints,
     v0002_integrity,
     v0003_send_invariants,
+    v0004_audit_cascade,
 )
 from linkedin_dashboard.db.models import (
     Base,
@@ -167,8 +168,8 @@ def test_live_sqlite_files_are_owner_only_before_and_after_connect(
     tmp_path, existing: bool
 ) -> None:
     parent = tmp_path / "traversable"
-    parent.mkdir(mode=0o755)
-    os.chmod(parent, 0o755)
+    parent.mkdir(mode=0o700)
+    os.chmod(parent, 0o700)
     path = parent / "private.db"
     if existing:
         path.touch(mode=0o644)
@@ -203,25 +204,64 @@ def test_live_sqlite_files_are_owner_only_before_and_after_connect(
             assert stat.S_IMODE(database.path.stat().st_mode) == 0o600
             assert stat.S_IMODE(wal.stat().st_mode) == 0o600
             assert stat.S_IMODE(shm.stat().st_mode) == 0o600
-            assert stat.S_IMODE(parent.stat().st_mode) == 0o755
+            assert stat.S_IMODE(parent.stat().st_mode) == 0o700
     finally:
         database.dispose()
 
     assert first_connect_modes == [0o600]
 
 
-def test_existing_database_parent_permissions_are_unchanged(tmp_path) -> None:
+def test_existing_public_database_parent_is_rejected_without_chmod(tmp_path) -> None:
     parent = tmp_path / "shared-parent"
     parent.mkdir(mode=0o755)
     os.chmod(parent, 0o755)
-    database = Database(parent / "dashboard.db")
+    path = parent / "dashboard.db"
+    database = Database(path)
 
     try:
-        database.initialize()
+        with pytest.raises(PermissionError, match="no group or world permissions"):
+            database.initialize()
     finally:
         database.dispose()
 
     assert stat.S_IMODE(os.stat(parent).st_mode) == 0o755
+    assert not path.exists()
+
+
+def test_database_parent_must_be_owned_by_current_user(tmp_path, monkeypatch) -> None:
+    parent = tmp_path / "private-parent"
+    parent.mkdir(mode=0o700)
+    os.chmod(parent, 0o700)
+    path = parent / "dashboard.db"
+    database = Database(path)
+    monkeypatch.setattr(os, "geteuid", lambda: parent.stat().st_uid + 1)
+
+    try:
+        with pytest.raises(PermissionError, match="owned by the current user"):
+            database.initialize()
+    finally:
+        database.dispose()
+
+    assert not path.exists()
+
+
+def test_public_parent_blocks_final_path_swap_before_schema_write(tmp_path) -> None:
+    parent = tmp_path / "attacker-writable"
+    parent.mkdir(mode=0o777)
+    os.chmod(parent, 0o777)
+    target = tmp_path / "unrelated.db"
+    target.write_bytes(b"unrelated-data")
+    path = parent / "dashboard.db"
+    database = Database(path)
+    path.symlink_to(target)
+
+    try:
+        with pytest.raises(PermissionError, match="no group or world permissions"):
+            database.initialize()
+    finally:
+        database.dispose()
+
+    assert target.read_bytes() == b"unrelated-data"
 
 
 def test_new_database_directories_are_owner_only(tmp_path) -> None:
@@ -280,8 +320,54 @@ def test_existing_v0001_database_receives_integrity_migration(tmp_path) -> None:
         v0001_constraints.VERSION,
         v0002_integrity.VERSION,
         v0003_send_invariants.VERSION,
+        v0004_audit_cascade.VERSION,
     ]
     assert "NEW.candidate_id IS NOT OLD.candidate_id" in trigger_sql
+
+
+def test_existing_database_receives_session_purge_audit_migration(tmp_path) -> None:
+    database = Database(tmp_path / "audit-upgrade.db")
+    prepare_v0001_database(database)
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO session "
+                "(id, created_at, label, purge_after, nav_budget, nav_used, "
+                "send_enabled) VALUES "
+                "('session-audit-upgrade', :now, 'Upgrade', :now, 120, 0, 0)"
+            ),
+            {"now": NOW},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO audit_log "
+                "(id, session_id, at, actor, action, subject_type, subject_id, "
+                "detail, correlation_id) VALUES "
+                "('audit-upgrade', 'session-audit-upgrade', :now, 'system', "
+                "'session.created', 'session', 'session-audit-upgrade', '{}', "
+                "'upgrade-test')"
+            ),
+            {"now": NOW},
+        )
+
+    try:
+        database.initialize()
+        with database.engine.begin() as connection:
+            connection.execute(
+                text("DELETE FROM session WHERE id='session-audit-upgrade'")
+            )
+            remaining = connection.execute(
+                text("SELECT COUNT(*) FROM audit_log WHERE id='audit-upgrade'")
+            ).scalar_one()
+            migrated = connection.execute(
+                text("SELECT 1 FROM schema_migration WHERE version=:version"),
+                {"version": v0004_audit_cascade.VERSION},
+            ).scalar_one()
+    finally:
+        database.dispose()
+
+    assert remaining == 0
+    assert migrated == 1
 
 
 @pytest.mark.parametrize(

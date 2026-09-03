@@ -13,19 +13,22 @@ _DROP_KEYS = {
     "browser_profile_path",
     "cookie_path",
     "db_path",
+    "hostname",
     "mcp_url",
     "portable_cookie_path",
     "proxy_password",
     "runtime",
     "source_profile_dir",
+    "suggested_gist_command",
 }
 
 _MALFORMED_JSON_BODY = b'{"detail":"Response could not be safely serialized"}'
-_CREDENTIAL_URL = re.compile(
-    r"(?P<scheme>[a-z][a-z0-9+.-]*://)[^/@\s]+@",
+_URL_AUTHORITY = re.compile(
+    r"(?P<prefix>[a-z][a-z0-9+.-]*://|(?<![a-z0-9:/?#])//)"
+    r"(?P<authority>[^\s/?#]*)",
     flags=re.IGNORECASE,
 )
-_SSE_BOUNDARY = re.compile(rb"\r\n\r\n|\n\n|\r\r")
+_UTF8_BOM = b"\xef\xbb\xbf"
 
 
 def _is_json_media_type(content_type: str) -> bool:
@@ -36,7 +39,14 @@ def _is_json_media_type(content_type: str) -> bool:
 
 
 def _redact_string(value: str) -> str:
-    sanitized = _CREDENTIAL_URL.sub(r"\g<scheme>[redacted]@", value)
+    def redact_authority(match: re.Match[str]) -> str:
+        authority = match.group("authority")
+        if "@" not in authority:
+            return match.group(0)
+        host = authority.rsplit("@", 1)[1]
+        return f"{match.group('prefix')}[redacted]@{host}"
+
+    sanitized = _URL_AUTHORITY.sub(redact_authority, value)
     sanitized = sanitized.replace(str(Path.home()), "[redacted-home]")
     return sanitized.replace(".linkedin-mcp", "[redacted-profile]")
 
@@ -62,6 +72,23 @@ def sanitize_for_frontend(value: Any) -> Any:
     return value
 
 
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant is not permitted: {value}")
+
+
+def _strict_json_loads(value: bytes | str) -> Any:
+    return json.loads(value, parse_constant=_reject_json_constant)
+
+
+def _strict_json_dumps(value: Any) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+
 def _sanitize_sse_event(event: bytes, *, terminated: bool) -> bytes:
     try:
         text = event.decode("utf-8")
@@ -72,35 +99,104 @@ def _sanitize_sse_event(event: bytes, *, terminated: bool) -> bytes:
     output: list[str] = []
     data: list[str] = []
     data_position: int | None = None
-    for line in text.splitlines():
-        if line == "data" or line.startswith("data:"):
+    for line in text.split("\n"):
+        field, separator, raw_value = line.partition(":")
+        if field == "data" and (separator or line == "data"):
             if data_position is None:
                 data_position = len(output)
-            value = line[5:] if line.startswith("data:") else ""
-            data.append(value[1:] if value.startswith(" ") else value)
+            value = raw_value[1:] if raw_value.startswith(" ") else raw_value
+            data.append(value)
         else:
             output.append(_redact_string(line))
 
     if data_position is not None:
         payload = "\n".join(data)
         try:
-            value = json.loads(payload)
-        except json.JSONDecodeError:
-            if payload.lstrip().startswith(("{", "[")):
+            value = _strict_json_loads(payload)
+        except (json.JSONDecodeError, ValueError):
+            candidate = payload.lstrip("\ufeff \t\r\n")
+            if candidate.startswith(("{", "[")) or candidate in {
+                "NaN",
+                "Infinity",
+                "-Infinity",
+            }:
                 safe_payload = _MALFORMED_JSON_BODY.decode()
             else:
                 safe_payload = _redact_string(payload)
         else:
-            safe_payload = json.dumps(
-                sanitize_for_frontend(value),
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
+            safe_payload = _strict_json_dumps(sanitize_for_frontend(value))
         safe_data = [f"data: {line}" for line in safe_payload.split("\n")]
         output[data_position:data_position] = safe_data or ["data:"]
 
     suffix = "\n\n" if terminated else ""
     return ("\n".join(output) + suffix).encode("utf-8")
+
+
+class _SSEParser:
+    """Incrementally split an SSE stream on every legal line ending."""
+
+    def __init__(self) -> None:
+        self.buffer = b""
+        self.event_lines: list[bytes] = []
+        self.stream_started = False
+
+    def feed(self, chunk: bytes, *, final: bool) -> bytes:
+        self.buffer += chunk
+        if not self.stream_started:
+            if (
+                not final
+                and len(self.buffer) < len(_UTF8_BOM)
+                and _UTF8_BOM.startswith(self.buffer)
+            ):
+                return b""
+            if self.buffer.startswith(_UTF8_BOM):
+                self.buffer = self.buffer[len(_UTF8_BOM) :]
+            self.stream_started = True
+
+        output: list[bytes] = []
+        while True:
+            line = self._pop_line(final=final)
+            if line is None:
+                break
+            content, terminated = line
+            if terminated and not content:
+                if self.event_lines:
+                    output.append(
+                        _sanitize_sse_event(
+                            b"\n".join(self.event_lines), terminated=True
+                        )
+                    )
+                    self.event_lines.clear()
+                continue
+            self.event_lines.append(content)
+            if not terminated:
+                break
+
+        if final and self.event_lines:
+            output.append(
+                _sanitize_sse_event(b"\n".join(self.event_lines), terminated=False)
+            )
+            self.event_lines.clear()
+        return b"".join(output)
+
+    def _pop_line(self, *, final: bool) -> tuple[bytes, bool] | None:
+        for index, byte in enumerate(self.buffer):
+            if byte == 0x0A:
+                content = self.buffer[:index]
+                self.buffer = self.buffer[index + 1 :]
+                return content, True
+            if byte == 0x0D:
+                if index + 1 == len(self.buffer) and not final:
+                    return None
+                width = 2 if self.buffer[index + 1 : index + 2] == b"\n" else 1
+                content = self.buffer[:index]
+                self.buffer = self.buffer[index + width :]
+                return content, True
+        if final and self.buffer:
+            content = self.buffer
+            self.buffer = b""
+            return content, False
+        return None
 
 
 class PrivacyFilterMiddleware:
@@ -117,10 +213,10 @@ class PrivacyFilterMiddleware:
         start: Message | None = None
         chunks: list[bytes] = []
         response_kind = "passthrough"
-        sse_buffer = b""
+        sse_parser = _SSEParser()
 
         async def capture(message: Message) -> None:
-            nonlocal response_kind, sse_buffer, start
+            nonlocal response_kind, start
             if message["type"] == "http.response.start":
                 start = message
                 headers = list(message.get("headers", []))
@@ -153,22 +249,13 @@ class PrivacyFilterMiddleware:
                 await send(message)
                 return
             if response_kind == "sse":
-                sse_buffer += message.get("body", b"")
-                output: list[bytes] = []
-                while boundary := _SSE_BOUNDARY.search(sse_buffer):
-                    output.append(
-                        _sanitize_sse_event(
-                            sse_buffer[: boundary.start()], terminated=True
-                        )
-                    )
-                    sse_buffer = sse_buffer[boundary.end() :]
-                if not message.get("more_body", False) and sse_buffer:
-                    output.append(_sanitize_sse_event(sse_buffer, terminated=False))
-                    sse_buffer = b""
                 await send(
                     {
                         **message,
-                        "body": b"".join(output),
+                        "body": sse_parser.feed(
+                            message.get("body", b""),
+                            final=not message.get("more_body", False),
+                        ),
                     }
                 )
                 return
@@ -180,13 +267,17 @@ class PrivacyFilterMiddleware:
             headers = list(start.get("headers", []))
             body = b"".join(chunks)
             try:
-                payload = json.loads(body)
-                body = json.dumps(
-                    sanitize_for_frontend(payload),
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                ).encode("utf-8")
-            except (UnicodeDecodeError, json.JSONDecodeError):
+                payload = _strict_json_loads(body)
+                body = _strict_json_dumps(sanitize_for_frontend(payload)).encode(
+                    "utf-8"
+                )
+            except (
+                UnicodeDecodeError,
+                json.JSONDecodeError,
+                ValueError,
+                TypeError,
+                OverflowError,
+            ):
                 body = _MALFORMED_JSON_BODY
                 start["status"] = 500
                 headers = [

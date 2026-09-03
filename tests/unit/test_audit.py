@@ -47,3 +47,13 @@ def test_audit_log_is_append_only(database: Database) -> None:
             connection.execute(
                 text("DELETE FROM audit_log WHERE id=:id"), {"id": event.id}
             )
+
+    with database.engine.begin() as connection:
+        connection.execute(
+            text("DELETE FROM session WHERE id=:id"), {"id": "session-audit"}
+        )
+        remaining = connection.execute(
+            text("SELECT COUNT(*) FROM audit_log WHERE id=:id"), {"id": event.id}
+        ).scalar_one()
+
+    assert remaining == 0

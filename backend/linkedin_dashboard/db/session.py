@@ -14,6 +14,7 @@ from linkedin_dashboard.db.migrations import (
     v0001_constraints,
     v0002_integrity,
     v0003_send_invariants,
+    v0004_audit_cascade,
 )
 from linkedin_dashboard.db.models import Base
 from linkedin_dashboard.settings import normalize_database_path
@@ -34,6 +35,7 @@ class Database:
 
     def initialize(self) -> None:
         _create_private_directories(self.path.parent)
+        _require_private_directory(self.path.parent)
         database_fd = _open_owner_only_file(self.path, create=True)
         try:
             Base.metadata.create_all(self.engine)
@@ -46,6 +48,7 @@ class Database:
                     (v0001_constraints.VERSION, v0001_constraints.apply),
                     (v0002_integrity.VERSION, v0002_integrity.apply),
                     (v0003_send_invariants.VERSION, v0003_send_invariants.apply),
+                    (v0004_audit_cascade.VERSION, v0004_audit_cascade.apply),
                 ):
                     applied = connection.execute(
                         text("SELECT 1 FROM schema_migration WHERE version = :version"),
@@ -120,6 +123,30 @@ def _create_private_directories(directory: Path) -> None:
                 raise
         else:
             os.chmod(path, 0o700)
+
+
+def _require_private_directory(directory: Path) -> None:
+    """Require a private, current-user-owned directory before SQLite writes."""
+    directory_stat = directory.lstat()
+    if stat.S_ISLNK(directory_stat.st_mode):
+        raise PermissionError(
+            f"database parent must not be a symbolic link: {directory}"
+        )
+    if not stat.S_ISDIR(directory_stat.st_mode):
+        raise NotADirectoryError(directory)
+
+    current_uid = getattr(os, "geteuid", os.getuid)()
+    if directory_stat.st_uid != current_uid:
+        raise PermissionError(
+            f"database parent must be owned by the current user: {directory}"
+        )
+
+    mode = stat.S_IMODE(directory_stat.st_mode)
+    if mode & (stat.S_IRWXG | stat.S_IRWXO):
+        raise PermissionError(
+            "database parent must grant no group or world permissions "
+            f"(expected mode 0700 or stricter): {directory}"
+        )
 
 
 def _open_owner_only_file(path: Path, *, create: bool) -> int:

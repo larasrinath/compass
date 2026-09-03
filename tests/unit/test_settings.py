@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from linkedin_dashboard import main as main_module
@@ -54,6 +55,28 @@ def test_non_loopback_mcp_url_is_rejected(tmp_path) -> None:
     with pytest.raises(ValidationError, match="loopback host"):
         Settings(
             mcp_url="https://mcp.example.com/mcp",
+            db_path=tmp_path / "dashboard.db",
+        )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://127.0.0.1:not-a-port/mcp",
+        "http://127.0.0.1:0/mcp",
+        "http://127.0.0.1:65536/mcp",
+    ],
+)
+def test_mcp_url_invalid_port_is_rejected(url: str, tmp_path) -> None:
+    with pytest.raises(ValidationError, match="valid port"):
+        Settings(mcp_url=url, db_path=tmp_path / "dashboard.db")
+
+
+@pytest.mark.parametrize("provider", ["openai", "local", "NULL", ""])
+def test_llm_provider_is_locked_to_null_through_m5(provider: str, tmp_path) -> None:
+    with pytest.raises(ValidationError, match="null"):
+        Settings(
+            llm_provider=cast(Any, provider),
             db_path=tmp_path / "dashboard.db",
         )
 

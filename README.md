@@ -32,8 +32,11 @@ npm run dev
 ```
 
 The API listens on `http://127.0.0.1:8787`; Vite listens on
-`http://127.0.0.1:5173` and proxies `/api` to the backend. Both reject
-non-loopback host configuration.
+`http://127.0.0.1:5173` and derives its `/api` proxy target from the same
+validated `HOST` and `PORT` configuration. Both reject non-loopback host
+configuration. Start the API only through `uv run -m linkedin_dashboard`;
+there is intentionally no importable module-level ASGI application that can be
+bound with an unsafe Uvicorn CLI override.
 
 ## Verification
 
@@ -47,3 +50,7 @@ cd frontend && npm test && npm run lint && npm run build
 
 Copy `.env.example` to `.env` only when overriding defaults. The application
 database is created with mode `0600` at `~/.linkedin-dashboard/session.db`.
+Its parent directory is created with mode `0700`. A custom existing `DB_PATH`
+parent must already be owned by the current user and grant no group or world
+permissions; startup rejects an unsafe parent instead of changing its mode.
+Through M5, `LLM_PROVIDER` is locked to the literal value `null`.
