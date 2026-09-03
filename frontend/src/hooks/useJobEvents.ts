@@ -21,6 +21,8 @@ function parseEvent<T>(event: MessageEvent<string>): T | null {
 export function useJobEvents() {
   const [snapshot, setSnapshot] = useState<QueueSnapshot>(EMPTY_SNAPSHOT)
   const [connected, setConnected] = useState(false)
+  const [revision, setRevision] = useState(0)
+  const [lastEventAt, setLastEventAt] = useState<string | null>(null)
 
   useEffect(() => {
     const source = new EventSource('/api/events')
@@ -31,6 +33,8 @@ export function useJobEvents() {
       const incoming = parseEvent<QueueSnapshot>(raw as MessageEvent<string>)
       if (incoming) {
         setSnapshot((current) => reduceQueueEvent(current, 'snapshot', incoming))
+        setLastEventAt(new Date().toISOString())
+        setRevision((current) => current + 1)
       }
     })
     source.addEventListener('queue', (raw) => {
@@ -39,6 +43,8 @@ export function useJobEvents() {
       )
       if (incoming) {
         setSnapshot((current) => reduceQueueEvent(current, 'queue', incoming))
+        setLastEventAt(new Date().toISOString())
+        setRevision((current) => current + 1)
       }
     })
     for (const eventName of ['job', 'progress'] as const) {
@@ -48,11 +54,15 @@ export function useJobEvents() {
         setSnapshot((current) =>
           reduceQueueEvent(current, eventName, incoming),
         )
+        setLastEventAt(new Date().toISOString())
+        setRevision((current) => current + 1)
       })
     }
 
     return () => source.close()
   }, [])
 
-  return { ...snapshot, connected }
+  return { ...snapshot, connected, revision, lastEventAt }
 }
+
+export type ReturnTypeOfJobEvents = ReturnType<typeof useJobEvents>

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from enum import StrEnum
 from typing import Any
 
@@ -71,6 +72,11 @@ _INVALID_REFERENCE_PREFIXES = (
     "it and pass the /company/ slug ",
 )
 
+_FASTMCP_TOOL_ERROR = re.compile(
+    r"\AError calling tool '[A-Za-z_][A-Za-z0-9_]*': (?P<message>.+)\Z",
+    re.DOTALL,
+)
+
 
 class MCPErrorDetails(BaseModel):
     """Frontend-safe classification with correlation and optional partial data."""
@@ -112,7 +118,7 @@ def classify(value: BaseException | MCPResponseEnvelope | dict[str, Any]) -> Err
     if _has_rate_limit(payload):
         return ErrorClass.RATE_LIMIT
 
-    text = _error_text(value, payload).casefold()
+    text = _unwrap_fastmcp_tool_error(_error_text(value, payload)).casefold()
     if text.startswith(_AUTH_REQUIRED_PREFIXES):
         return ErrorClass.AUTH_REQUIRED
     if _contains_any(
@@ -225,6 +231,12 @@ def _error_text(value: object, payload: dict[str, Any]) -> str:
     if isinstance(message, str):
         parts.append(message)
     return "\n".join(parts)
+
+
+def _unwrap_fastmcp_tool_error(value: str) -> str:
+    """Remove only FastMCP's exact, whole-string tool-error wrapper."""
+    match = _FASTMCP_TOOL_ERROR.fullmatch(value)
+    return match.group("message") if match is not None else value
 
 
 def _contains_any(value: str, needles: tuple[str, ...]) -> bool:

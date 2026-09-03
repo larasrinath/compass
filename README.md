@@ -26,6 +26,18 @@ until operator resume and continues only from the first missing section.
 Decoded MCP envelopes are rejected above 16 MiB; this post-decode guard does
 not cap the FastMCP SDK's transient transport-parsing memory for that one call.
 
+M2 adds a versioned role brief and an unscored discovery workspace. Skills,
+titles, and industries retain per-term aliases; protected sourcing criteria are
+rejected before a new brief version is written. Each explicit search becomes
+one durable `search_people` job, stores its complete MCP envelope before
+parsing, and appends only `kind="person"` references to the session candidate
+pool. Usernames are normalized and case-insensitively deduplicated while every
+producing search remains linked as provenance. The UI shows the shared
+15-reference cap, raw search text, reference-kind counts, sanitized partial
+errors, and the serialized queue through SSE. Company URN lookup is also a
+queued read. Discovery does not retrieve profiles, rank candidates, or expose
+shortlist, drafting, or message controls.
+
 ## Prerequisites
 
 - Python 3.12.4–3.14 and [uv](https://docs.astral.sh/uv/)

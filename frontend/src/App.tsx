@@ -1,7 +1,18 @@
-import { useMutation, useQuery } from '@tanstack/react-query'
-import { getHealth, getMcpStatus, resumeQueue } from './api/client'
+import { useEffect, useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  createSession,
+  getBrief,
+  getHealth,
+  getMcpStatus,
+  getSession,
+} from './api/client'
 import { useJobEvents } from './hooks/useJobEvents'
+import { BriefPage } from './pages/BriefPage'
+import { SearchPage } from './pages/SearchPage'
 import './App.css'
+
+type View = 'brief' | 'search'
 
 function StatusDot({ healthy }: { healthy: boolean }) {
   return (
@@ -13,163 +24,153 @@ function StatusDot({ healthy }: { healthy: boolean }) {
 }
 
 function App() {
-  const health = useQuery({
-    queryKey: ['health'],
-    queryFn: getHealth,
-    refetchInterval: 15_000,
-  })
+  const queryClient = useQueryClient()
+  const [view, setView] = useState<View>(() =>
+    window.location.pathname === '/search' ? 'search' : 'brief',
+  )
+  const [sessionLabel, setSessionLabel] = useState('Focused candidate search')
+  const health = useQuery({ queryKey: ['health'], queryFn: getHealth })
   const mcp = useQuery({
     queryKey: ['mcp-status'],
     queryFn: getMcpStatus,
     retry: false,
   })
+  const session = useQuery({ queryKey: ['session'], queryFn: getSession })
+  const brief = useQuery({
+    queryKey: ['brief', session.data?.id],
+    queryFn: () => getBrief(session.data!.id),
+    enabled: Boolean(session.data?.id),
+  })
   const queue = useJobEvents()
-  const resume = useMutation({ mutationFn: resumeQueue })
+  const start = useMutation({
+    mutationFn: createSession,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['session'] })
+    },
+  })
 
-  const backendHealthy = health.data?.status === 'ok'
+  useEffect(() => {
+    document.title =
+      view === 'brief'
+        ? 'Role brief · LinkedIn Dashboard'
+        : 'Find candidates · LinkedIn Dashboard'
+    const path = view === 'brief' ? '/brief' : '/search'
+    if (window.location.pathname !== path) {
+      window.history.replaceState(null, '', path)
+    }
+  }, [view])
 
   return (
     <div className="app-shell">
+      <a className="skip-link" href="#main-content">
+        Skip to main content
+      </a>
       <header className="topbar">
         <div aria-hidden="true" className="brand-mark">
           in
         </div>
         <div>
           <p className="eyebrow">Private sourcing workspace</p>
-          <h1>LinkedIn Dashboard</h1>
+          <strong className="brand-title">LinkedIn Dashboard</strong>
         </div>
-        <div className="local-badge">Local only</div>
+        <div className="topbar-status">
+          <span className="local-badge">Local only</span>
+          <span>
+            <StatusDot healthy={mcp.data?.reachable === true} />
+            MCP{' '}
+            {mcp.isPending
+              ? 'checking'
+              : mcp.data?.reachable
+                ? 'ready'
+                : 'unavailable'}
+          </span>
+          {session.data ? (
+            <span>
+              Navigation {session.data.nav_used}/{session.data.nav_budget}
+            </span>
+          ) : null}
+        </div>
       </header>
 
-      <main>
-        <section className="hero-panel">
-          <div>
-            <p className="eyebrow">Foundation milestone</p>
-            <h2>A careful workspace for one focused search.</h2>
-            <p className="lede">
-              Search, verify, compare, and shortlist candidates with evidence.
-              Nothing is sent without your final review and explicit action.
-            </p>
-          </div>
-          <div className="step-chip">M1 · Connected queue</div>
-        </section>
-
-        <section
-          aria-busy={health.isPending}
-          aria-label="System readiness"
-          aria-live="polite"
-          className="status-grid"
+      <nav aria-label="Sourcing workflow" className="workflow-nav">
+        <button
+          aria-current={view === 'brief' ? 'page' : undefined}
+          onClick={() => setView('brief')}
+          type="button"
         >
-          <article className="status-card">
-            <div className="status-heading">
-              <StatusDot healthy={backendHealthy} />
-              <h3>Dashboard API</h3>
-            </div>
-            <p>
-              {health.isPending && 'Checking the loopback service…'}
-              {health.isError && 'Backend unavailable. Start the FastAPI service.'}
-              {backendHealthy && 'Connected on the local machine.'}
-              {health.data?.status === 'degraded' &&
-                'Connected, but the database is unavailable.'}
-            </p>
-          </article>
+          <span>01</span> Role brief
+        </button>
+        <button
+          aria-current={view === 'search' ? 'page' : undefined}
+          disabled={!brief.data}
+          onClick={() => setView('search')}
+          type="button"
+        >
+          <span>02</span> Find candidates
+        </button>
+      </nav>
 
-          <article className="status-card">
-            <div className="status-heading">
-              <StatusDot healthy={health.data?.database === 'ok'} />
-              <h3>Private database</h3>
-            </div>
-            <p>
-              {health.data?.database === 'ok'
-                ? 'Writable and stored outside the repository.'
-                : 'Waiting for a writable local database.'}
-            </p>
-          </article>
-
-          <article className="status-card">
-            <div className="status-heading">
-              <StatusDot healthy={mcp.data?.reachable === true} />
-              <h3>LinkedIn MCP</h3>
-            </div>
-            <p>
-              {mcp.isPending && 'Checking through the serialized queue…'}
-              {mcp.data?.reachable &&
-                `${mcp.data.tools.length} tools available. Server remains independently managed.`}
-              {mcp.isError && 'Status probe failed. The dashboard will not start the server.'}
-              {mcp.data && !mcp.data.reachable &&
-                `Unavailable (${mcp.data.last_error_class ?? 'unknown'}).`}
-            </p>
-          </article>
-        </section>
-
-        <section aria-live="polite" className="queue-panel">
-          <div className="queue-heading">
-            <div>
-              <p className="eyebrow">Serialized activity</p>
-              <h2>Queue status</h2>
-            </div>
-            <span className="event-state">
-              Events {queue.connected ? 'connected' : 'reconnecting'}
-            </span>
+      <main id="main-content">
+        {health.isError ? (
+          <div className="blocking-banner" role="alert">
+            Dashboard API unavailable. Your entered work stays in this browser.
           </div>
-          {queue.state === 'paused' ? (
-            <div className="pause-banner" role="status">
-              <div>
-                <strong>Queue paused · {queue.pause_reason ?? 'operator hold'}</strong>
-                <p>
-                  {queue.resume_at
-                    ? `Recommended resume after ${new Date(queue.resume_at).toLocaleString()}.`
-                    : 'Resolve the local MCP condition, then resume explicitly.'}
-                </p>
+        ) : null}
+        {!session.isPending && !session.data ? (
+          <section className="first-run" aria-labelledby="first-run-title">
+            <p className="eyebrow">One-time local workspace</p>
+            <h1 id="first-run-title">Start a focused sourcing session.</h1>
+            <p>
+              Profile information is stored only in your owner-protected local
+              database. This discovery milestone cannot send messages.
+            </p>
+            {start.isError ? (
+              <div className="form-error" role="alert">
+                {start.error.message}
               </div>
+            ) : null}
+            <form
+              onSubmit={(event) => {
+                event.preventDefault()
+                start.mutate(sessionLabel)
+              }}
+            >
+              <label className="field">
+                <span>Session name</span>
+                <input
+                  onChange={(event) => setSessionLabel(event.target.value)}
+                  required
+                  value={sessionLabel}
+                />
+              </label>
               <button
-                disabled={resume.isPending}
-                onClick={() => resume.mutate()}
-                type="button"
+                className="primary-action"
+                disabled={start.isPending}
+                type="submit"
               >
-                {resume.isPending ? 'Resuming…' : 'Resume queue'}
+                {start.isPending ? 'Starting…' : 'Start local session'}
               </button>
-            </div>
-          ) : null}
-          <div className="queue-list">
-            {queue.jobs.length === 0 ? (
-              <p className="queue-empty">No queued work. The browser slot is free.</p>
-            ) : (
-              queue.jobs.map((job) => (
-                <article className="queue-job" key={job.id}>
-                  <div>
-                    <strong>{job.kind.replaceAll('_', ' ')}</strong>
-                    <span>{job.state}</span>
-                  </div>
-                  <p>
-                    {job.state === 'queued' || job.state === 'pending'
-                      ? `Position ${job.position ?? '—'} of ${job.depth}`
-                      : `Running${job.percent == null ? '' : ` · ${Math.round(job.percent)}%`}`}
-                  </p>
-                </article>
-              ))
-            )}
-          </div>
-        </section>
-
-        <section className="guardrail-panel">
-          <div>
-            <p className="eyebrow">Locked guardrails</p>
-            <h2>Human judgment stays in charge.</h2>
-          </div>
-          <ul>
-            <li>No bulk or scheduled messages</li>
-            <li>Every match points to retrieved profile text</li>
-            <li>Profile data remains local through matching</li>
-            <li>Sending stays disabled until all phase gates pass</li>
-          </ul>
-        </section>
+            </form>
+          </section>
+        ) : session.data ? (
+          view === 'brief' ? (
+            <BriefPage
+              current={brief.data}
+              key={brief.data?.id ?? 'new-brief'}
+              session={session.data}
+            />
+          ) : (
+            <SearchPage brief={brief.data} queue={queue} session={session.data} />
+          )
+        ) : (
+          <p aria-live="polite">Opening your local workspace…</p>
+        )}
       </main>
 
       <footer>
         <span>Single operator</span>
         <span>Loopback only</span>
-        <span>Send gate: {health.data?.send_enabled ? 'enabled' : 'off'}</span>
+        <span>Send gate: off</span>
       </footer>
     </div>
   )

@@ -107,6 +107,20 @@ class JobExecutor(Protocol):
     ) -> dict[str, Any]: ...
 
 
+class JobResultProcessor(Protocol):
+    """Project a committed raw result into domain tables without network I/O."""
+
+    def reconcile(self) -> None: ...
+
+    def process_result(
+        self, job_id: str, kind: JobKind, result: dict[str, Any]
+    ) -> None: ...
+
+    def process_failure(
+        self, job_id: str, kind: JobKind, error_class: ErrorClass
+    ) -> None: ...
+
+
 class MCPReadExecutor:
     """The sole production dispatch table; messaging is intentionally absent."""
 
@@ -148,6 +162,10 @@ class _ResponseError(RuntimeError):
         self.response = response
 
 
+class _ProjectionError(RuntimeError):
+    """A local parser failed after the external response was committed."""
+
+
 class _StaleClaim(RuntimeError):
     """A detached or superseded worker no longer owns durable state."""
 
@@ -176,6 +194,7 @@ class DurableJobQueue:
         timeout_retry_seconds: float = 0.0,
         rate_limit_cooldowns_seconds: tuple[float, ...] = (300.0, 900.0, 2700.0),
         shutdown_grace_seconds: float = 5.0,
+        result_processor: JobResultProcessor | None = None,
     ) -> None:
         self.database = database
         self.executor = executor
@@ -185,6 +204,7 @@ class DurableJobQueue:
         self.timeout_retry_seconds = max(0.0, timeout_retry_seconds)
         self.rate_limit_cooldowns_seconds = rate_limit_cooldowns_seconds
         self.shutdown_grace_seconds = shutdown_grace_seconds
+        self.result_processor = result_processor
         self._wake = asyncio.Event()
         self._changed = asyncio.Condition()
         self._worker: asyncio.Task[None] | None = None
@@ -203,6 +223,8 @@ class DurableJobQueue:
             try:
                 self.database.initialize()
                 self._prepare_startup(owner_token)
+                if self.result_processor is not None:
+                    self.result_processor.reconcile()
                 self._worker_lock_fd = descriptor
                 self._owner_token = owner_token
                 self._stopping = False
@@ -374,6 +396,7 @@ class DurableJobQueue:
         payload: dict[str, Any],
         *,
         correlation_id: str | None = None,
+        related_factory: Callable[[Any, Job], None] | None = None,
     ) -> str:
         if not self._accepting:
             raise RuntimeError("queue is not accepting jobs")
@@ -402,6 +425,12 @@ class DurableJobQueue:
             if session.get(DashboardSession, session_id) is None:
                 raise LookupError("session does not exist")
             session.add(job)
+            if related_factory is not None:
+                # SQLAlchemy cannot infer ordering from scalar FK ids without
+                # relationships; materialize the parent while retaining this
+                # transaction's atomicity.
+                session.flush()
+                related_factory(session, job)
         self.events.publish(self._job_event(job.id, "queued"))
         self._publish_snapshot()
         self._wake.set()
@@ -831,6 +860,16 @@ class DurableJobQueue:
                 job.payload, capture_raw, report_progress
             )
             error_class = classify(result)
+            if self.result_processor is not None:
+                try:
+                    self.result_processor.process_result(job.id, job.kind, result)
+                except Exception as error:
+                    # This must never turn into a second external call. The raw
+                    # attempt remains restart-reconcilable by the local parser.
+                    if error_class is ErrorClass.RATE_LIMIT:
+                        await self._complete_rate_limited(job, result)
+                        return
+                    raise _ProjectionError from error
             if error_class is ErrorClass.RATE_LIMIT:
                 await self._complete_rate_limited(job, result)
             else:
@@ -851,6 +890,32 @@ class DurableJobQueue:
                     else classify(error)
                 )
             )
+            retryable = error_class in {
+                ErrorClass.BROWSER_BUSY,
+                ErrorClass.TIMEOUT,
+            } and job.attempt_number < max_attempts_for(job.kind)
+            if (
+                self.result_processor is not None
+                and not retryable
+                and not isinstance(error, _ProjectionError)
+            ):
+                if isinstance(error, _ResponseError):
+                    try:
+                        self.result_processor.process_result(
+                            job.id, job.kind, error.response.result_payload()
+                        )
+                    except Exception:
+                        # The raw error envelope is still durable and will be
+                        # projected locally on startup; preserve its tool state.
+                        pass
+                else:
+                    self.result_processor.process_failure(job.id, job.kind, error_class)
+            if (
+                isinstance(error, _ResponseError)
+                and error_class is ErrorClass.RATE_LIMIT
+            ):
+                await self._complete_rate_limited(job, error.response.result_payload())
+                return
             await self._handle_failure(job, error_class)
 
     def _require_fence(self, session: Any, job: ClaimedJob) -> None:

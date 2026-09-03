@@ -35,8 +35,14 @@ from linkedin_dashboard.db.migrations import (
     v0014_history_identity_completion,
     v0015_approved_evidence_roots,
     v0016_durable_queue,
+    v0017_role_discovery,
+    v0018_candidate_identity,
 )
 from linkedin_dashboard.db.models import Base
+from linkedin_dashboard.db.unicode_identity import (
+    register_unicode_casefold,
+    unicode_data_version,
+)
 from linkedin_dashboard.settings import normalize_database_path
 
 _MIGRATION_MODULES = (
@@ -56,6 +62,8 @@ _MIGRATION_MODULES = (
     v0014_history_identity_completion,
     v0015_approved_evidence_roots,
     v0016_durable_queue,
+    v0017_role_discovery,
+    v0018_candidate_identity,
 )
 
 _SCHEMA_ACTIONS = {
@@ -132,6 +140,19 @@ class Database:
                 migration_engine, _ = _create_migration_engine(self.path, database_fd)
                 try:
                     with migration_engine.connect() as connection:
+                        # SQLite's documented table-rebuild procedure requires
+                        # foreign-key enforcement to be disabled before the
+                        # transaction begins.  We still run foreign_key_check
+                        # and the exact schema verifier before committing, then
+                        # restore enforcement on this physical connection.
+                        connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+                        if (
+                            connection.exec_driver_sql("PRAGMA foreign_keys").scalar()
+                            != 0
+                        ):
+                            raise RuntimeError(
+                                "migration connection could not suspend foreign keys"
+                            )
                         connection.exec_driver_sql("BEGIN IMMEDIATE")
                         try:
                             # The blank/populated decision belongs to the write
@@ -160,6 +181,14 @@ class Database:
                             raise
                         else:
                             connection.commit()
+                        connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+                        if (
+                            connection.exec_driver_sql("PRAGMA foreign_keys").scalar()
+                            != 1
+                        ):
+                            raise RuntimeError(
+                                "migration connection could not restore foreign keys"
+                            )
                 finally:
                     migration_engine.dispose()
                 _require_same_file(self.path, database_fd)
@@ -293,6 +322,7 @@ def _create_runtime_engine(
         if database_fd is None:
             raise RuntimeError("database connections require secure initialization")
         _revalidate_storage(dbapi_connection, path, database_fd)
+        register_unicode_casefold(dbapi_connection)
         dbapi_connection.set_authorizer(
             lambda *arguments: _sqlite_authorizer(
                 *arguments,
@@ -313,6 +343,7 @@ def _create_runtime_engine(
         if database_fd is None:
             raise RuntimeError("database connections require secure initialization")
         _revalidate_storage(dbapi_connection, path, database_fd)
+        register_unicode_casefold(dbapi_connection)
         dbapi_connection.set_authorizer(
             lambda *arguments: _sqlite_authorizer(
                 *arguments,
@@ -363,6 +394,7 @@ def _create_migration_engine(path: Path, expected_fd: int) -> tuple[Engine, None
         dbapi_connection: Any, connection_record: Any
     ) -> None:  # pragma: no cover - SQLAlchemy callback signature
         _revalidate_storage(dbapi_connection, path, expected_fd)
+        register_unicode_casefold(dbapi_connection)
         # A capability is minted for this physical connection only.  A second
         # connection from the same engine gets a different, closed capability.
         authorizer = _MigrationAuthorizer()
@@ -636,7 +668,13 @@ def _sqlite_authorizer(
     if action == sqlite3.SQLITE_PRAGMA and argument_two is not None:
         pragma = (argument_one or "").casefold()
         setting = argument_two.strip(" \t'\"").casefold()
-        if pragma in {"foreign_keys", "recursive_triggers"} and setting not in {
+        if pragma == "foreign_keys" and setting not in {"1", "on", "true", "yes"}:
+            # The migration-only connection may suspend enforcement for
+            # SQLite's canonical table-rebuild algorithm. Runtime connections
+            # never receive schema authority and therefore cannot do this.
+            if not (allow_schema_changes and setting in {"0", "off", "false", "no"}):
+                return sqlite3.SQLITE_DENY
+        if pragma == "recursive_triggers" and setting not in {
             "1",
             "on",
             "true",
@@ -873,6 +911,10 @@ def _expected_schema() -> tuple[
     canonical = create_engine("sqlite://")
     try:
         with canonical.begin() as connection:
+            dbapi_connection = connection.connection.driver_connection
+            if dbapi_connection is None:  # pragma: no cover - SQLite always supplies it
+                raise RuntimeError("canonical SQLite connection is unavailable")
+            register_unicode_casefold(dbapi_connection)
             Base.metadata.create_all(connection)
             connection.exec_driver_sql(
                 "CREATE TABLE schema_migration "
@@ -880,9 +922,6 @@ def _expected_schema() -> tuple[
             )
             for migration in _MIGRATION_MODULES:
                 migration.apply(connection)
-            dbapi_connection = connection.connection.driver_connection
-            if dbapi_connection is None:  # pragma: no cover - SQLite always supplies it
-                raise RuntimeError("canonical SQLite connection is unavailable")
             invariant_ddl = tuple(
                 (kind, name, _normalized_schema_sql(sql))
                 for kind, name, sql in dbapi_connection.execute(
@@ -963,6 +1002,14 @@ def _verify_schema_and_contents_dbapi(dbapi_connection: Any) -> None:
             raise RuntimeError("SQLite integrity check failed")
         if cursor.execute("PRAGMA foreign_key_check").fetchone() is not None:
             raise RuntimeError("SQLite foreign key check failed")
+        identity_versions = cursor.execute(
+            "SELECT id, unicode_version FROM candidate_identity_metadata"
+        ).fetchall()
+        if identity_versions != [(1, unicode_data_version())]:
+            raise RuntimeError(
+                "candidate identity Unicode version mismatch; "
+                "an explicit migration and REINDEX are required"
+            )
         expected_versions = _required_migration_versions()
         actual_versions = {
             row[0]

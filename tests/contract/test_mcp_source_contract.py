@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import ast
+import hashlib
+import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -11,7 +15,18 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 def _server_checkout() -> Path:
     configured = os.environ.get("LINKEDIN_MCP_SOURCE")
-    return Path(configured) if configured else PROJECT_ROOT.parent / "linkedin"
+    if configured:
+        return Path(configured)
+    candidates = [PROJECT_ROOT.parent / "linkedin"]
+    candidates.extend(parent / "linkedin" for parent in PROJECT_ROOT.parents)
+    return next(
+        (
+            candidate
+            for candidate in candidates
+            if (candidate / "linkedin_mcp_server").is_dir()
+        ),
+        candidates[0],
+    )
 
 
 def _nested_async_signature(path: Path, function_name: str) -> list[str]:
@@ -71,3 +86,101 @@ def test_runtime_never_imports_or_supervises_the_sibling_server() -> None:
     assert "from linkedin_mcp_server" not in source
     assert "subprocess" not in source
     assert "create_subprocess" not in source
+
+
+def test_person_identifier_normalizer_matches_pinned_sibling_contract() -> None:
+    checkout = _server_checkout()
+    identifiers = checkout / "linkedin_mcp_server" / "scraping" / "identifiers.py"
+    if not identifiers.is_file():
+        pytest.skip("sibling linkedin-mcp-server identifier source is absent")
+    digest = hashlib.sha256(identifiers.read_bytes()).hexdigest()
+    assert (
+        digest == "634176d8c0c6df2088fd674a940c477319e904537a2b4e0f2601c0f26bd56494"
+    ), (
+        "sibling identifier source drifted; review and deliberately update the "
+        "dashboard parity corpus"
+    )
+
+    values = [
+        "williamhgates",
+        "WilliamHGates",
+        "https://www.linkedin.com/in/williamhgates",
+        "http://www.linkedin.com/in/williamhgates",
+        "www.linkedin.com/in/williamhgates",
+        "https://de.linkedin.com/in/williamhgates",
+        "https://m.linkedin.com/in/williamhgates",
+        "https://www.linkedin.com/mwlite/in/williamhgates",
+        "https://www.linkedin.com/mwlite/profile/in/williamhgates",
+        "https://www.linkedin.com/in/williamhgates?trk=profile#experience",
+        "https://www.linkedin.com/in/williamhgates/recent-activity/all/",
+        "%D0%B0%D0%BD%D0%B4%D1%80%D0%B5%D0%B9",
+        "https://ru.linkedin.com/in/%D0%B0%D0%BD%D0%B4%D1%80%D0%B5%D0%B9",
+        "%ZZ",
+        "felix%",
+        "felix%2",
+        "felix%2Ffoo",
+        "felix%20foo",
+        ".",
+        "..",
+        "%252e%252e",
+        "me",
+        "ME",
+        "%6d%65",
+        "https://www.linkedin.com/in/%FF",
+        "https://www.linkedin.com/in/a%2Fb",
+        "https://www.linkedin.com/company/microsoft",
+        "https://www.linkedin.com/feed/",
+        "https://lnkd.in/eXaMpLe1",
+        "https://evil-linkedin.com/in/williamhgates",
+        "https://linkedin.com.example.test/in/williamhgates",
+        "bill gates",
+        "in/williamhgates",
+        "",
+        "   ",
+        "/in/Alice/",
+    ]
+    script = """
+import json, pathlib, sys, types
+scraping = types.ModuleType('linkedin_mcp_server.scraping')
+scraping.__path__ = [str(pathlib.Path.cwd() / 'linkedin_mcp_server' / 'scraping')]
+sys.modules['linkedin_mcp_server.scraping'] = scraping
+core = types.ModuleType('linkedin_mcp_server.core')
+exceptions = types.ModuleType('linkedin_mcp_server.core.exceptions')
+class InvalidReferenceError(Exception): pass
+exceptions.InvalidReferenceError = InvalidReferenceError
+sys.modules['linkedin_mcp_server.core'] = core
+sys.modules['linkedin_mcp_server.core.exceptions'] = exceptions
+from linkedin_mcp_server.scraping.identifiers import normalize_person_identifier
+values = json.loads(sys.stdin.read())
+out = []
+for value in values:
+    try:
+        out.append([True, normalize_person_identifier(value)])
+    except Exception:
+        out.append([False, None])
+print(json.dumps(out, ensure_ascii=False))
+"""
+    environment = {**os.environ, "PYTHONPATH": str(checkout)}
+    upstream = subprocess.run(
+        [sys.executable, "-c", script],
+        input=json.dumps(values),
+        text=True,
+        capture_output=True,
+        check=False,
+        env=environment,
+        cwd=checkout,
+    )
+    assert upstream.returncode == 0, upstream.stderr
+    expected = json.loads(upstream.stdout)
+
+    from linkedin_dashboard.parsing.identity import (  # local side of contract
+        normalize_person_reference,
+    )
+
+    actual: list[list[str | bool | None]] = []
+    for value in values:
+        try:
+            actual.append([True, normalize_person_reference(value)])
+        except Exception:
+            actual.append([False, None])
+    assert actual == expected

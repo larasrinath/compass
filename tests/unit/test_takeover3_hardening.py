@@ -25,6 +25,7 @@ from linkedin_dashboard.db.models import (
     SendConfirmation,
 )
 from linkedin_dashboard.db.session import Database
+from linkedin_dashboard.db.unicode_identity import register_sqlite_unicode_casefold
 from sqlalchemy import create_engine, event, insert, text
 from sqlalchemy.engine import URL
 from sqlalchemy.exc import DBAPIError
@@ -32,6 +33,12 @@ from sqlalchemy.pool import NullPool
 
 NOW = "2026-09-02T12:00:00+00:00"
 LATER = "2026-09-02T12:05:00+00:00"
+
+
+def _maintenance_connect(path: Path) -> sqlite3.Connection:
+    connection = sqlite3.connect(path)
+    register_sqlite_unicode_casefold(connection)
+    return connection
 
 
 @contextmanager
@@ -45,6 +52,7 @@ def _migration_test_phase(database: Database) -> Iterator[None]:
     @event.listens_for(migration_engine, "connect")
     def configure(connection, record) -> None:
         del record
+        register_sqlite_unicode_casefold(connection)
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA recursive_triggers=ON")
 
@@ -139,7 +147,7 @@ def _attempt(
 
 
 def _schema_objects(path: Path) -> list[tuple[str, str, str]]:
-    with sqlite3.connect(path) as connection:
+    with _maintenance_connect(path) as connection:
         return connection.execute(
             "SELECT type, name, sql FROM sqlite_master "
             "WHERE type IN ('index', 'trigger') AND sql IS NOT NULL "
@@ -156,7 +164,7 @@ def test_sqlalchemy_url_preserves_special_database_filename(
     database.dispose()
 
     assert {path.name for path in tmp_path.iterdir()} == {name}
-    with sqlite3.connect(database.path) as connection:
+    with _maintenance_connect(database.path) as connection:
         assert connection.execute(
             "SELECT 1 FROM schema_migration WHERE version=?",
             (v0008_history_hardening.VERSION,),
@@ -236,7 +244,7 @@ def test_rollback_journal_is_rejected_before_sqlite_without_mutation(
     tmp_path: Path, kind: str
 ) -> None:
     path = tmp_path / "journal-guard.db"
-    with sqlite3.connect(path) as connection:
+    with _maintenance_connect(path) as connection:
         connection.execute("CREATE TABLE sentinel (value TEXT NOT NULL)")
         connection.execute("INSERT INTO sentinel VALUES ('untouched')")
     os.chmod(path, 0o600)
@@ -474,7 +482,8 @@ def test_candidate_replace_cannot_retarget_approved_recipient_with_triggers_off(
     path = database.path
     database.dispose()
 
-    with sqlite3.connect(path) as connection:
+    with _maintenance_connect(path) as connection:
+        register_sqlite_unicode_casefold(connection)
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA recursive_triggers=OFF")
         with pytest.raises(sqlite3.IntegrityError, match="recipient identity"):
@@ -532,7 +541,8 @@ def test_candidate_update_replace_cannot_delete_approved_recipient(
         if conflict == "id"
         else f"person-candidate-update-{recursive_triggers}-{conflict}"
     )
-    with sqlite3.connect(path) as connection:
+    with _maintenance_connect(path) as connection:
+        register_sqlite_unicode_casefold(connection)
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
         with pytest.raises(sqlite3.IntegrityError, match="recipient identity"):
@@ -589,7 +599,7 @@ def test_referenced_draft_replace_is_blocked_with_recursive_triggers_off(
     path = database.path
     database.dispose()
 
-    with sqlite3.connect(path) as connection:
+    with _maintenance_connect(path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA recursive_triggers=OFF")
         with pytest.raises(
@@ -634,7 +644,7 @@ def test_draft_update_replace_cannot_delete_referenced_draft(
 
     assignment = "id=?" if conflict == "id" else "version=?"
     value: str | int = draft_id if conflict == "id" else 1
-    with sqlite3.connect(path) as connection:
+    with _maintenance_connect(path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
         with pytest.raises(
@@ -677,7 +687,7 @@ def test_session_replace_cannot_delete_existing_history(
     path = database.path
     database.dispose()
 
-    with sqlite3.connect(path) as connection:
+    with _maintenance_connect(path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
         with pytest.raises(sqlite3.IntegrityError, match="session id already exists"):
@@ -965,7 +975,7 @@ def test_confirmation_replace_collision_survives_recursive_triggers_off(
     path = database.path
     database.dispose()
 
-    with sqlite3.connect(path) as connection:
+    with _maintenance_connect(path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA recursive_triggers=OFF")
         with pytest.raises(sqlite3.IntegrityError, match="token already exists"):
@@ -992,7 +1002,7 @@ def test_audit_replace_collision_survives_recursive_triggers_off(
     path = database.path
     database.dispose()
 
-    with sqlite3.connect(path) as connection:
+    with _maintenance_connect(path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA recursive_triggers=OFF")
         with pytest.raises(sqlite3.IntegrityError, match="append-only"):
@@ -1032,7 +1042,7 @@ def test_attempt_replace_collisions_survive_recursive_triggers_off(
         else "send_attempt idempotency key already exists"
     )
 
-    with sqlite3.connect(path) as connection:
+    with _maintenance_connect(path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA recursive_triggers=OFF")
         with pytest.raises(sqlite3.IntegrityError, match=expected_error):
@@ -1095,7 +1105,7 @@ def test_v0008_preflight_rejects_legacy_confirm_state_mismatch(
     finally:
         database.dispose()
 
-    with sqlite3.connect(database.path) as connection:
+    with _maintenance_connect(database.path) as connection:
         assert (
             connection.execute(
                 "SELECT 1 FROM schema_migration WHERE version=?",
@@ -1315,7 +1325,7 @@ def test_v0009_column_addition_is_atomic_and_retryable(
     monkeypatch.setattr(v0009_integrity_completion, "apply", interrupted_apply)
     with pytest.raises(RuntimeError, match="v9 column"):
         database.initialize()
-    with sqlite3.connect(database.path) as connection:
+    with _maintenance_connect(database.path) as connection:
         assert "purged_at" not in {
             row[1] for row in connection.execute("PRAGMA table_info(evidence)")
         }

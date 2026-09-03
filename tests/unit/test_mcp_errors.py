@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any, cast
 
 import httpx
 import pytest
+from fastmcp import Client, FastMCP
 from linkedin_dashboard.mcp.envelope import parse_response_envelope
 from linkedin_dashboard.mcp.errors import ErrorClass, classify, response_error_details
 from mcp.shared.exceptions import McpError
@@ -169,6 +171,43 @@ def test_current_source_pinned_setup_messages(message: str) -> None:
 )
 def test_domain_classification_does_not_use_broad_substrings(message: str) -> None:
     assert classify(_tool_error(message)) is ErrorClass.UNKNOWN
+
+
+def test_real_fastmcp_auth_wrapper_is_unwrapped_exactly() -> None:
+    async def call_fixture() -> Any:
+        server = FastMCP("auth-fixture")
+
+        @server.tool
+        def search_people() -> None:
+            raise RuntimeError(
+                "Session expired. Run with --login to create a new browser profile."
+            )
+
+        async with Client(server) as client:
+            return await client.call_tool("search_people", {}, raise_on_error=False)
+
+    result = asyncio.run(call_fixture())
+    response = parse_response_envelope(
+        {
+            "content": [block.model_dump(mode="json") for block in result.content],
+            "isError": result.is_error,
+        }
+    )
+
+    assert result.content[0].text.startswith("Error calling tool 'search_people': ")
+    assert classify(response) is ErrorClass.AUTH_REQUIRED
+
+
+def test_fastmcp_like_text_is_not_broadly_unwrapped() -> None:
+    assert (
+        classify(
+            _tool_error(
+                "Context: Error calling tool 'search_people': Session expired. "
+                "Run with --login to create a new browser profile."
+            )
+        )
+        is ErrorClass.UNKNOWN
+    )
 
 
 def test_rate_limit_in_successful_partial_payload_is_structural() -> None:

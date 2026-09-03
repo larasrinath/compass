@@ -42,6 +42,16 @@ class DashboardSession(Base):
     send_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
+class CandidateIdentityMetadata(Base):
+    __tablename__ = "candidate_identity_metadata"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_candidate_identity_metadata_singleton"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    unicode_version: Mapped[str] = mapped_column(String(16), nullable=False)
+
+
 class PhaseGate(Base):
     __tablename__ = "phase_gate"
     __table_args__ = (
@@ -70,6 +80,7 @@ class RoleBrief(Base):
     )
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[str] = mapped_column(String(32), nullable=False)
+    sealed_at: Mapped[str | None] = mapped_column(String(32))
     superseded_at: Mapped[str | None] = mapped_column(String(32))
     job_description: Mapped[str] = mapped_column(Text, nullable=False)
     target_titles: Mapped[list[str]] = mapped_column(JSON, nullable=False)
@@ -94,15 +105,40 @@ class BriefSkill(Base):
     term: Mapped[str] = mapped_column(Text, nullable=False)
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
     aliases: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class BriefTerm(Base):
+    """Alias-aware structured brief terms not represented by ``BriefSkill``."""
+
+    __tablename__ = "brief_term"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('target_title','industry')", name="ck_brief_term_kind"
+        ),
+        UniqueConstraint("brief_id", "kind", "term_key", name="uq_brief_term_key"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    brief_id: Mapped[str] = mapped_column(
+        ForeignKey("role_brief.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    term: Mapped[str] = mapped_column(Text, nullable=False)
+    term_key: Mapped[str] = mapped_column(Text, nullable=False)
+    aliases: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
 class SearchRun(Base):
     __tablename__ = "search_run"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('ok','partial','rate_limited','failed')",
+            "status IN ('queued','running','ok','partial','rate_limited','failed',"
+            "'interrupted','cancelled')",
             name="ck_search_run_status",
         ),
+        UniqueConstraint("job_id", name="uq_search_run_job"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -112,6 +148,9 @@ class SearchRun(Base):
     brief_id: Mapped[str] = mapped_column(
         ForeignKey("role_brief.id", ondelete="CASCADE"), nullable=False
     )
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("job.id", ondelete="CASCADE"), nullable=False
+    )
     created_at: Mapped[str] = mapped_column(String(32), nullable=False)
     keywords: Mapped[str] = mapped_column(Text, nullable=False)
     location: Mapped[str | None] = mapped_column(Text)
@@ -119,6 +158,7 @@ class SearchRun(Base):
     current_company: Mapped[str | None] = mapped_column(Text)
     result_url: Mapped[str | None] = mapped_column(Text)
     raw_response: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    processed_at: Mapped[str | None] = mapped_column(String(32))
     reference_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     person_reference_count: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0
@@ -134,10 +174,13 @@ class CandidateReference(Base):
         ForeignKey("search_run.id", ondelete="CASCADE"), nullable=False
     )
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    # Value-only references use an empty string here; their exact missing-url
+    # shape remains in SearchRun.raw_response.
     url: Mapped[str] = mapped_column(Text, nullable=False)
     text: Mapped[str | None] = mapped_column(Text)
     context: Mapped[str | None] = mapped_column(Text)
     value: Mapped[str | None] = mapped_column(Text)
+    extra: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     position: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
@@ -151,7 +194,6 @@ class Candidate(Base):
             "retrieval_status IN ('pending','ok','partial','rate_limited','failed')",
             name="ck_candidate_retrieval_status",
         ),
-        UniqueConstraint("session_id", "username", name="uq_candidate_username"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -179,6 +221,31 @@ class CandidateSource(Base):
     candidate_ref_id: Mapped[str] = mapped_column(
         ForeignKey("candidate_ref.id", ondelete="CASCADE"), nullable=False
     )
+
+
+class CompanyLookup(Base):
+    __tablename__ = "company_lookup"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued','running','ok','not_exposed','failed','interrupted',"
+            "'cancelled')",
+            name="ck_company_lookup_status",
+        ),
+        UniqueConstraint("job_id", name="uq_company_lookup_job"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("session.id", ondelete="CASCADE"), nullable=False
+    )
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("job.id", ondelete="CASCADE"), nullable=False
+    )
+    slug: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    raw_response: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    processed_at: Mapped[str | None] = mapped_column(String(32))
 
 
 class Job(Base):

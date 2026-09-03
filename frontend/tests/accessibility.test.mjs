@@ -5,6 +5,8 @@ import test from 'node:test'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const app = readFileSync(`${root}/src/App.tsx`, 'utf8')
+const brief = readFileSync(`${root}/src/pages/BriefPage.tsx`, 'utf8')
+const search = readFileSync(`${root}/src/pages/SearchPage.tsx`, 'utf8')
 const css = readFileSync(`${root}/src/index.css`, 'utf8')
 
 function luminance(hex) {
@@ -24,9 +26,9 @@ function contrast(first, second) {
   return (lighter + 0.05) / (darker + 0.05)
 }
 
-test('readiness updates are announced and decorations are hidden', () => {
-  assert.match(app, /aria-live="polite"/)
-  assert.match(app, /aria-busy=\{health\.isPending\}/)
+test('workflow updates are announced and decorations are hidden', () => {
+  assert.match(`${app}${brief}${search}`, /aria-live="polite"/)
+  assert.match(app, /className="skip-link"/)
   assert.equal(app.match(/aria-hidden="true"/g)?.length, 2)
 })
 

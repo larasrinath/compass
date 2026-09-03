@@ -31,6 +31,7 @@ class SearchPeoplePayload(_StrictPayload):
     location: str | None = Field(default=None, max_length=200)
     network: list[Literal["F", "S", "O"]] | None = Field(default=None, max_length=3)
     current_company: str | None = Field(default=None, max_length=32)
+    search_run_id: str | None = Field(default=None, min_length=1, max_length=36)
 
     @field_validator("current_company")
     @classmethod
@@ -63,6 +64,7 @@ class CompanyProfilePayload(_StrictPayload):
     kind: Literal[JobKind.GET_COMPANY_PROFILE] = JobKind.GET_COMPANY_PROFILE
     company_name: str = Field(min_length=1, max_length=200)
     sections: list[str] | None = Field(default=None, min_length=1, max_length=32)
+    company_lookup_id: str | None = Field(default=None, min_length=1, max_length=36)
 
 
 type JobPayload = Annotated[
@@ -118,7 +120,9 @@ def tool_arguments(payload: JobPayload) -> tuple[str, dict[str, Any]]:
     if isinstance(payload, ListToolsPayload):
         raise ValueError("list_tools is not a tools/call operation")
     arguments = payload.model_dump(
-        mode="json", exclude={"kind", "parent_job_id"}, exclude_none=True
+        mode="json",
+        exclude={"kind", "parent_job_id", "search_run_id", "company_lookup_id"},
+        exclude_none=True,
     )
     sections = arguments.get("sections")
     if isinstance(sections, list):

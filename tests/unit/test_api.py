@@ -58,6 +58,11 @@ def test_real_openapi_preserves_distinct_routes_and_schema_references(tmp_path) 
     document = response.json()
     assert set(document["paths"]) == {
         "/api/audit",
+        "/api/briefs",
+        "/api/briefs/current",
+        "/api/candidates",
+        "/api/companies/urn-lookup",
+        "/api/companies/urn-lookups/{lookup_id}",
         "/api/events",
         "/api/health",
         "/api/jobs",
@@ -65,6 +70,9 @@ def test_real_openapi_preserves_distinct_routes_and_schema_references(tmp_path) 
         "/api/mcp/status",
         "/api/queue/resume",
         "/api/queue/status",
+        "/api/searches",
+        "/api/searches/{run_id}",
+        "/api/session",
     }
     references: list[str] = []
 

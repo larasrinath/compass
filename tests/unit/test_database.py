@@ -26,6 +26,8 @@ from linkedin_dashboard.db.migrations import (
     v0014_history_identity_completion,
     v0015_approved_evidence_roots,
     v0016_durable_queue,
+    v0017_role_discovery,
+    v0018_candidate_identity,
 )
 from linkedin_dashboard.db.models import (
     Candidate,
@@ -38,6 +40,7 @@ from linkedin_dashboard.db.models import (
     SendConfirmation,
 )
 from linkedin_dashboard.db.session import Database, get_journal_mode
+from linkedin_dashboard.db.unicode_identity import register_sqlite_unicode_casefold
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import URL
 from sqlalchemy.exc import DBAPIError, IntegrityError
@@ -57,6 +60,7 @@ def _migration_test_phase(database: Database) -> Iterator[None]:
     @event.listens_for(migration_engine, "connect")
     def configure(connection, record) -> None:
         del record
+        register_sqlite_unicode_casefold(connection)
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA recursive_triggers=ON")
 
@@ -606,6 +610,8 @@ def test_existing_v0001_database_receives_integrity_migration(tmp_path) -> None:
         v0014_history_identity_completion.VERSION,
         v0015_approved_evidence_roots.VERSION,
         v0016_durable_queue.VERSION,
+        v0017_role_discovery.VERSION,
+        v0018_candidate_identity.VERSION,
     ]
     assert "NEW.candidate_id IS NOT OLD.candidate_id" in trigger_sql
 
