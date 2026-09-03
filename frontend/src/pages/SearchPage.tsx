@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  enrichCandidate,
   getCompanyLookup,
   getSearch,
   listCandidates,
@@ -21,10 +22,12 @@ const NETWORKS = [
 export function SearchPage({
   session,
   brief,
+  onCandidateOpen,
   queue,
 }: {
   session: SessionRecord
   brief: BriefRecord | null | undefined
+  onCandidateOpen: (candidateId: string) => void
   queue: ReturnTypeOfJobEvents
 }) {
   const client = useQueryClient()
@@ -89,6 +92,13 @@ export function SearchPage({
     mutationFn: () => startCompanyLookup(session.id, companySlug),
     onSuccess: (result) => setLookupId(result.lookup_id),
     onError: () => requestAnimationFrame(() => errorRef.current?.focus()),
+  })
+  const enrich = useMutation({
+    mutationFn: (candidateId: string) =>
+      enrichCandidate(candidateId, ['experience']),
+    onSuccess: async () => {
+      await client.invalidateQueries({ queryKey: ['candidates', session.id] })
+    },
   })
 
   function queuePosition(jobId: string): string | null {
@@ -377,10 +387,35 @@ export function SearchPage({
             {candidates.data.map((candidate) => (
               <article className="candidate-card" key={candidate.id}>
                 <div>
-                  <span className="status-label discovered">Discovered</span>
+                  <span className={`status-label ${candidate.stage}`}>
+                    {candidate.stage === 'discovered' ? 'Discovered' : candidate.stage}
+                  </span>
                   <h3>{candidate.display_name || candidate.username}</h3>
-                  <p>Profile not retrieved · found in {candidate.source_count} searches</p>
+                  <p>
+                    {candidate.stage === 'discovered'
+                      ? 'Profile not retrieved'
+                      : `Profile ${candidate.retrieval_status}`}{' '}
+                    · found in {candidate.source_count} searches
+                  </p>
                 </div>
+                {candidate.stage === 'discovered' ? (
+                  <button
+                    className="primary-action"
+                    disabled={enrich.isPending}
+                    onClick={() => enrich.mutate(candidate.id)}
+                    type="button"
+                  >
+                    Retrieve main profile + experience
+                  </button>
+                ) : (
+                  <button
+                    className="quiet-action"
+                    onClick={() => onCandidateOpen(candidate.id)}
+                    type="button"
+                  >
+                    Review retrieved details
+                  </button>
+                )}
                 <a
                   href={candidate.profile_url}
                   rel="noopener noreferrer"

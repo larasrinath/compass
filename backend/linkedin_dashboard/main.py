@@ -14,6 +14,7 @@ from linkedin_dashboard.api.health import router as health_router
 from linkedin_dashboard.api.jobs import router as jobs_router
 from linkedin_dashboard.correlation import CorrelationIdMiddleware
 from linkedin_dashboard.db.session import Database
+from linkedin_dashboard.llm import NullProvider
 from linkedin_dashboard.mcp.client import MCPClient
 from linkedin_dashboard.queue.worker import (
     DurableJobQueue,
@@ -26,6 +27,11 @@ from linkedin_dashboard.security import (
     RuntimeBoundaryMiddleware,
 )
 from linkedin_dashboard.services.brief import BriefService
+from linkedin_dashboard.services.enrichment import (
+    CompositeResultProcessor,
+    EnrichmentResultProcessor,
+    EnrichmentService,
+)
 from linkedin_dashboard.services.search import DiscoveryResultProcessor, SearchService
 from linkedin_dashboard.settings import Settings
 
@@ -35,7 +41,11 @@ def create_app(
 ) -> FastAPI:
     database = Database(app_settings.db_path)
     executor = queue_executor or MCPReadExecutor(MCPClient(app_settings.mcp_url))
-    result_processor = DiscoveryResultProcessor(database)
+    discovery_processor = DiscoveryResultProcessor(database)
+    enrichment_processor = EnrichmentResultProcessor(database)
+    result_processor = CompositeResultProcessor(
+        discovery_processor, enrichment_processor
+    )
     job_queue = DurableJobQueue(
         database,
         executor,
@@ -43,7 +53,9 @@ def create_app(
         result_processor=result_processor,
     )
     brief_service = BriefService(database)
-    search_service = SearchService(database, job_queue, result_processor)
+    search_service = SearchService(database, job_queue, discovery_processor)
+    enrichment_service = EnrichmentService(database, job_queue)
+    llm_provider = NullProvider()
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
@@ -66,6 +78,8 @@ def create_app(
     app.state.job_queue = job_queue
     app.state.brief_service = brief_service
     app.state.search_service = search_service
+    app.state.enrichment_service = enrichment_service
+    app.state.llm_provider = llm_provider
 
     app.add_middleware(
         RuntimeBoundaryMiddleware,
@@ -85,6 +99,9 @@ def create_app(
     app.include_router(audit_router, prefix="/api")
     app.include_router(jobs_router, prefix="/api")
     app.include_router(discovery_router, prefix="/api")
+    from linkedin_dashboard.api.enrichment import router as enrichment_router
+
+    app.include_router(enrichment_router, prefix="/api")
     return app
 
 

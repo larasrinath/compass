@@ -38,6 +38,29 @@ errors, and the serialized queue through SSE. Company URN lookup is also a
 queued read. Discovery does not retrieve profiles, rank candidates, or expose
 shortlist, drafting, or message controls.
 
+M3 adds operator-triggered, staged profile enrichment. Stage 1 retrieves the
+implicit main profile and experience; Stage 2 accepts at most three additional
+sections in the MCP server's canonical order. Every call remains a durable,
+read-only queue job. Its complete committed tool response is stored before any
+section, reference, error, or parsed field is projected. A rate-limited result
+is never replayed: the operator may explicitly resume only the missing suffix,
+with the parent and continuation fetches linked in immutable history. Unknown
+sections fail loudly and are not retried.
+
+The six local parsers cover main profile, experience, skills, education,
+projects, and certifications. Parsed values are exact substrings of an
+immutable raw section and carry zero-based, half-open Unicode code-point spans
+plus the exact section-history identifier. `NullProvider` is the only LLM
+provider through M5; proposed spans from any future provider must pass exact
+substring verification before becoming evidence. The candidate detail view
+shows parsed fields beside the source sections and highlights verified spans.
+For provenance responses, sensitive diagnostic runs are replaced by one BMP
+mask character per original code point so preceding offsets remain stable. If
+redaction overlaps evidence, the API withholds the value and offsets and the UI
+shows a neutral “Provenance withheld” state. The frontend slices spans with
+`Array.from`, preserving astral-character alignment, and renders source text
+only as React text nodes.
+
 ## Prerequisites
 
 - Python 3.12.4–3.14 and [uv](https://docs.astral.sh/uv/)

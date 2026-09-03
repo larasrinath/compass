@@ -346,9 +346,19 @@ class QueueControl(Base):
 class ProfileFetch(Base):
     __tablename__ = "profile_fetch"
     __table_args__ = (
+        UniqueConstraint("job_id", name="uq_profile_fetch_job"),
         CheckConstraint(
-            "outcome IN ('ok','partial','rate_limited','error')",
+            "outcome IS NULL OR outcome IN ('ok','partial','rate_limited','error')",
             name="ck_profile_fetch_outcome",
+        ),
+        CheckConstraint(
+            "request_stage IN ('stage1','stage2','resume')",
+            name="ck_profile_fetch_request_stage",
+        ),
+        CheckConstraint(
+            "(request_stage = 'resume' AND parent_fetch_id IS NOT NULL) OR "
+            "(request_stage IN ('stage1','stage2') AND parent_fetch_id IS NULL)",
+            name="ck_profile_fetch_parent_stage",
         ),
     )
 
@@ -365,9 +375,17 @@ class ProfileFetch(Base):
     started_at: Mapped[str] = mapped_column(String(32), nullable=False)
     finished_at: Mapped[str | None] = mapped_column(String(32))
     duration_ms: Mapped[int | None] = mapped_column(Integer)
-    outcome: Mapped[str] = mapped_column(String(16), nullable=False)
+    outcome: Mapped[str | None] = mapped_column(String(16))
     raw_response: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     returned_url: Mapped[str | None] = mapped_column(Text)
+    processed_at: Mapped[str | None] = mapped_column(String(32))
+    request_stage: Mapped[str] = mapped_column(String(16), nullable=False)
+    parent_fetch_id: Mapped[str | None] = mapped_column(
+        ForeignKey("profile_fetch.id", ondelete="CASCADE")
+    )
+    root_fetch_id: Mapped[str] = mapped_column(
+        ForeignKey("profile_fetch.id", ondelete="CASCADE"), nullable=False
+    )
 
 
 class ProfileSection(Base):
@@ -423,6 +441,9 @@ class SectionReference(Base):
     text: Mapped[str | None] = mapped_column(Text)
     context: Mapped[str | None] = mapped_column(Text)
     value: Mapped[str | None] = mapped_column(Text)
+    fetch_id: Mapped[str | None] = mapped_column(
+        ForeignKey("profile_fetch.id", ondelete="CASCADE")
+    )
 
 
 class ParsedField(Base):
@@ -447,6 +468,12 @@ class ParsedField(Base):
     origin: Mapped[str] = mapped_column(String(32), nullable=False)
     parser_version: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[str] = mapped_column(String(32), nullable=False)
+    # Added as a nullable upgrade column so an old, manually-populated M2
+    # database can still open.  A database trigger requires it for every new
+    # field, and the M3 service never constructs a field without this lineage.
+    profile_section_id: Mapped[str | None] = mapped_column(
+        ForeignKey("profile_section.id", ondelete="CASCADE")
+    )
 
 
 class CandidateScore(Base):

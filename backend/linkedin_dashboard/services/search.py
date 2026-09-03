@@ -803,7 +803,7 @@ class SearchService:
                         "username": candidate.username,
                         "profile_url": candidate.profile_url,
                         "display_name": candidate.display_name,
-                        "stage": "discovered",
+                        "stage": candidate.stage,
                         "retrieval_status": candidate.retrieval_status,
                         "profile_urn": candidate.profile_urn,
                         "profile_urn_is_scored": False,

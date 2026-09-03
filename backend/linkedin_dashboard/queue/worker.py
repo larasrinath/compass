@@ -18,6 +18,7 @@ from linkedin_dashboard.db.models import (
     DashboardSession,
     Job,
     JobAttempt,
+    ProfileFetch,
     QueueControl,
 )
 from linkedin_dashboard.db.session import Database
@@ -34,6 +35,7 @@ from linkedin_dashboard.queue.jobs import (
     navigation_cost,
     persisted_payload,
     tool_arguments,
+    unattempted_profile_navigation_count,
     validate_payload,
 )
 
@@ -809,7 +811,7 @@ class DurableJobQueue:
             raise ValueError("continuation parent cannot be verified") from error
         if payload.sections != expected:
             raise ValueError("continuation does not match the missing suffix")
-        return 0
+        return navigation_cost(payload)
 
     async def _run_claimed(self, job: ClaimedJob) -> None:
         try:
@@ -1071,6 +1073,14 @@ class DurableJobQueue:
             control.operator_resume_required = True
             control.last_mcp_finished_at = now
             control.updated_at = now
+            skipped_navigations = unattempted_profile_navigation_count(
+                job.payload, result
+            )
+            dashboard_session = session.get(DashboardSession, job.session_id)
+            if dashboard_session is not None and skipped_navigations:
+                dashboard_session.nav_used = max(
+                    0, dashboard_session.nav_used - skipped_navigations
+                )
             if missing and isinstance(job.payload, PersonProfilePayload):
                 followup_payload = PersonProfilePayload(
                     linkedin_username=job.payload.linkedin_username,
@@ -1087,23 +1097,57 @@ class DurableJobQueue:
                 )
                 if duplicate is None:
                     followup_id = str(uuid4())
-                    session.add(
-                        Job(
-                            id=followup_id,
-                            session_id=job.session_id,
-                            kind=JobKind.GET_PERSON_PROFILE.value,
-                            payload=persisted_payload(followup_payload),
-                            state="pending",
-                            attempts=0,
-                            max_attempts=2,
-                            queued_at=now,
-                            started_at=None,
-                            finished_at=None,
-                            error=None,
-                            correlation_id=job.correlation_id,
-                            claim_token=None,
-                        )
+                    followup_job = Job(
+                        id=followup_id,
+                        session_id=job.session_id,
+                        kind=JobKind.GET_PERSON_PROFILE.value,
+                        payload=persisted_payload(followup_payload),
+                        state="pending",
+                        attempts=0,
+                        max_attempts=2,
+                        queued_at=now,
+                        started_at=None,
+                        finished_at=None,
+                        error=None,
+                        correlation_id=job.correlation_id,
+                        claim_token=None,
                     )
+                    session.add(followup_job)
+                    parent_fetch = session.scalar(
+                        select(ProfileFetch).where(ProfileFetch.job_id == job.id)
+                    )
+                    if parent_fetch is not None:
+                        child_fetch_id = str(uuid4())
+                        session.add(
+                            ProfileFetch(
+                                id=child_fetch_id,
+                                candidate_id=parent_fetch.candidate_id,
+                                job_id=followup_id,
+                                tool=JobKind.GET_PERSON_PROFILE.value,
+                                requested_sections=["main_profile", *missing],
+                                args={
+                                    "linkedin_username": (
+                                        job.payload.linkedin_username
+                                    ),
+                                    "sections": missing,
+                                    **(
+                                        {"max_scrolls": job.payload.max_scrolls}
+                                        if job.payload.max_scrolls is not None
+                                        else {}
+                                    ),
+                                },
+                                started_at=now,
+                                finished_at=None,
+                                duration_ms=None,
+                                outcome=None,
+                                raw_response=None,
+                                returned_url=None,
+                                processed_at=None,
+                                request_stage="resume",
+                                parent_fetch_id=parent_fetch.id,
+                                root_fetch_id=parent_fetch.root_fetch_id,
+                            )
+                        )
         if followup_id is not None:
             self.events.publish(self._job_event(followup_id, "pending"))
         self.events.publish(

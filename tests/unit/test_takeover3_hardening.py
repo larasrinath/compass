@@ -796,12 +796,52 @@ def test_approved_evidence_supports_only_one_way_raw_purge(
             "'anywhere', '[]', '[]', '[]', 'plain', 'v1')"
         )
         connection.exec_driver_sql(
+            "INSERT INTO job "
+            "(id, session_id, kind, payload, state, attempts, max_attempts, queued_at, "
+            "finished_at, correlation_id) VALUES "
+            f"('job-{suffix}', 'session-{suffix}', 'get_person_profile', "
+            f'\'{{"linkedin_username":"user-{suffix}","sections":["experience"]}}\', '
+            "'done', 1, 2, 'now', 'now', 'm3-lineage')"
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO job_attempt "
+            "(id, job_id, attempt_number, worker_token, started_at, "
+            "response_received_at, finished_at, outcome, raw_response) VALUES "
+            f"('job-attempt-{suffix}', 'job-{suffix}', 1, 'm3-lineage', 'now', "
+            "'now', 'now', 'ok', '{}')"
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO profile_fetch "
+            "(id, candidate_id, job_id, tool, requested_sections, args, started_at, "
+            "finished_at, duration_ms, outcome, raw_response, processed_at, "
+            "request_stage, root_fetch_id) VALUES "
+            f"('fetch-{suffix}', 'candidate-{suffix}', 'job-{suffix}', "
+            "'get_person_profile', '[\"main_profile\",\"experience\"]', '{}', "
+            "'now', 'now', 1, "
+            f"'ok', '{{}}', 'now', 'stage1', 'fetch-{suffix}')"
+        )
+        connection.execute(
+            text(
+                "INSERT INTO profile_section "
+                "(id, candidate_id, fetch_id, section_name, raw_text, retrieved_at, "
+                "char_len) VALUES (:section, :candidate, :fetch, 'experience', "
+                ":raw, 'now', :length)"
+            ),
+            {
+                "section": f"section-{suffix}",
+                "candidate": f"candidate-{suffix}",
+                "fetch": f"fetch-{suffix}",
+                "raw": raw_snippet,
+                "length": len(raw_snippet),
+            },
+        )
+        connection.exec_driver_sql(
             "INSERT INTO parsed_field "
             "(id, candidate_id, field_key, value, section_name, span_start, span_end, "
-            "snippet, origin, parser_version, created_at) VALUES "
+            "snippet, origin, parser_version, created_at, profile_section_id) VALUES "
             f"('parsed-{suffix}', 'candidate-{suffix}', 'skill', "
-            f"'{raw_snippet}', 'experience', 0, 20, '{raw_snippet}', "
-            "'deterministic', 'v1', 'now')"
+            f"'{raw_snippet}', 'experience', 0, {len(raw_snippet)}, '{raw_snippet}', "
+            f"'deterministic', 'v1', 'now', 'section-{suffix}')"
         )
         connection.exec_driver_sql(
             "INSERT INTO score "
@@ -821,7 +861,7 @@ def test_approved_evidence_supports_only_one_way_raw_purge(
                 "INSERT INTO evidence "
                 "(id, score_signal_id, parsed_field_id, section_name, span_start, "
                 "span_end, snippet, matcher, matched_term, polarity) VALUES "
-                "(:evidence, :signal, :parsed, 'experience', 0, 20, :snippet, "
+                "(:evidence, :signal, :parsed, 'experience', 0, :span_end, :snippet, "
                 "'exact', :snippet, 'supporting')"
             ),
             {
@@ -829,6 +869,7 @@ def test_approved_evidence_supports_only_one_way_raw_purge(
                 "signal": f"signal-{suffix}",
                 "parsed": f"parsed-{suffix}",
                 "snippet": raw_snippet,
+                "span_end": len(raw_snippet),
             },
         )
         connection.execute(

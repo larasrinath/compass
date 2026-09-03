@@ -162,12 +162,12 @@ def test_provenance_text_is_byte_exact_only_on_middleware_owned_routes(
         "section_errors": {"main_profile": diagnostics},
     }
 
-    @app.get("/api/candidates/r16/sections/main_profile")
+    @app.get("/api/test/r16-provenance")
     @preserve_provenance_text
     def trusted_json() -> JSONResponse:
         return JSONResponse(payload)
 
-    @app.get("/api/candidates/r16-sse/sections/main_profile")
+    @app.get("/api/test/r16-provenance-sse")
     @preserve_provenance_text
     def trusted_sse() -> StreamingResponse:
         event = ("data: " + json.dumps(payload) + "\n\n").encode()
@@ -180,8 +180,8 @@ def test_provenance_text_is_byte_exact_only_on_middleware_owned_routes(
         return JSONResponse(payload)
 
     with client_for(app) as client:
-        trusted = client.get("/api/candidates/r16/sections/main_profile").json()
-        sse = client.get("/api/candidates/r16-sse/sections/main_profile").text
+        trusted = client.get("/api/test/r16-provenance").json()
+        sse = client.get("/api/test/r16-provenance-sse").text
         untrusted = client.get("/api/test/spoofed-provenance").json()
 
     assert trusted["sections"]["main_profile"] == prose
