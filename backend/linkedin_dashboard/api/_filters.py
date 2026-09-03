@@ -67,7 +67,7 @@ _FILESYSTEM_PATH_WITH_SPACES = re.compile(
     r"(?<![a-z0-9])(?:"
     r"[a-z]:[\\/]"
     r"|\\\\[^\s\\/]+[\\/]"
-    r"|/(?!/)(?=[^\r\n\"'<>;,|]*/))"
+    r"|/(?!/)(?=[a-z0-9._~-]))"
     r"[^\r\n\"'<>;,|]+(?:[;,|]|$|(?=[\"'<>]))",
     flags=re.IGNORECASE,
 )
@@ -84,6 +84,10 @@ _COMMON_FILESYSTEM_PATH = re.compile(
 _COMPONENT_PARAMETER = re.compile(
     r"(?P<separator>^|[?&;])(?P<key>[^=?&#;]*)"
     r"(?P<equals>=)(?P<value>[^?&#;]*)"
+)
+_COLON_PARAMETER = re.compile(
+    r"(?P<separator>^|[?&;])(?P<key>[^:=?&#;]*)"
+    r"(?P<colon>:)(?P<value>[^?&#;]*)"
 )
 _MATRIX_PARAMETER = re.compile(
     r"(?P<separator>;)(?P<key>[^=;/]*)"
@@ -206,8 +210,10 @@ _DIAGNOSTIC_CONTAINERS = {"error", "errors", "section_error", "section_errors"}
 _PROVENANCE_HANDLER_MARKER = object()
 _SAFE_PROVENANCE_PROSE = re.compile(
     r"\bAuthentication:\s*OAuth(?:\s+2\.0)?(?=\s*(?:/|[\r\n]|$))|"
+    r"\bBearer token validation\b|"
     r"\bBearer tokens?\b(?=\s*(?:[.,;|/]|[\r\n]|$))|"
-    r"\bKey:\s*Kubernetes\b(?=\s*(?:[.,;|/]|[\r\n]|$))",
+    r"\bKey:\s*Kubernetes\b(?=\s*(?:[.,;|/]|[\r\n]|$))|"
+    r"(?<![a-z0-9])/(?:health\b|api(?:/[a-z0-9][a-z0-9._~-]*)+)",
     re.IGNORECASE,
 )
 
@@ -466,6 +472,14 @@ def _parameter_value_is_sensitive(value: str) -> bool:
 
 
 def _sanitize_parameter_component(value: str) -> str:
+    def redact_colon_parameter(match: re.Match[str]) -> str:
+        key = match.group("key")
+        _, _, key_complete = _bounded_unquote(key)
+        if key_complete and not _is_sensitive_identifier(key):
+            return match.group(0)
+        safe_key = key if key_complete else "[redacted]"
+        return f"{match.group('separator')}{safe_key}{match.group('colon')}[redacted]"
+
     def redact_parameter(match: re.Match[str]) -> str:
         key = match.group("key")
         _, _, key_complete = _bounded_unquote(key)
@@ -478,7 +492,8 @@ def _sanitize_parameter_component(value: str) -> str:
         safe_key = key if key_complete else "[redacted]"
         return f"{match.group('separator')}{safe_key}{match.group('equals')}[redacted]"
 
-    return _COMPONENT_PARAMETER.sub(redact_parameter, value)
+    colon_sanitized = _COLON_PARAMETER.sub(redact_colon_parameter, value)
+    return _COMPONENT_PARAMETER.sub(redact_parameter, colon_sanitized)
 
 
 def _sanitize_url_components(value: str) -> str:
@@ -500,7 +515,26 @@ def _sanitize_url_components(value: str) -> str:
         safe_key = key if key_complete else "[redacted]"
         return f"{match.group('separator')}{safe_key}{match.group('equals')}[redacted]"
 
-    path = _MATRIX_PARAMETER.sub(redact_matrix, parsed.path)
+    path_segments = parsed.path.split("/")
+    for index, segment in enumerate(path_segments):
+        label, matrix_separator, matrix_parameters = segment.partition(";")
+        decoded_label, _, label_complete = _bounded_unquote(label)
+        colon_key, colon_separator, _ = decoded_label.partition(":")
+        if colon_separator and (
+            not label_complete or _is_sensitive_identifier(colon_key)
+        ):
+            path_segments[index] = "[redacted]" + (
+                f"{matrix_separator}{matrix_parameters}" if matrix_separator else ""
+            )
+            continue
+        if index == len(path_segments) - 1:
+            continue
+        if label and (not label_complete or _is_sensitive_identifier(label)):
+            _, separator, parameters = path_segments[index + 1].partition(";")
+            path_segments[index + 1] = "[redacted]" + (
+                f"{separator}{parameters}" if separator else ""
+            )
+    path = _MATRIX_PARAMETER.sub(redact_matrix, "/".join(path_segments))
     query = _sanitize_parameter_component(parsed.query)
     fragment = _sanitize_parameter_component(parsed.fragment)
     return urlunsplit((parsed.scheme, parsed.netloc, path, query, fragment))
@@ -835,7 +869,11 @@ def _is_provenance_text_location(location: tuple[str, ...]) -> bool:
     leaf = normalized[-1]
     if leaf in {"error_message", "diagnostic", "message", "runtime"}:
         return False
+    if normalized == ("raw_text",):
+        return True
     if len(normalized) == 2 and normalized[0] == "sections":
+        return True
+    if normalized == ("signals", "evidence", "snippet"):
         return True
     if len(normalized) != 2:
         return False

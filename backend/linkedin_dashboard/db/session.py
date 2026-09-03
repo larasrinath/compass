@@ -32,6 +32,7 @@ from linkedin_dashboard.db.migrations import (
     v0012_score_session_provenance,
     v0013_history_root_immutability,
     v0014_history_identity_completion,
+    v0015_approved_evidence_roots,
 )
 from linkedin_dashboard.db.models import Base
 from linkedin_dashboard.settings import normalize_database_path
@@ -51,6 +52,7 @@ _MIGRATION_MODULES = (
     v0012_score_session_provenance,
     v0013_history_root_immutability,
     v0014_history_identity_completion,
+    v0015_approved_evidence_roots,
 )
 
 _SCHEMA_ACTIONS = {
