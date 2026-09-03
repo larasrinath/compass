@@ -135,13 +135,10 @@ def contains_protected_criterion(entered: str) -> bool:
     # Treat punctuation, including underscores, as separators so an alias
     # cannot evade the exact token/phrase blocklist through formatting.
     words = " ".join(re.findall(r"[^\W_]+", entered.casefold()))
-    return (
-        any(
-            re.search(rf"(?:^|\s){re.escape(term)}(?:$|\s)", words)
-            for term in PROTECTED_TERMS
-        )
-        or re.fullmatch(r"(?:19|20)\d{2}", words) is not None
-    )
+    return any(
+        re.search(rf"(?:^|\s){re.escape(term)}(?:$|\s)", words)
+        for term in PROTECTED_TERMS
+    ) or any(re.fullmatch(r"(?:19|20)\d{2}", token) for token in words.split())
 
 
 def _reject_protected(value: BriefValue) -> None:
@@ -266,6 +263,7 @@ class BriefService:
                 session_id=session_id,
                 version=version,
                 created_at=now,
+                sealed_at=None,
                 superseded_at=None,
                 job_description=value.job_description,
                 target_titles=[item.term for item in value.target_titles],
@@ -309,6 +307,8 @@ class BriefService:
                             position=position,
                         )
                     )
+            session.flush()
+            brief.sealed_at = now
         append_audit_event(
             self.database,
             session_id=session_id,

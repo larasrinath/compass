@@ -6,7 +6,7 @@ from typing import Any
 from uuid import uuid4
 
 from pydantic import ValidationError
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import func, select
 
 from linkedin_dashboard.api._filters import sanitize_for_frontend
 from linkedin_dashboard.audit import append_audit_event
@@ -95,10 +95,7 @@ class DiscoveryResultProcessor:
             raw = self._raw_for_job(job_id)
             if raw is not None:
                 try:
-                    envelope = MCPResponseEnvelope.model_validate(raw)
-                    self.process_result(job_id, kind, envelope.result_payload())
-                    if state == "interrupted":
-                        self._retain_interrupted_status(job_id, kind)
+                    self.process_result(job_id, kind, {})
                 except (ValueError, ValidationError):
                     self.process_failure(job_id, kind, ErrorClass.UNKNOWN)
                 except Exception:
@@ -112,32 +109,26 @@ class DiscoveryResultProcessor:
                     error_class = ErrorClass.UNKNOWN
                 self.process_failure(job_id, kind, error_class)
 
-    def _retain_interrupted_status(self, job_id: str, kind: JobKind) -> None:
-        """A recovered response is usable, but a crashed owner is still uncertain."""
-        with self.database.sessions.begin() as session:
-            if kind is JobKind.SEARCH_PEOPLE:
-                row = session.scalar(
-                    select(SearchRun).where(SearchRun.job_id == job_id)
-                )
-            else:
-                row = session.scalar(
-                    select(CompanyLookup).where(CompanyLookup.job_id == job_id)
-                )
-            if row is not None:
-                row.status = "interrupted"
-
     def process_result(
         self, job_id: str, kind: JobKind, result: dict[str, Any]
     ) -> None:
+        # The executor's return value is deliberately ignored. The durable
+        # JobAttempt capture is the sole projection source, including after a
+        # crash or a malicious/mistaken executor mismatch.
+        del result
+        if kind not in {JobKind.SEARCH_PEOPLE, JobKind.GET_COMPANY_PROFILE}:
+            return
         raw = self._raw_for_job(job_id)
         if raw is None:
             raise RuntimeError("domain projection requires a committed raw response")
+        envelope = MCPResponseEnvelope.model_validate(raw)
+        committed_result = envelope.result_payload()
         if kind is JobKind.SEARCH_PEOPLE:
-            self._persist_search_raw(job_id, raw, result)
-            self._parse_search(job_id, result)
+            self._persist_search_raw(job_id, raw, committed_result)
+            self._parse_search(job_id, committed_result)
         elif kind is JobKind.GET_COMPANY_PROFILE:
             self._persist_company_raw(job_id, raw)
-            self._parse_company(job_id, result)
+            self._parse_company(job_id, committed_result)
 
     def process_failure(
         self, job_id: str, kind: JobKind, error_class: ErrorClass
@@ -296,17 +287,10 @@ class DiscoveryResultProcessor:
                 except InvalidPersonReference as error:
                     invalid_errors.append((ref_position, str(error)))
                     continue
-                dedupe_key = username.casefold()
                 candidate = session.scalar(
                     select(Candidate).where(
                         Candidate.session_id == run.session_id,
-                        or_(
-                            Candidate.dedupe_key == dedupe_key,
-                            and_(
-                                Candidate.dedupe_key.is_(None),
-                                func.lower(Candidate.username) == username.lower(),
-                            ),
-                        ),
+                        Candidate.dedupe_key == func.lower(username),
                     )
                 )
                 if candidate is None:
@@ -317,7 +301,6 @@ class DiscoveryResultProcessor:
                         id=str(uuid4()),
                         session_id=run.session_id,
                         username=username,
-                        dedupe_key=dedupe_key,
                         profile_url=canonical_profile_url(username),
                         display_name=(
                             str(item["text"]).strip()
@@ -400,7 +383,10 @@ class DiscoveryResultProcessor:
             has_text = isinstance(sections, dict) and isinstance(
                 sections.get("search_results"), str
             )
-            if rate_limited:
+            job = session.get(Job, job_id)
+            if job is not None and job.state == "interrupted":
+                run.status = "interrupted"
+            elif rate_limited:
                 run.status = "rate_limited"
             elif bool((run.raw_response or {}).get("isError")):
                 run.status = "failed"
@@ -435,11 +421,15 @@ class DiscoveryResultProcessor:
                 and str(item.get("value", "")).isascii()
                 and str(item.get("value", "")).isdigit()
             ]
-            lookup.status = (
-                "failed"
-                if bool((lookup.raw_response or {}).get("isError"))
-                else ("ok" if values else "not_exposed")
-            )
+            job = session.get(Job, job_id)
+            if job is not None and job.state == "interrupted":
+                lookup.status = "interrupted"
+            else:
+                lookup.status = (
+                    "failed"
+                    if bool((lookup.raw_response or {}).get("isError"))
+                    else ("ok" if values else "not_exposed")
+                )
             lookup.processed_at = _now()
 
 

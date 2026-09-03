@@ -134,6 +134,19 @@ class Database:
                 migration_engine, _ = _create_migration_engine(self.path, database_fd)
                 try:
                     with migration_engine.connect() as connection:
+                        # SQLite's documented table-rebuild procedure requires
+                        # foreign-key enforcement to be disabled before the
+                        # transaction begins.  We still run foreign_key_check
+                        # and the exact schema verifier before committing, then
+                        # restore enforcement on this physical connection.
+                        connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+                        if (
+                            connection.exec_driver_sql("PRAGMA foreign_keys").scalar()
+                            != 0
+                        ):
+                            raise RuntimeError(
+                                "migration connection could not suspend foreign keys"
+                            )
                         connection.exec_driver_sql("BEGIN IMMEDIATE")
                         try:
                             # The blank/populated decision belongs to the write
@@ -162,6 +175,14 @@ class Database:
                             raise
                         else:
                             connection.commit()
+                        connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+                        if (
+                            connection.exec_driver_sql("PRAGMA foreign_keys").scalar()
+                            != 1
+                        ):
+                            raise RuntimeError(
+                                "migration connection could not restore foreign keys"
+                            )
                 finally:
                     migration_engine.dispose()
                 _require_same_file(self.path, database_fd)
@@ -638,7 +659,13 @@ def _sqlite_authorizer(
     if action == sqlite3.SQLITE_PRAGMA and argument_two is not None:
         pragma = (argument_one or "").casefold()
         setting = argument_two.strip(" \t'\"").casefold()
-        if pragma in {"foreign_keys", "recursive_triggers"} and setting not in {
+        if pragma == "foreign_keys" and setting not in {"1", "on", "true", "yes"}:
+            # The migration-only connection may suspend enforcement for
+            # SQLite's canonical table-rebuild algorithm. Runtime connections
+            # never receive schema authority and therefore cannot do this.
+            if not (allow_schema_changes and setting in {"0", "off", "false", "no"}):
+                return sqlite3.SQLITE_DENY
+        if pragma == "recursive_triggers" and setting not in {
             "1",
             "on",
             "true",

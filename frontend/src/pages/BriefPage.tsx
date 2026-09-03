@@ -8,6 +8,7 @@ import type {
 } from '../api/client'
 import { ApiError, saveBrief } from '../api/client'
 import { TermEditor } from '../components/TermEditor'
+import { focusBriefError } from './briefErrorFocus'
 
 const EMPTY_FORM: Omit<BriefInput, 'session_id'> = {
   job_description: '',
@@ -95,13 +96,7 @@ export function BriefPage({
       const detail = error instanceof ApiError ? error.detail : null
       const first = protectedTerms(detail)[0]?.field.split('.')[0]
       requestAnimationFrame(() => {
-        const input = first
-          ? document.querySelector<HTMLInputElement | HTMLTextAreaElement>(
-              `[data-field-prefix="${first}"] input, ` +
-                `[data-field-prefix="${first}"] textarea`,
-            )
-          : null
-        ;(input ?? alertRef.current)?.focus()
+        focusBriefError(first, alertRef.current)
       })
     },
   })
@@ -181,7 +176,7 @@ export function BriefPage({
               value={description}
             />
           </label>
-          <label className="field" data-field-prefix="positive_keywords">
+          <label className="field">
             <span>Location</span>
             <input
               onChange={(event) => setLocation(event.target.value)}
@@ -237,7 +232,7 @@ export function BriefPage({
             }}
             values={industries}
           />
-          <label className="field">
+          <label className="field" data-field-prefix="positive_keywords">
             <span>Positive keywords</span>
             <textarea
               onChange={(event) => setPositive(event.target.value)}

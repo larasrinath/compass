@@ -21,10 +21,6 @@ def new_id() -> str:
     return str(uuid4())
 
 
-def candidate_dedupe_key(context: Any) -> str:
-    return str(context.get_current_parameters()["username"]).casefold()
-
-
 class Base(DeclarativeBase):
     pass
 
@@ -74,6 +70,7 @@ class RoleBrief(Base):
     )
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[str] = mapped_column(String(32), nullable=False)
+    sealed_at: Mapped[str | None] = mapped_column(String(32))
     superseded_at: Mapped[str | None] = mapped_column(String(32))
     job_description: Mapped[str] = mapped_column(Text, nullable=False)
     target_titles: Mapped[list[str]] = mapped_column(JSON, nullable=False)
@@ -142,7 +139,7 @@ class SearchRun(Base):
         ForeignKey("role_brief.id", ondelete="CASCADE"), nullable=False
     )
     job_id: Mapped[str] = mapped_column(
-        ForeignKey("job.id", ondelete="RESTRICT"), nullable=False
+        ForeignKey("job.id", ondelete="CASCADE"), nullable=False
     )
     created_at: Mapped[str] = mapped_column(String(32), nullable=False)
     keywords: Mapped[str] = mapped_column(Text, nullable=False)
@@ -187,6 +184,7 @@ class Candidate(Base):
             "retrieval_status IN ('pending','ok','partial','rate_limited','failed')",
             name="ck_candidate_retrieval_status",
         ),
+        UniqueConstraint("session_id", "dedupe_key", name="uq_candidate_dedupe_key"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -194,9 +192,9 @@ class Candidate(Base):
         ForeignKey("session.id", ondelete="CASCADE"), nullable=False
     )
     username: Mapped[str] = mapped_column(Text, nullable=False)
-    dedupe_key: Mapped[str | None] = mapped_column(
-        Text, nullable=True, default=candidate_dedupe_key
-    )
+    # SQLite derives and freezes this through v0017 triggers. The server default
+    # provides a sentinel for direct inserts that omit the internal key.
+    dedupe_key: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     profile_url: Mapped[str] = mapped_column(Text, nullable=False)
     display_name: Mapped[str | None] = mapped_column(Text)
     profile_urn: Mapped[str | None] = mapped_column(Text)
@@ -235,7 +233,7 @@ class CompanyLookup(Base):
         ForeignKey("session.id", ondelete="CASCADE"), nullable=False
     )
     job_id: Mapped[str] = mapped_column(
-        ForeignKey("job.id", ondelete="RESTRICT"), nullable=False
+        ForeignKey("job.id", ondelete="CASCADE"), nullable=False
     )
     slug: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[str] = mapped_column(String(32), nullable=False)

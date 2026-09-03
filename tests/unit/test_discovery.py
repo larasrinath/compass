@@ -70,6 +70,41 @@ class TimeoutThenFixtureExecutor(FixtureExecutor):
         return await super().execute(payload, capture_raw, report_progress)
 
 
+class MismatchedExecutor(FixtureExecutor):
+    async def execute(
+        self,
+        payload: JobPayload,
+        capture_raw: RawCapture,
+        report_progress: ProgressReporter,
+    ) -> dict[str, Any]:
+        self.calls.append(payload)
+        await report_progress(1, 1)
+        committed = {
+            "url": "https://www.linkedin.com/search/results/people/",
+            "sections": {"search_results": "Alice"},
+            "references": {
+                "search_results": [
+                    {"kind": "person", "url": "/in/Alice/", "text": "Alice"}
+                ]
+            },
+        }
+        await capture_raw(
+            {
+                "content": [{"type": "text", "text": "Alice"}],
+                "structuredContent": committed,
+                "isError": False,
+            },
+            None,
+        )
+        return {
+            "url": "https://www.linkedin.com/search/results/people/",
+            "sections": {"search_results": "Bob"},
+            "references": {
+                "search_results": [{"kind": "person", "url": "/in/Bob/", "text": "Bob"}]
+            },
+        }
+
+
 def settings(path: Path) -> Settings:
     return Settings(
         db_path=path,
@@ -218,6 +253,59 @@ def test_search_validation_rejects_before_queueing(tmp_path) -> None:
         with app.state.database.sessions() as db_session:
             assert db_session.scalar(select(func.count(SearchRun.id))) == 0
         assert executor.calls == []
+
+
+def test_year_tokens_inside_criteria_are_blocked_without_substring_false_positives(
+    tmp_path,
+) -> None:
+    app = create_app(
+        settings(tmp_path / "year-terms.db"), queue_executor=FixtureExecutor()
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        session_id = start_session(client)
+        blocked = brief_payload(session_id)
+        blocked["positive_keywords"] = ["platform engineer 2020"]
+        response = client.post("/api/briefs", json=blocked)
+        assert response.status_code == 422
+        assert response.json()["detail"]["offending_terms"] == [
+            {"field": "positive_keywords.0", "term": "platform engineer 2020"}
+        ]
+
+        allowed = brief_payload(session_id)
+        allowed["positive_keywords"] = ["platform py2020 migration"]
+        assert client.post("/api/briefs", json=allowed).status_code == 201
+
+
+def test_projection_uses_only_the_committed_raw_attempt(tmp_path) -> None:
+    app = create_app(
+        settings(tmp_path / "committed-source.db"), queue_executor=MismatchedExecutor()
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        session_id = start_session(client)
+        brief = client.post("/api/briefs", json=brief_payload(session_id)).json()
+        queued = client.post(
+            "/api/searches",
+            json={
+                "session_id": session_id,
+                "brief_id": brief["id"],
+                "keywords": "platform engineer",
+            },
+        ).json()
+        assert wait_for_job(app, queued["job_id"]).state == "done"
+
+        with app.state.database.sessions() as db_session:
+            candidates = list(
+                db_session.scalars(
+                    select(Candidate).where(Candidate.session_id == session_id)
+                )
+            )
+            run = db_session.get(SearchRun, queued["search_run_id"])
+            assert run is not None
+            assert [candidate.username for candidate in candidates] == ["Alice"]
+            assert run.raw_response is not None
+            assert run.raw_response["structuredContent"]["sections"] == {
+                "search_results": "Alice"
+            }
 
 
 def test_raw_cap_dedupe_provenance_and_diagnostic_privacy(tmp_path) -> None:
