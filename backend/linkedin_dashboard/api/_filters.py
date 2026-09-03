@@ -212,7 +212,7 @@ _SAFE_PROVENANCE_PROSE = re.compile(
     r"\bAuthentication:\s*OAuth(?:\s+2\.0)?(?=\s*(?:/|[\r\n]|$))|"
     r"\bBearer token validation\b|"
     r"\bBearer tokens?\b(?=\s*(?:[.,;|/]|[\r\n]|$))|"
-    r"\bKey:\s*Kubernetes\b(?=\s*(?:[.,;|/]|[\r\n]|$))|"
+    r"\bKey:\s*Kubernetes\b|"
     r"(?<![a-z0-9])/(?:health\b|api(?:/[a-z0-9][a-z0-9._~-]*)+)",
     re.IGNORECASE,
 )
@@ -756,14 +756,90 @@ def _redact_string(
 
 def _redact_provenance_text(value: str) -> str:
     """Preserve benign technical claims while removing actual private material."""
+
+    def redact_unlabeled_text(text: str) -> str:
+        output: list[str] = []
+        cursor = 0
+        for match in _SAFE_PROVENANCE_PROSE.finditer(text):
+            output.append(_redact_string(text[cursor : match.start()]))
+            output.append(match.group(0))
+            cursor = match.end()
+        output.append(_redact_string(text[cursor:]))
+        return "".join(output)
+
     output: list[str] = []
-    cursor = 0
-    for match in _SAFE_PROVENANCE_PROSE.finditer(value):
-        output.append(_redact_string(value[cursor : match.start()]))
-        output.append(match.group(0))
-        cursor = match.end()
-    output.append(_redact_string(value[cursor:]))
+    emit_cursor = 0
+    search_cursor = 0
+    while match := _EMBEDDED_LABELED_VALUE.search(value, search_cursor):
+        label_name = match.group("quoted_name") or match.group("bare_name")
+        value_start = match.end()
+        if not _embedded_label_is_sensitive(label_name) or (
+            _provenance_label_starts_benign_phrase(label_name, value, value_start)
+        ):
+            search_cursor = match.end()
+            continue
+
+        value_end = _provenance_labeled_value_end(value, value_start)
+        output.append(redact_unlabeled_text(value[emit_cursor : match.start()]))
+        output.extend((match.group("label"), "[redacted]"))
+        emit_cursor = value_end
+        search_cursor = value_end
+
+    if not output:
+        return redact_unlabeled_text(value)
+    output.append(redact_unlabeled_text(value[emit_cursor:]))
     return "".join(output)
+
+
+def _provenance_label_starts_benign_phrase(
+    label_name: str, value: str, value_start: int
+) -> bool:
+    """Keep the two label-shaped phrases that are evidence, not credentials."""
+    compact = _compact_identifier(label_name)
+    remainder = value[value_start:]
+    if compact == "key":
+        return re.match(r"Kubernetes\b", remainder, re.IGNORECASE) is not None
+    if compact == "authentication":
+        return (
+            re.match(
+                r"OAuth(?:\s+2\.0)?(?=\s*(?:/|[\r\n]|$))",
+                remainder,
+                re.IGNORECASE,
+            )
+            is not None
+        )
+    return False
+
+
+def _provenance_labeled_value_end(value: str, start: int) -> int:
+    """Find a labeled value boundary without splitting its first colon token."""
+    if start >= len(value):
+        return start
+    if value[start] in {'"', "'"}:
+        return _quoted_value_end(value, start)
+    if value[start] in "{[(":
+        return _collection_value_end(value, start)
+    constructor = re.match(r"[a-z_][a-z0-9_.]*\s*(?P<open>\()", value[start:], re.I)
+    if constructor is not None:
+        opening = start + constructor.start("open")
+        return _collection_value_end(value, opening)
+
+    hard_boundary = re.search(r"[,;\r\n]", value[start:])
+    hard_end = len(value) if hard_boundary is None else start + hard_boundary.start()
+    next_search = min(start + 1, hard_end)
+    while next_search < hard_end:
+        next_field = _EMBEDDED_LABELED_VALUE.search(value, next_search, hard_end)
+        if next_field is None:
+            break
+        field_name = next_field.group("quoted_name") or next_field.group("bare_name")
+        if _provenance_label_starts_benign_phrase(field_name, value, next_field.end()):
+            next_search = next_field.end()
+            continue
+        boundary = next_field.start()
+        while boundary > start and value[boundary - 1] in " \t":
+            boundary -= 1
+        return boundary
+    return hard_end
 
 
 def _redact_key(

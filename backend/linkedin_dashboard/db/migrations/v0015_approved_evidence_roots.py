@@ -8,6 +8,7 @@ TRIGGER_NAMES = (
     "draft_claim_evidence_candidate_insert",
     "draft_claim_evidence_candidate_update",
     "send_confirmation_claim_candidate_insert",
+    "send_attempt_claim_candidate_insert",
     "approved_score_signal_insert_collision",
     "approved_score_signal_update",
     "approved_score_signal_delete",
@@ -50,7 +51,7 @@ _EXISTING_CLAIM_MISMATCH = _CLAIM_CANDIDATE_MISMATCH.format(
 _NEW_CLAIM_MISMATCH = _CLAIM_CANDIDATE_MISMATCH.format(
     evidence_id="NEW.evidence_id", draft_id="NEW.draft_id"
 )
-_CONFIRMATION_CLAIM_MISMATCH = """
+_APPROVAL_CLAIM_MISMATCH = """
 EXISTS (
   SELECT 1
     FROM draft_claim AS claim
@@ -98,9 +99,18 @@ STATEMENTS = (
     CREATE TRIGGER send_confirmation_claim_candidate_insert
     BEFORE INSERT ON send_confirmation
     FOR EACH ROW
-    WHEN {_CONFIRMATION_CLAIM_MISMATCH}
+    WHEN {_APPROVAL_CLAIM_MISMATCH}
     BEGIN
       SELECT RAISE(ABORT, 'approved draft claims must belong to recipient candidate');
+    END
+    """,
+    f"""
+    CREATE TRIGGER send_attempt_claim_candidate_insert
+    BEFORE INSERT ON send_attempt
+    FOR EACH ROW
+    WHEN {_APPROVAL_CLAIM_MISMATCH}
+    BEGIN
+      SELECT RAISE(ABORT, 'attempted draft claims must belong to recipient candidate');
     END
     """,
     f"""

@@ -418,6 +418,93 @@ def test_confirmation_rechecks_claim_candidate_after_draft_root_drift(
 
 
 @pytest.mark.parametrize("recursive_triggers", ["ON", "OFF"])
+@pytest.mark.parametrize("state, confirm_send", [("DRY_RUN_OK", 0), ("SENT", 1)])
+@pytest.mark.parametrize("insert_kind", ["plain", "replace", "upsert"])
+def test_attempt_rechecks_claim_candidate_after_draft_root_drift(
+    database: Database,
+    recursive_triggers: str,
+    state: str,
+    confirm_send: int,
+    insert_kind: str,
+) -> None:
+    suffix = f"attempt-root-drift-{recursive_triggers}-{state}-{insert_kind}"
+    ids = _seed_approved_evidence_graph(database, suffix, approve=False)
+    path = database.path
+    database.dispose()
+    insert = "INSERT OR REPLACE" if insert_kind == "replace" else "INSERT"
+    upsert = (
+        " ON CONFLICT(id) DO UPDATE SET state=excluded.state"
+        if insert_kind == "upsert"
+        else ""
+    )
+    attempt_id = f"attempt-{suffix}"
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
+        connection.execute(
+            "UPDATE message_draft SET version=2 WHERE id=?", (ids["draft-b"],)
+        )
+        connection.execute(
+            "UPDATE message_draft SET candidate_id=? WHERE id=?",
+            (ids["candidate-b"], ids["draft-a"]),
+        )
+        with pytest.raises(
+            sqlite3.IntegrityError,
+            match="attempted draft claims must belong to recipient candidate",
+        ):
+            connection.execute(
+                f"{insert} INTO send_attempt "
+                "(id, candidate_id, draft_id, idempotency_key, body_sha256, "
+                "confirm_send, state, started_at, finished_at, resolution) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'now', 'later', 'unresolved')"
+                f"{upsert}",
+                (
+                    attempt_id,
+                    ids["candidate-b"],
+                    ids["draft-a"],
+                    attempt_id.ljust(64, "0")[:64],
+                    "a" * 64,
+                    confirm_send,
+                    state,
+                ),
+            )
+
+
+@pytest.mark.parametrize("recursive_triggers", ["ON", "OFF"])
+def test_valid_claim_attempt_allows_full_session_purge(
+    database: Database, recursive_triggers: str
+) -> None:
+    ids = _seed_approved_evidence_graph(
+        database, f"valid-attempt-purge-{recursive_triggers}", approve=False
+    )
+    path = database.path
+    database.dispose()
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
+        connection.execute(
+            "INSERT INTO send_attempt "
+            "(id, candidate_id, draft_id, idempotency_key, body_sha256, "
+            "confirm_send, state, started_at, finished_at, resolution) "
+            "VALUES ('valid-attempt', ?, ?, ?, ?, 0, 'DRY_RUN_OK', "
+            "'now', 'later', 'unresolved')",
+            (
+                ids["candidate-a"],
+                ids["draft-a"],
+                "valid-attempt".ljust(64, "0"),
+                "a" * 64,
+            ),
+        )
+        connection.execute("DELETE FROM session WHERE id=?", (ids["session"],))
+        assert connection.execute(
+            "SELECT COUNT(*) FROM send_attempt WHERE id='valid-attempt'"
+        ).fetchone() == (0,)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM evidence WHERE id=?", (ids["evidence-a"],)
+        ).fetchone() == (0,)
+
+
+@pytest.mark.parametrize("recursive_triggers", ["ON", "OFF"])
 def test_approved_evidence_ancestry_allows_full_session_purge(
     database: Database, recursive_triggers: str
 ) -> None:
@@ -506,6 +593,51 @@ def test_v0015_preflight_rejects_existing_cross_candidate_claim(
             "(id, draft_id, claim_text, evidence_id, grounded) "
             "VALUES ('legacy-cross-claim', ?, 'Wrong candidate', ?, 1)",
             (ids["draft-b"], ids["evidence-a"]),
+        )
+
+    retry = Database(path)
+    try:
+        with pytest.raises(RuntimeError, match="cross-candidate draft_claim"):
+            retry.initialize()
+    finally:
+        retry.dispose()
+
+
+def test_v0015_preflight_rejects_existing_moved_draft_attempt(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "v15-moved-draft-attempt-preflight.db"
+    database = Database(path)
+    database.initialize()
+    ids = _seed_approved_evidence_graph(database, "v15-moved-attempt", approve=False)
+    database.dispose()
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        for name in v0015_approved_evidence_roots.TRIGGER_NAMES:
+            connection.execute(f'DROP TRIGGER "{name}"')
+        connection.execute(
+            "DELETE FROM schema_migration WHERE version=?",
+            (v0015_approved_evidence_roots.VERSION,),
+        )
+        connection.execute(
+            "UPDATE message_draft SET version=2 WHERE id=?", (ids["draft-b"],)
+        )
+        connection.execute(
+            "UPDATE message_draft SET candidate_id=? WHERE id=?",
+            (ids["candidate-b"], ids["draft-a"]),
+        )
+        connection.execute(
+            "INSERT INTO send_attempt "
+            "(id, candidate_id, draft_id, idempotency_key, body_sha256, "
+            "confirm_send, state, started_at, finished_at, resolution) "
+            "VALUES ('legacy-moved-attempt', ?, ?, ?, ?, 0, 'DRY_RUN_OK', "
+            "'now', 'later', 'unresolved')",
+            (
+                ids["candidate-b"],
+                ids["draft-a"],
+                "legacy-moved-attempt".ljust(64, "0")[:64],
+                "a" * 64,
+            ),
         )
 
     retry = Database(path)
@@ -657,6 +789,68 @@ def test_provenance_requires_explicit_handler_marker_and_still_redacts_secrets(
         assert "/api/v1" in output
         assert "/health" in output
         assert "Key: Kubernetes" in output
+
+
+def test_provenance_redacts_sensitive_labels_before_benign_allowlist(
+    tmp_path: Path,
+) -> None:
+    app = create_app(_settings(tmp_path / "provenance-label-first.db"))
+    source = (
+        "/api/v1\n"
+        "see Bearer token validation docs\n"
+        "Key: Kubernetes secrets store\n"
+        "cookie_path=/api/v1\n"
+        "api_key=Bearer tokens\n"
+        "authorization=Bearer token validation\n"
+        "credential=Key: Kubernetes\n"
+        "source_profile_dir=/health\n"
+        "user=alice credential=Key: Kubernetes region=us\n"
+        "prefix cookie_path=/api/v1, suffix=visible"
+    )
+    expected = (
+        "/api/v1\n"
+        "see Bearer token validation docs\n"
+        "Key: Kubernetes secrets store\n"
+        "cookie_path=[redacted]\n"
+        "api_key=[redacted]\n"
+        "authorization=[redacted]\n"
+        "credential=[redacted]\n"
+        "source_profile_dir=[redacted]\n"
+        "user=alice credential=[redacted] region=us\n"
+        "prefix cookie_path=[redacted], suffix=visible"
+    )
+
+    @app.get("/api/candidates/label-first/sections/main_profile")
+    @preserve_provenance_text
+    def marked_json() -> JSONResponse:
+        return JSONResponse({"sections": {"main_profile": source}})
+
+    event = (
+        "data: " + json.dumps({"sections": {"main_profile": source}}) + "\n\n"
+    ).encode()
+
+    @app.get("/api/candidates/label-first-sse/sections/main_profile")
+    @preserve_provenance_text
+    def marked_sse() -> StreamingResponse:
+        return StreamingResponse(
+            (bytes([byte]) for byte in event), media_type="text/event-stream"
+        )
+
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        json_response = client.get("/api/candidates/label-first/sections/main_profile")
+        sse_response = client.get(
+            "/api/candidates/label-first-sse/sections/main_profile"
+        )
+
+    sse_payload = json.loads(
+        "\n".join(
+            line.removeprefix("data: ")
+            for line in sse_response.text.splitlines()
+            if line.startswith("data:")
+        )
+    )
+    assert json_response.json()["sections"]["main_profile"] == expected
+    assert sse_payload["sections"]["main_profile"] == expected
 
 
 def test_arbitrary_spaced_paths_redact_in_json_sse_and_headers(tmp_path: Path) -> None:
