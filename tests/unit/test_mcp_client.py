@@ -53,8 +53,11 @@ class FakeSession:
         name: str,
         arguments: dict[str, Any],
         *,
+        progress_handler: Callable[..., Awaitable[None]] | None = None,
         timeout: float | None = None,  # noqa: ASYNC109 - fake mirrors FastMCP
     ) -> object:
+        if progress_handler is not None:
+            await progress_handler(1.0, 2.0, "private server text")
         self.calls.append((name, arguments, timeout))
         if isinstance(self.result, BaseException):
             raise self.result
@@ -157,6 +160,36 @@ async def test_malformed_response_keeps_only_safe_partial_diagnostics() -> None:
     assert details["error_class"] == "UNKNOWN"
     assert "runtime" not in str(details).casefold()
     assert ".linkedin-mcp" not in str(details)
+
+
+@pytest.mark.asyncio
+async def test_raw_response_is_captured_before_malformed_envelope_parsing() -> None:
+    malformed = {
+        "content": "not-a-list",
+        "structuredContent": {"url": "u", "unknown": {"kept": True}},
+        "isError": False,
+    }
+    factory = RecordingFactory(lambda: FakeSession(result=malformed))
+    captured: list[dict[str, Any]] = []
+    progress: list[tuple[float, float | None]] = []
+    client = MCPClient("http://127.0.0.1:8000/mcp", client_factory=factory)
+
+    with pytest.raises(MCPClientError):
+        await client.call_tool(
+            "get_person_profile",
+            {"linkedin_username": "alice"},
+            raw_response_capture=lambda raw: _append(captured, raw),
+            progress_capture=lambda current, total, _message: _append(
+                progress, (current, total)
+            ),
+        )
+
+    assert captured == [malformed]
+    assert progress == [(1.0, 2.0)]
+
+
+async def _append(target: list[Any], value: Any) -> None:
+    target.append(value)
 
 
 @pytest.mark.asyncio

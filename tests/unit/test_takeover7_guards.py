@@ -340,12 +340,18 @@ def test_restart_rejects_rows_that_bypass_check_constraints(tmp_path: Path) -> N
 
 def _mutate_first_literal(sql: str) -> str:
     match = re.search(r"'(?P<literal>(?:''|[^'])*)'", sql)
-    assert match is not None
-    literal = match.group("literal")
-    mutated = literal.swapcase()
-    if mutated == literal:
-        mutated = f"{literal}tampered"
-    return sql[: match.start("literal")] + mutated + sql[match.end("literal") :]
+    if match is not None:
+        literal = match.group("literal")
+        mutated = literal.swapcase()
+        if mutated == literal:
+            mutated = f"{literal}tampered"
+        return sql[: match.start("literal")] + mutated + sql[match.end("literal") :]
+    # Covering indexes need no string literal. Mutating their first indexed
+    # column exercises the same semantic-schema rejection path.
+    column = re.search(r"\((?P<column>[a-z_][a-z0-9_]*)", sql, re.IGNORECASE)
+    assert column is not None
+    replacement = "id" if column.group("column").casefold() != "id" else "kind"
+    return sql[: column.start("column")] + replacement + sql[column.end("column") :]
 
 
 @pytest.mark.parametrize(("kind", "name"), _INVARIANT_OBJECTS)

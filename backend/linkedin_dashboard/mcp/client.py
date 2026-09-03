@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
-from collections.abc import Callable
+import json
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol, Self
 from urllib.parse import urlparse
@@ -60,6 +61,8 @@ class ClientSession(Protocol):
 
 
 ClientFactory = Callable[[str, float], ClientSession]
+RawResponseCapture = Callable[[dict[str, Any]], Awaitable[None]]
+ProgressCapture = Callable[[float, float | None, str | None], Awaitable[None]]
 
 
 class MCPClient:
@@ -118,20 +121,36 @@ class MCPClient:
         self,
         name: str,
         arguments: dict[str, Any],
+        *,
+        raw_response_capture: RawResponseCapture | None = None,
+        progress_capture: ProgressCapture | None = None,
     ) -> MCPResponseEnvelope:
         try:
             endpoint = self._operation_endpoint()
             async with self._client_factory(endpoint, self.timeout_seconds) as client:
-                raw_result = await client.call_tool_mcp(
-                    name,
-                    arguments,
-                    timeout=self.timeout_seconds,
+                call_options: dict[str, Any] = {"timeout": self.timeout_seconds}
+                if progress_capture is not None:
+                    call_options["progress_handler"] = progress_capture
+                raw_result = await client.call_tool_mcp(name, arguments, **call_options)
+            raw_snapshot = serialize_json_object(raw_result)
+            if (
+                len(
+                    json.dumps(
+                        raw_snapshot,
+                        ensure_ascii=False,
+                        allow_nan=False,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ).encode("utf-8")
                 )
-            response = parse_response_envelope(raw_result)
-            if len(response.as_json().encode("utf-8")) > MAX_MCP_RESPONSE_BYTES:
+                > MAX_MCP_RESPONSE_BYTES
+            ):
                 raise MCPClientError(
                     error_details(ValueError("MCP response exceeded the size limit"))
                 )
+            if raw_response_capture is not None:
+                await raw_response_capture(raw_snapshot)
+            response = parse_response_envelope(raw_result)
             return response
         except asyncio.CancelledError:
             raise

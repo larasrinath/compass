@@ -88,6 +88,7 @@ class Settings(BaseSettings):
     db_path: Path = Path("~/.linkedin-dashboard/session.db")
     llm_provider: Literal["null"] = "null"
     send_enabled: bool = False
+    inter_call_delay_seconds: float = Field(default=3.0, ge=0, le=60)
 
     @field_validator("host", "frontend_host")
     @classmethod

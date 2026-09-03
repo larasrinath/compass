@@ -14,7 +14,12 @@ the full protocol response, and exposes typed wrappers for people search,
 person/company profile retrieval, and the future manual-send transport. No API
 or service invokes that send wrapper in M1, and `SEND_ENABLED` remains false.
 The dashboard never starts, stops, imports, or authenticates to the sibling
-server, and it never retries a tool call.
+server. M1's durable queue admits only the three read tools and `tools/list`,
+claims at most one job across the database, writes each received envelope before
+domain parsing, and marks orphaned work `interrupted` rather than replaying it.
+Timeout and browser-busy read jobs may make one explicit second attempt; no
+message operation is admitted to this queue. Rate-limited profile work is held
+until operator resume and continues only from the first missing section.
 Decoded MCP envelopes are rejected above 16 MiB; this post-decode guard does
 not cap the FastMCP SDK's transient transport-parsing memory for that one call.
 
@@ -47,7 +52,11 @@ Both processes reject non-loopback host configuration. Start the API only
 through `uv run -m linkedin_dashboard`; there is intentionally no importable
 module-level or zero-argument ASGI application that can be bound with an unsafe
 Uvicorn CLI override. The API also verifies its real listening socket against
-the configured host and port before initializing its database.
+the configured host and port before initializing its database. Queue state is
+available at `/api/jobs` and `/api/queue/status`; the frontend can consume
+sanitized job/progress events from `/api/events`. A probe at `/api/mcp/status`
+is itself serialized through the queue and returns only tool names and a safe
+error class, never the configured MCP URL.
 All three network settings (`HOST`, `FRONTEND_HOST`, and the host in `MCP_URL`)
 must use numeric loopback literals. Hostnames such as `localhost` are rejected
 so startup and runtime checks never depend on DNS; equivalent IPv6 loopback

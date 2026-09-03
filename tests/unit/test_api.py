@@ -56,7 +56,16 @@ def test_real_openapi_preserves_distinct_routes_and_schema_references(tmp_path) 
 
     assert response.status_code == 200
     document = response.json()
-    assert set(document["paths"]) == {"/api/audit", "/api/health"}
+    assert set(document["paths"]) == {
+        "/api/audit",
+        "/api/events",
+        "/api/health",
+        "/api/jobs",
+        "/api/jobs/{job_id}/cancel",
+        "/api/mcp/status",
+        "/api/queue/resume",
+        "/api/queue/status",
+    }
     references: list[str] = []
 
     def collect_references(value: object) -> None:

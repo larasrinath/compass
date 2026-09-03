@@ -10,8 +10,15 @@ from linkedin_dashboard import __version__
 from linkedin_dashboard.api._filters import PrivacyFilterMiddleware
 from linkedin_dashboard.api.audit import router as audit_router
 from linkedin_dashboard.api.health import router as health_router
+from linkedin_dashboard.api.jobs import router as jobs_router
 from linkedin_dashboard.correlation import CorrelationIdMiddleware
 from linkedin_dashboard.db.session import Database
+from linkedin_dashboard.mcp.client import MCPClient
+from linkedin_dashboard.queue.worker import (
+    DurableJobQueue,
+    JobExecutor,
+    MCPReadExecutor,
+)
 from linkedin_dashboard.security import (
     ConfiguredHostMiddleware,
     OriginGuardMiddleware,
@@ -20,8 +27,16 @@ from linkedin_dashboard.security import (
 from linkedin_dashboard.settings import Settings
 
 
-def create_app(app_settings: Settings) -> FastAPI:
+def create_app(
+    app_settings: Settings, *, queue_executor: JobExecutor | None = None
+) -> FastAPI:
     database = Database(app_settings.db_path)
+    executor = queue_executor or MCPReadExecutor(MCPClient(app_settings.mcp_url))
+    job_queue = DurableJobQueue(
+        database,
+        executor,
+        inter_call_delay_seconds=app_settings.inter_call_delay_seconds,
+    )
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
@@ -29,6 +44,7 @@ def create_app(app_settings: Settings) -> FastAPI:
         try:
             yield
         finally:
+            await job_queue.stop()
             database.dispose()
 
     app = FastAPI(
@@ -40,12 +56,14 @@ def create_app(app_settings: Settings) -> FastAPI:
     )
     app.state.settings = app_settings
     app.state.database = database
+    app.state.job_queue = job_queue
 
     app.add_middleware(
         RuntimeBoundaryMiddleware,
         host=app_settings.host,
         port=app_settings.port,
         database=database,
+        on_ready=job_queue.start,
     )
     app.add_middleware(ConfiguredHostMiddleware, allowed_host=app_settings.host)
     app.add_middleware(
@@ -56,6 +74,7 @@ def create_app(app_settings: Settings) -> FastAPI:
     app.add_middleware(PrivacyFilterMiddleware)
     app.include_router(health_router, prefix="/api")
     app.include_router(audit_router, prefix="/api")
+    app.include_router(jobs_router, prefix="/api")
     return app
 
 
