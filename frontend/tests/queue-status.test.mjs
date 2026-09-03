@@ -6,7 +6,10 @@ import test from 'node:test'
 import { reduceQueueEvent } from '../src/hooks/jobEventState.ts'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
-const app = readFileSync(`${root}/src/App.tsx`, 'utf8')
+const queueComponent = readFileSync(
+  `${root}/src/components/QueueStatus.tsx`,
+  'utf8',
+)
 const hook = readFileSync(`${root}/src/hooks/useJobEvents.ts`, 'utf8')
 
 test('queue events reconnect natively and preserve ordered event types', () => {
@@ -64,9 +67,9 @@ test('canonical snapshots reconcile positions after a middle cancellation', () =
 })
 
 test('queue UI exposes position, pause deadline, and explicit resume', () => {
-  assert.match(app, /Queue status/)
-  assert.match(app, /Position \$\{job\.position/)
-  assert.match(app, /queue\.resume_at/)
-  assert.match(app, /Resume queue/)
-  assert.match(app, /Events \{queue\.connected \? 'connected' : 'reconnecting'\}/)
+  assert.match(queueComponent, /Activity queue/)
+  assert.match(queueComponent, /Position \$\{job\.position/)
+  assert.match(queueComponent, /queue\.resume_at/)
+  assert.match(queueComponent, /Resume queue/)
+  assert.match(queueComponent, /Live updates connected/)
 })

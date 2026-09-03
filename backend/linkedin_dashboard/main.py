@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from linkedin_dashboard import __version__
 from linkedin_dashboard.api._filters import PrivacyFilterMiddleware
 from linkedin_dashboard.api.audit import router as audit_router
+from linkedin_dashboard.api.discovery import router as discovery_router
 from linkedin_dashboard.api.health import router as health_router
 from linkedin_dashboard.api.jobs import router as jobs_router
 from linkedin_dashboard.correlation import CorrelationIdMiddleware
@@ -24,6 +25,8 @@ from linkedin_dashboard.security import (
     OriginGuardMiddleware,
     RuntimeBoundaryMiddleware,
 )
+from linkedin_dashboard.services.brief import BriefService
+from linkedin_dashboard.services.search import DiscoveryResultProcessor, SearchService
 from linkedin_dashboard.settings import Settings
 
 
@@ -32,11 +35,15 @@ def create_app(
 ) -> FastAPI:
     database = Database(app_settings.db_path)
     executor = queue_executor or MCPReadExecutor(MCPClient(app_settings.mcp_url))
+    result_processor = DiscoveryResultProcessor(database)
     job_queue = DurableJobQueue(
         database,
         executor,
         inter_call_delay_seconds=app_settings.inter_call_delay_seconds,
+        result_processor=result_processor,
     )
+    brief_service = BriefService(database)
+    search_service = SearchService(database, job_queue, result_processor)
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
@@ -57,6 +64,8 @@ def create_app(
     app.state.settings = app_settings
     app.state.database = database
     app.state.job_queue = job_queue
+    app.state.brief_service = brief_service
+    app.state.search_service = search_service
 
     app.add_middleware(
         RuntimeBoundaryMiddleware,
@@ -75,6 +84,7 @@ def create_app(
     app.include_router(health_router, prefix="/api")
     app.include_router(audit_router, prefix="/api")
     app.include_router(jobs_router, prefix="/api")
+    app.include_router(discovery_router, prefix="/api")
     return app
 
 

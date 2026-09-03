@@ -954,6 +954,10 @@ def _is_provenance_text_location(location: tuple[str, ...]) -> bool:
     if len(normalized) != 2:
         return False
     container = normalized[0]
+    if container == "references" and leaf in {"text", "context"}:
+        return True
+    if container == "sources" and leaf in {"reference_text", "reference_context"}:
+        return True
     if container == "evidence" and leaf in _PROVENANCE_TEXT_FIELDS:
         return True
     return container in {"parsed_field", "parsed_fields"} and leaf in {

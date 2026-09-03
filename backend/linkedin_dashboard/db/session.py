@@ -35,6 +35,7 @@ from linkedin_dashboard.db.migrations import (
     v0014_history_identity_completion,
     v0015_approved_evidence_roots,
     v0016_durable_queue,
+    v0017_role_discovery,
 )
 from linkedin_dashboard.db.models import Base
 from linkedin_dashboard.settings import normalize_database_path
@@ -56,6 +57,7 @@ _MIGRATION_MODULES = (
     v0014_history_identity_completion,
     v0015_approved_evidence_roots,
     v0016_durable_queue,
+    v0017_role_discovery,
 )
 
 _SCHEMA_ACTIONS = {

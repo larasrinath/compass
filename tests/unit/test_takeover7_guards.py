@@ -325,7 +325,9 @@ def test_restart_rejects_rows_that_bypass_check_constraints(tmp_path: Path) -> N
     with sqlite3.connect(path) as connection:
         connection.execute("PRAGMA ignore_check_constraints=ON")
         connection.execute(
-            "INSERT INTO candidate VALUES "
+            "INSERT INTO candidate "
+            "(id,session_id,username,profile_url,display_name,profile_urn,"
+            "first_seen_at,stage,retrieval_status) VALUES "
             "('bad','missing-session','bad','https://example.test',NULL,NULL,"
             "'now','invalid-stage','pending')"
         )
