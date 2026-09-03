@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from itertools import product
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
 from fastapi import Response
@@ -42,6 +43,34 @@ def test_health_smoke_and_correlation_id(tmp_path) -> None:
         "send_enabled": False,
         "llm_provider": "null",
     }
+
+
+def test_real_openapi_preserves_distinct_routes_and_schema_references(tmp_path) -> None:
+    app = create_app(settings_for(tmp_path / "openapi.db"))
+    with client_for(app) as client:
+        response = client.get("/api/openapi.json")
+
+    assert response.status_code == 200
+    document = response.json()
+    assert set(document["paths"]) == {"/api/audit", "/api/health"}
+    references: list[str] = []
+
+    def collect_references(value: object) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if key == "$ref":
+                    references.append(child)
+                collect_references(child)
+        elif isinstance(value, list):
+            for child in value:
+                collect_references(child)
+
+    collect_references(document)
+    assert references
+    assert all(
+        reference.startswith("#/components/schemas/") for reference in references
+    )
+    assert "[redacted" not in response.text
 
 
 def test_every_json_response_crosses_the_privacy_filter(tmp_path) -> None:
@@ -891,3 +920,84 @@ def test_unconfigured_loopback_host_is_rejected(tmp_path) -> None:
 
     assert response.status_code == 400
     assert response.json() == {"detail": "Invalid host header"}
+
+
+def test_normalized_sensitive_body_keys_are_dropped_from_json_and_sse(tmp_path) -> None:
+    app = create_app(settings_for(tmp_path / "normalized-keys.db"))
+    variants = {
+        "api-key": "hyphen-secret",
+        "apiKey": "camel-secret",
+        "access token": "space-secret",
+        "client_secret": "underscore-secret",
+        "sessionToken": "session-secret",
+        "accesstoken": "compact-secret",
+    }
+
+    @app.get("/api/test/normalized-json")
+    def normalized_json() -> dict[str, object]:
+        return {"outer": {"items": [{"safe": "visible", **variants}]}}
+
+    payload = ("data: " + _strict_json_dumps({"outer": variants}) + "\n\n").encode()
+
+    @app.get("/api/test/normalized-sse")
+    def normalized_sse() -> StreamingResponse:
+        return StreamingResponse(
+            (bytes([byte]) for byte in payload),
+            media_type="text/event-stream",
+        )
+
+    with client_for(app) as client:
+        json_response = client.get("/api/test/normalized-json")
+        sse_response = client.get("/api/test/normalized-sse")
+
+    assert json_response.json() == {"outer": {"items": [{"safe": "visible"}]}}
+    for secret in variants.values():
+        assert secret not in sse_response.text
+
+
+def test_repeated_percent_decoding_redacts_private_strings_but_preserves_safe() -> None:
+    def encoded(value: str, passes: int) -> str:
+        for _ in range(passes):
+            value = quote(value, safe="")
+        return value
+
+    sensitive = {
+        "payload_a": encoded("https://user:secret@example.test/private", 2),
+        "payload_b": encoded("file:///Users/operator/private.txt", 3),
+        "payload_c": encoded("/var/private/dashboard.db", 5),
+        "payload_d": encoded("client_secret=deep-secret", 6),
+        "payload_e": "https://example.test/download/"
+        + encoded("file:///Users/operator/private.txt", 2),
+    }
+    sanitized = sanitize_for_frontend({**sensitive, "safe": "hello%20world"})
+
+    assert sanitized["safe"] == "hello%20world"
+    for key, value in sensitive.items():
+        assert value not in sanitized[key]
+        assert sanitized[key].startswith("[redacted")
+
+
+def test_encoded_private_material_is_removed_from_split_sse_and_headers(
+    tmp_path,
+) -> None:
+    app = create_app(settings_for(tmp_path / "encoded-stream.db"))
+    encoded_path = "%25252525252FUsers%25252525252Foperator%25252525252Fsecret"
+    payload = ('data: {"outer":{"message":"' + encoded_path + '"}}\r\n\r\n').encode()
+
+    @app.get("/api/test/encoded-stream")
+    def encoded_stream() -> StreamingResponse:
+        return StreamingResponse(
+            (bytes([byte]) for byte in payload),
+            media_type="text/event-stream",
+            headers={
+                "X-Encoded-Value": encoded_path,
+                "X-Safe-Percent": "hello%20world",
+            },
+        )
+
+    with client_for(app) as client:
+        response = client.get("/api/test/encoded-stream")
+
+    assert "Users" not in response.text
+    assert response.headers["x-encoded-value"].startswith("[redacted")
+    assert response.headers["x-safe-percent"] == "hello%20world"

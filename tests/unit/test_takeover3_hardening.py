@@ -9,6 +9,7 @@ import pytest
 from linkedin_dashboard.db.migrations import (
     v0008_history_hardening,
     v0009_integrity_completion,
+    v0010_takeover_guards,
 )
 from linkedin_dashboard.db.models import (
     Candidate,
@@ -1156,6 +1157,17 @@ _V0009_TRIGGER_NAMES = (
 
 def _prepare_pre_v0009_schema(database: Database, *, drop_column: bool) -> None:
     with database.engine.begin() as connection:
+        connection.execute(
+            text("DELETE FROM schema_migration WHERE version=:version"),
+            {"version": v0010_takeover_guards.VERSION},
+        )
+        for trigger_name in (
+            "purged_evidence_insert_collision",
+            "purged_evidence_update_collision",
+            "purged_evidence_no_direct_delete",
+            "referenced_draft_claim_update_collision",
+        ):
+            connection.exec_driver_sql(f'DROP TRIGGER "{trigger_name}"')
         connection.execute(
             text("DELETE FROM schema_migration WHERE version=:version"),
             {"version": v0009_integrity_completion.VERSION},

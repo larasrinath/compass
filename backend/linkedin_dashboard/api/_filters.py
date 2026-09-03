@@ -39,6 +39,11 @@ _DROP_KEYS = {
     "working_directory",
 }
 _DROP_KEY_SUFFIXES = ("_dir", "_directory", "_path")
+_DROP_KEY_COMPACT = {re.sub(r"[^a-z0-9]", "", key.casefold()) for key in _DROP_KEYS}
+
+_MAX_PERCENT_DECODE_PASSES = 12
+_MAX_PERCENT_DECODE_CHARS = 65_536
+_PERCENT_ESCAPE = re.compile(r"%[0-9a-f]{2}", re.IGNORECASE)
 
 _MALFORMED_JSON_BODY = b'{"detail":"Response could not be safely serialized"}'
 _URL_AUTHORITY = re.compile(
@@ -57,6 +62,10 @@ _FILE_URL = re.compile(
 )
 _NETWORK_URL = re.compile(r"(?:(?:https?):)?//[^\s\"'<>]+", re.IGNORECASE)
 _UNIX_PATH = re.compile(r"(?<![a-z0-9/])/(?!/)[^\s\"'<>]+", re.IGNORECASE)
+_COMMON_FILESYSTEM_PATH = re.compile(
+    r"(?:^|/)(?:etc|home|opt|private|srv|tmp|users|var)(?:/|$)",
+    re.IGNORECASE,
+)
 _COMPONENT_PARAMETER = re.compile(
     r"(?P<separator>^|[?&;])(?P<key>[^=?&#;]*)"
     r"(?P<equals>=)(?P<value>[^?&#;]*)"
@@ -118,6 +127,14 @@ _LINKEDIN_RELATIVE_PATH = re.compile(
     r")$",
     re.IGNORECASE,
 )
+_OPENAPI_ROUTE_KEY = re.compile(
+    r"^/api(?:/[a-z0-9._~!$&'()*+,;=:@{}-]+)*$",
+    re.IGNORECASE,
+)
+_OPENAPI_SCHEMA_REFERENCE = re.compile(
+    r"^#/components/schemas/[a-z0-9._-]+$",
+    re.IGNORECASE,
+)
 _DROP_HEADER_NAMES = {
     "authorization",
     "cookie",
@@ -174,13 +191,26 @@ def _compact_identifier(value: str) -> str:
 
 
 def _fully_unquote(value: str) -> str:
+    decoded, _, _ = _bounded_unquote(value)
+    return decoded
+
+
+def _bounded_unquote(value: str) -> tuple[str, bool, bool]:
+    """Build a bounded decoding shadow without mutating the returned payload."""
+    if not _PERCENT_ESCAPE.search(value):
+        return value, False, True
+    if len(value) > _MAX_PERCENT_DECODE_CHARS:
+        return value, False, False
+
     decoded = value
-    for _ in range(4):
+    for _ in range(_MAX_PERCENT_DECODE_PASSES):
         next_value = unquote_plus(decoded)
         if next_value == decoded:
-            break
+            return decoded, decoded != value, True
+        if len(next_value) > _MAX_PERCENT_DECODE_CHARS:
+            return decoded, decoded != value, False
         decoded = next_value
-    return decoded
+    return decoded, decoded != value, not _PERCENT_ESCAPE.search(decoded)
 
 
 def _is_sensitive_identifier(value: str) -> bool:
@@ -223,7 +253,9 @@ def _is_sensitive_identifier(value: str) -> bool:
 
 
 def _parameter_value_is_sensitive(value: str) -> bool:
-    decoded = _fully_unquote(value)
+    decoded, _, complete = _bounded_unquote(value)
+    if not complete:
+        return True
     normalized = decoded.casefold()
     return (
         bool(_LABELED_SECRET.search(decoded))
@@ -231,6 +263,7 @@ def _parameter_value_is_sensitive(value: str) -> bool:
         or bool(_FILE_URL.search(decoded))
         or bool(_WINDOWS_PATH.search(decoded))
         or bool(_UNIX_PATH.search(decoded))
+        or bool(_NETWORK_URL.search(decoded))
         or normalized.startswith("//")
         or ".linkedin-mcp" in normalized
         or str(Path.home()).casefold() in normalized
@@ -283,13 +316,77 @@ def _is_permitted_linkedin_network_url(value: str, field_name: str | None) -> bo
     return host == "linkedin.com" or host.endswith(".linkedin.com")
 
 
+def _is_openapi_route_key(value: str, container_name: str | None) -> bool:
+    return container_name == "paths" and bool(_OPENAPI_ROUTE_KEY.fullmatch(value))
+
+
+def _is_openapi_schema_reference(value: str, field_name: str | None) -> bool:
+    return field_name == "$ref" and bool(_OPENAPI_SCHEMA_REFERENCE.fullmatch(value))
+
+
+def _decoded_shadow_is_sensitive(value: str, decoded: str) -> str | None:
+    """Classify private material visible only after percent decoding."""
+    raw_has_network_url = bool(_NETWORK_URL.search(value))
+    if raw_has_network_url:
+        # URL components are sanitized individually so benign encoded syntax survives.
+        if _sanitize_url_components(value) != value:
+            return None
+        try:
+            raw_path = urlsplit(value).path
+            decoded_path = urlsplit(decoded).path
+        except ValueError:
+            return "[redacted-url]"
+        if decoded_path == raw_path:
+            return None
+        normalized_path = decoded_path.casefold()
+        if _LABELED_SECRET.search(decoded_path):
+            return "[redacted]"
+        if (
+            _FILE_URL.search(decoded_path)
+            or _WINDOWS_PATH.search(decoded_path)
+            or _COMMON_FILESYSTEM_PATH.search(decoded_path)
+            or ".linkedin-mcp" in normalized_path
+            or str(Path.home()).casefold() in normalized_path
+        ):
+            return "[redacted-path]"
+        return None
+
+    normalized = decoded.casefold()
+    if _LABELED_SECRET.search(decoded) or _AUTHORIZATION_BEARER.search(decoded):
+        return "[redacted]"
+    if (
+        _FILE_URL.search(decoded)
+        or _WINDOWS_PATH.search(decoded)
+        or ".linkedin-mcp" in normalized
+        or str(Path.home()).casefold() in normalized
+    ):
+        return "[redacted-path]"
+
+    if _NETWORK_URL.search(decoded):
+        return "[redacted-url]"
+    if _UNIX_PATH.search(decoded):
+        return "[redacted-path]"
+    return None
+
+
 def _redact_string(
     value: str,
     *,
     field_name: str | None = None,
+    container_name: str | None = None,
 ) -> str:
+    if _is_openapi_route_key(value, container_name):
+        return value
+    if _is_openapi_schema_reference(value, field_name):
+        return value
     if _is_linkedin_relative_url(value, field_name):
         return _sanitize_url_components(value)
+
+    decoded, changed, complete = _bounded_unquote(value)
+    if not complete:
+        return "[redacted-encoded]"
+    if changed and (replacement := _decoded_shadow_is_sensitive(value, decoded)):
+        return replacement
 
     def redact_authority(match: re.Match[str]) -> str:
         authority = match.group("authority")
@@ -325,20 +422,33 @@ def _redact_string(
     return sanitized
 
 
-def _redact_key(value: Any) -> Any:
-    return _redact_string(value) if isinstance(value, str) else value
+def _redact_key(value: Any, *, container_name: str | None) -> Any:
+    return (
+        _redact_string(value, container_name=container_name)
+        if isinstance(value, str)
+        else value
+    )
 
 
 def _drop_key(value: Any) -> bool:
-    normalized = str(value).casefold()
-    return normalized in _DROP_KEYS or normalized.endswith(_DROP_KEY_SUFFIXES)
+    raw = str(value)
+    normalized = _fully_unquote(raw).casefold()
+    compact = re.sub(r"[^a-z0-9]", "", normalized)
+    identifier_like = bool(re.fullmatch(r"[a-z0-9 _-]+", normalized))
+    return (
+        normalized in _DROP_KEYS
+        or normalized.endswith(_DROP_KEY_SUFFIXES)
+        or compact in _DROP_KEY_COMPACT
+        or (identifier_like and compact.endswith(("dir", "directory", "path")))
+        or (identifier_like and _is_sensitive_identifier(raw))
+    )
 
 
 def sanitize_for_frontend(value: Any, *, field_name: str | None = None) -> Any:
     """Recursively remove process-local diagnostics and path material."""
     if isinstance(value, dict):
         return {
-            _redact_key(key): sanitize_for_frontend(
+            _redact_key(key, container_name=field_name): sanitize_for_frontend(
                 child,
                 field_name=str(key).casefold(),
             )

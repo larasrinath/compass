@@ -16,6 +16,7 @@ from linkedin_dashboard.db.migrations import (
     v0007_send_provenance,
     v0008_history_hardening,
     v0009_integrity_completion,
+    v0010_takeover_guards,
 )
 from linkedin_dashboard.db.models import (
     Candidate,
@@ -202,6 +203,19 @@ def test_database_uses_wal_and_owner_only_permissions(database: Database) -> Non
 
     assert stat.S_IMODE(os.stat(database.path).st_mode) == 0o600
     assert database.writable()
+
+
+def test_database_mode_drift_is_repaired_on_checkout_and_connect(
+    database: Database,
+) -> None:
+    os.chmod(database.path, 0o644)
+    with database.engine.connect():
+        assert stat.S_IMODE(database.path.stat().st_mode) == 0o600
+
+    database.engine.dispose()
+    os.chmod(database.path, 0o640)
+    with database.engine.connect():
+        assert stat.S_IMODE(database.path.stat().st_mode) == 0o600
 
 
 @pytest.mark.parametrize("existing", [False, True])
@@ -543,6 +557,7 @@ def test_existing_v0001_database_receives_integrity_migration(tmp_path) -> None:
         v0007_send_provenance.VERSION,
         v0008_history_hardening.VERSION,
         v0009_integrity_completion.VERSION,
+        v0010_takeover_guards.VERSION,
     ]
     assert "NEW.candidate_id IS NOT OLD.candidate_id" in trigger_sql
 

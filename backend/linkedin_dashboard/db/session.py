@@ -23,6 +23,7 @@ from linkedin_dashboard.db.migrations import (
     v0007_send_provenance,
     v0008_history_hardening,
     v0009_integrity_completion,
+    v0010_takeover_guards,
 )
 from linkedin_dashboard.db.models import Base
 from linkedin_dashboard.settings import normalize_database_path
@@ -88,6 +89,7 @@ class Database:
             (v0007_send_provenance.VERSION, v0007_send_provenance.apply),
             (v0008_history_hardening.VERSION, v0008_history_hardening.apply),
             (v0009_integrity_completion.VERSION, v0009_integrity_completion.apply),
+            (v0010_takeover_guards.VERSION, v0010_takeover_guards.apply),
         ):
             applied = connection.execute(
                 text("SELECT 1 FROM schema_migration WHERE version = :version"),
@@ -187,7 +189,18 @@ def _revalidate_storage(dbapi_connection: Any, path: Path, expected_fd: int) -> 
     _require_private_directory(path.parent)
     _require_same_file(path, expected_fd)
     _verify_connection_target(dbapi_connection, path, expected_fd)
+    _restore_owner_only_mode(path, expected_fd)
     _secure_existing_sidecars(path)
+
+
+def _restore_owner_only_mode(path: Path, expected_fd: int) -> None:
+    """Repair mode through the held, proven inode and verify the result."""
+    _require_same_file(path, expected_fd)
+    os.fchmod(expected_fd, stat.S_IRUSR | stat.S_IWUSR)
+    file_stat = os.fstat(expected_fd)
+    if stat.S_IMODE(file_stat.st_mode) != 0o600:
+        raise PermissionError(f"database mode could not be restored to 0600: {path}")
+    _require_same_file(path, expected_fd)
 
 
 def _verify_connection_target(
