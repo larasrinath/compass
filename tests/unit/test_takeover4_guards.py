@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -18,6 +20,16 @@ from sqlalchemy.exc import DBAPIError
 
 NOW = "2026-09-02T12:00:00+00:00"
 LATER = "2026-09-02T12:05:00+00:00"
+
+
+@contextmanager
+def _migration_test_phase(database: Database) -> Iterator[None]:
+    """Grant the same private capability held by Database.initialize migrations."""
+    database._migration_phase = True
+    try:
+        yield
+    finally:
+        database._migration_phase = False
 
 
 def _seed_candidate(database: Database, suffix: str) -> tuple[str, str]:
@@ -237,7 +249,7 @@ def test_v0010_each_statement_is_atomic_and_retryable(
 ) -> None:
     database = Database(tmp_path / f"interrupted-v10-{failure_after}.db")
     database.initialize()
-    with database.engine.begin() as connection:
+    with _migration_test_phase(database), database.engine.begin() as connection:
         connection.execute(
             text("DELETE FROM schema_migration WHERE version=:version"),
             {"version": v0010_takeover_guards.VERSION},
@@ -406,7 +418,7 @@ def test_v0011_each_statement_is_atomic_and_retryable(
 ) -> None:
     database = Database(tmp_path / f"interrupted-v11-{failure_after}.db")
     database.initialize()
-    with database.engine.begin() as connection:
+    with _migration_test_phase(database), database.engine.begin() as connection:
         connection.execute(
             text("DELETE FROM schema_migration WHERE version=:version"),
             {"version": v0011_purged_evidence_ancestry.VERSION},
@@ -530,7 +542,7 @@ def test_v0012_preflight_rejects_existing_cross_session_scores_atomically(
 ) -> None:
     database = Database(tmp_path / "v12-preflight.db")
     database.initialize()
-    with database.engine.begin() as connection:
+    with _migration_test_phase(database), database.engine.begin() as connection:
         connection.execute(
             text("DELETE FROM schema_migration WHERE version=:version"),
             {"version": v0012_score_session_provenance.VERSION},
@@ -543,16 +555,17 @@ def test_v0012_preflight_rejects_existing_cross_session_scores_atomically(
         )
         for name in v0013_history_root_immutability.TRIGGER_NAMES:
             connection.exec_driver_sql(f'DROP TRIGGER "{name}"')
-    _seed_two_score_sessions(database, "preflight")
-    with database.engine.begin() as connection:
-        connection.exec_driver_sql(
-            _score_insert_sql(),
-            (
-                "score-preflight",
-                "candidate-preflight-a",
-                "brief-preflight-b",
-            ),
-        )
+    with _migration_test_phase(database):
+        _seed_two_score_sessions(database, "preflight")
+        with database.engine.begin() as connection:
+            connection.exec_driver_sql(
+                _score_insert_sql(),
+                (
+                    "score-preflight",
+                    "candidate-preflight-a",
+                    "brief-preflight-b",
+                ),
+            )
     baseline = _schema_objects(database.path)
     database.dispose()
 
@@ -580,7 +593,7 @@ def test_v0012_each_statement_is_atomic_and_retryable(
 ) -> None:
     database = Database(tmp_path / f"interrupted-v12-{failure_after}.db")
     database.initialize()
-    with database.engine.begin() as connection:
+    with _migration_test_phase(database), database.engine.begin() as connection:
         connection.execute(
             text("DELETE FROM schema_migration WHERE version=:version"),
             {"version": v0012_score_session_provenance.VERSION},
@@ -819,7 +832,7 @@ def test_v0013_each_statement_is_atomic_and_retryable(
 ) -> None:
     database = Database(tmp_path / f"interrupted-v13-{failure_after}.db")
     database.initialize()
-    with database.engine.begin() as connection:
+    with _migration_test_phase(database), database.engine.begin() as connection:
         connection.execute(
             text("DELETE FROM schema_migration WHERE version=:version"),
             {"version": v0013_history_root_immutability.VERSION},
@@ -888,7 +901,7 @@ def test_v0014_each_statement_is_atomic_and_retryable(
 ) -> None:
     database = Database(tmp_path / f"interrupted-v14-{failure_after}.db")
     database.initialize()
-    with database.engine.begin() as connection:
+    with _migration_test_phase(database), database.engine.begin() as connection:
         connection.execute(
             text("DELETE FROM schema_migration WHERE version=:version"),
             {"version": v0014_history_identity_completion.VERSION},

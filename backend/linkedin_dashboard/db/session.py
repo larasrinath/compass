@@ -5,6 +5,7 @@ import sqlite3
 import stat
 from collections.abc import Callable
 from errno import ELOOP
+from functools import lru_cache
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -32,6 +33,45 @@ from linkedin_dashboard.db.migrations import (
 from linkedin_dashboard.db.models import Base
 from linkedin_dashboard.settings import normalize_database_path
 
+_MIGRATION_MODULES = (
+    v0001_constraints,
+    v0002_integrity,
+    v0003_send_invariants,
+    v0004_audit_cascade,
+    v0005_send_history,
+    v0006_send_state_timing,
+    v0007_send_provenance,
+    v0008_history_hardening,
+    v0009_integrity_completion,
+    v0010_takeover_guards,
+    v0011_purged_evidence_ancestry,
+    v0012_score_session_provenance,
+    v0013_history_root_immutability,
+    v0014_history_identity_completion,
+)
+
+_SCHEMA_ACTIONS = {
+    sqlite3.SQLITE_ALTER_TABLE,
+    sqlite3.SQLITE_CREATE_INDEX,
+    sqlite3.SQLITE_CREATE_TABLE,
+    sqlite3.SQLITE_CREATE_TEMP_INDEX,
+    sqlite3.SQLITE_CREATE_TEMP_TABLE,
+    sqlite3.SQLITE_CREATE_TEMP_TRIGGER,
+    sqlite3.SQLITE_CREATE_TEMP_VIEW,
+    sqlite3.SQLITE_CREATE_TRIGGER,
+    sqlite3.SQLITE_CREATE_VIEW,
+    sqlite3.SQLITE_CREATE_VTABLE,
+    sqlite3.SQLITE_DROP_INDEX,
+    sqlite3.SQLITE_DROP_TABLE,
+    sqlite3.SQLITE_DROP_TEMP_INDEX,
+    sqlite3.SQLITE_DROP_TEMP_TABLE,
+    sqlite3.SQLITE_DROP_TEMP_TRIGGER,
+    sqlite3.SQLITE_DROP_TEMP_VIEW,
+    sqlite3.SQLITE_DROP_TRIGGER,
+    sqlite3.SQLITE_DROP_VIEW,
+    sqlite3.SQLITE_DROP_VTABLE,
+}
+
 
 class Database:
     """SQLite ownership boundary for the local dashboard."""
@@ -41,7 +81,12 @@ class Database:
         self._database_fd: int | None = None
         self._initialize_lock = Lock()
         self._initialized = False
-        self.engine = _create_engine(self.path, lambda: self._database_fd)
+        self._migration_phase = False
+        self.engine = _create_engine(
+            self.path,
+            lambda: self._database_fd,
+            lambda: self._migration_phase,
+        )
         self.sessions = sessionmaker(
             bind=self.engine,
             autoflush=False,
@@ -57,17 +102,25 @@ class Database:
             _require_private_directory(self.path.parent)
             database_fd = _open_owner_only_file(self.path, create=True)
             self._database_fd = database_fd
+            is_new_database = os.fstat(database_fd).st_size == 0
             try:
                 _secure_existing_sidecars(self.path)
-                with self.engine.connect() as connection:
-                    connection.exec_driver_sql("BEGIN IMMEDIATE")
-                    try:
-                        self._initialize_schema(connection)
-                    except BaseException:
-                        connection.rollback()
-                        raise
-                    else:
-                        connection.commit()
+                self._migration_phase = True
+                try:
+                    with self.engine.connect() as connection:
+                        connection.exec_driver_sql("BEGIN IMMEDIATE")
+                        try:
+                            self._initialize_schema(
+                                connection, bootstrap=is_new_database
+                            )
+                            _verify_schema_and_contents(connection)
+                        except BaseException:
+                            connection.rollback()
+                            raise
+                        else:
+                            connection.commit()
+                finally:
+                    self._migration_phase = False
                 _require_same_file(self.path, database_fd)
                 _secure_existing_sidecars(self.path)
                 self._initialized = True
@@ -77,46 +130,26 @@ class Database:
                 self._database_fd = None
                 raise
 
-    def _initialize_schema(self, connection: Connection) -> None:
-        Base.metadata.create_all(connection)
-        connection.exec_driver_sql(
-            "CREATE TABLE IF NOT EXISTS schema_migration "
-            "(version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
-        )
-        for version, apply in (
-            (v0001_constraints.VERSION, v0001_constraints.apply),
-            (v0002_integrity.VERSION, v0002_integrity.apply),
-            (v0003_send_invariants.VERSION, v0003_send_invariants.apply),
-            (v0004_audit_cascade.VERSION, v0004_audit_cascade.apply),
-            (v0005_send_history.VERSION, v0005_send_history.apply),
-            (v0006_send_state_timing.VERSION, v0006_send_state_timing.apply),
-            (v0007_send_provenance.VERSION, v0007_send_provenance.apply),
-            (v0008_history_hardening.VERSION, v0008_history_hardening.apply),
-            (v0009_integrity_completion.VERSION, v0009_integrity_completion.apply),
-            (v0010_takeover_guards.VERSION, v0010_takeover_guards.apply),
-            (
-                v0011_purged_evidence_ancestry.VERSION,
-                v0011_purged_evidence_ancestry.apply,
-            ),
-            (
-                v0012_score_session_provenance.VERSION,
-                v0012_score_session_provenance.apply,
-            ),
-            (
-                v0013_history_root_immutability.VERSION,
-                v0013_history_root_immutability.apply,
-            ),
-            (
-                v0014_history_identity_completion.VERSION,
-                v0014_history_identity_completion.apply,
-            ),
-        ):
+    def _initialize_schema(self, connection: Connection, *, bootstrap: bool) -> None:
+        if bootstrap:
+            Base.metadata.create_all(connection)
+            connection.exec_driver_sql(
+                "CREATE TABLE schema_migration "
+                "(version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
+            )
+        elif not connection.exec_driver_sql(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migration'"
+        ).scalar_one_or_none():
+            raise RuntimeError("existing database has no migration history")
+
+        for migration in _MIGRATION_MODULES:
+            version = migration.VERSION
             applied = connection.execute(
                 text("SELECT 1 FROM schema_migration WHERE version = :version"),
                 {"version": version},
             ).scalar_one_or_none()
             if applied is None:
-                apply(connection)
+                migration.apply(connection)
                 connection.execute(
                     text(
                         "INSERT INTO schema_migration(version, applied_at) "
@@ -145,7 +178,11 @@ class Database:
             self._initialized = False
 
 
-def _create_engine(path: Path, expected_fd: Callable[[], int | None]) -> Engine:
+def _create_engine(
+    path: Path,
+    expected_fd: Callable[[], int | None],
+    migration_phase: Callable[[], bool],
+) -> Engine:
     engine = create_engine(
         URL.create("sqlite", database=str(path)),
         connect_args={"check_same_thread": False},
@@ -160,7 +197,11 @@ def _create_engine(path: Path, expected_fd: Callable[[], int | None]) -> Engine:
         if database_fd is None:
             raise RuntimeError("database connections require secure initialization")
         _revalidate_storage(dbapi_connection, path, database_fd)
-        dbapi_connection.set_authorizer(_sqlite_authorizer)
+        dbapi_connection.set_authorizer(
+            lambda *arguments: _sqlite_authorizer(
+                *arguments, allow_schema_changes=migration_phase()
+            )
+        )
         _configure_required_pragmas(dbapi_connection)
 
     @event.listens_for(engine, "checkout")
@@ -172,8 +213,14 @@ def _create_engine(path: Path, expected_fd: Callable[[], int | None]) -> Engine:
         if database_fd is None:
             raise RuntimeError("database connections require secure initialization")
         _revalidate_storage(dbapi_connection, path, database_fd)
-        dbapi_connection.set_authorizer(_sqlite_authorizer)
+        dbapi_connection.set_authorizer(
+            lambda *arguments: _sqlite_authorizer(
+                *arguments, allow_schema_changes=migration_phase()
+            )
+        )
         _configure_required_pragmas(dbapi_connection)
+        if not migration_phase():
+            _verify_schema_and_contents_dbapi(dbapi_connection)
 
     return engine
 
@@ -189,6 +236,18 @@ def _configure_required_pragmas(dbapi_connection: Any) -> None:
         cursor.execute("PRAGMA recursive_triggers=ON")
         if cursor.execute("PRAGMA recursive_triggers").fetchone()[0] != 1:
             raise RuntimeError("SQLite recursive triggers could not be enabled")
+
+        cursor.execute("PRAGMA ignore_check_constraints=OFF")
+        if cursor.execute("PRAGMA ignore_check_constraints").fetchone()[0] != 0:
+            raise RuntimeError("SQLite CHECK constraints could not be enabled")
+
+        cursor.execute("PRAGMA writable_schema=OFF")
+        if cursor.execute("PRAGMA writable_schema").fetchone()[0] != 0:
+            raise RuntimeError("SQLite writable_schema could not be disabled")
+
+        cursor.execute("PRAGMA trusted_schema=OFF")
+        if cursor.execute("PRAGMA trusted_schema").fetchone()[0] != 0:
+            raise RuntimeError("SQLite trusted_schema could not be disabled")
 
         journal_mode = cursor.execute("PRAGMA journal_mode=WAL").fetchone()[0]
         if str(journal_mode).casefold() != "wal":
@@ -380,10 +439,27 @@ def _sqlite_authorizer(
     argument_two: str | None,
     database_name: str | None,
     trigger_name: str | None,
+    *,
+    allow_schema_changes: bool = False,
 ) -> int:
     """Prevent managed SQL from dismantling required SQLite invariants."""
     del database_name, trigger_name
-    if action == sqlite3.SQLITE_PRAGMA and argument_two is not None:
+    if action in {sqlite3.SQLITE_ATTACH, sqlite3.SQLITE_DETACH}:
+        return sqlite3.SQLITE_DENY
+    if action in _SCHEMA_ACTIONS and not allow_schema_changes:
+        return sqlite3.SQLITE_DENY
+    if (
+        action in {sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE}
+        and (argument_one or "").casefold()
+        in {"sqlite_master", "sqlite_schema", "schema_migration"}
+        and not allow_schema_changes
+    ):
+        return sqlite3.SQLITE_DENY
+    if (
+        action == sqlite3.SQLITE_PRAGMA
+        and argument_two is not None
+        and not allow_schema_changes
+    ):
         pragma = (argument_one or "").casefold()
         setting = argument_two.strip(" \t'\"").casefold()
         if pragma in {"foreign_keys", "recursive_triggers"} and setting not in {
@@ -395,7 +471,199 @@ def _sqlite_authorizer(
             return sqlite3.SQLITE_DENY
         if pragma == "journal_mode" and setting != "wal":
             return sqlite3.SQLITE_DENY
+        if pragma in {
+            "writable_schema",
+            "ignore_check_constraints",
+            "trusted_schema",
+        } and setting not in {"0", "off", "false", "no"}:
+            return sqlite3.SQLITE_DENY
     return sqlite3.SQLITE_OK
+
+
+def _normalized_schema_sql(value: str) -> str:
+    return " ".join(value.split()).casefold()
+
+
+def _schema_manifest(connection: Any) -> frozenset[tuple[str, str, str, str]]:
+    rows = connection.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master "
+        "WHERE type IN ('table','index','trigger','view') "
+        "AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL"
+    ).fetchall()
+    return frozenset(
+        (kind, name, table, _normalized_schema_sql(sql))
+        for kind, name, table, sql in rows
+    )
+
+
+def _check_expressions(sql: str) -> tuple[str, ...]:
+    normalized = _normalized_schema_sql(sql)
+    expressions: list[str] = []
+    cursor = 0
+    while (start := normalized.find("check (", cursor)) >= 0:
+        expression_start = start + len("check ")
+        depth = 0
+        quote: str | None = None
+        for index in range(expression_start, len(normalized)):
+            character = normalized[index]
+            if quote is not None:
+                if character == quote:
+                    quote = None
+                continue
+            if character in {"'", '"'}:
+                quote = character
+            elif character == "(":
+                depth += 1
+            elif character == ")":
+                depth -= 1
+                if depth == 0:
+                    expressions.append(normalized[expression_start : index + 1])
+                    cursor = index + 1
+                    break
+        else:
+            expressions.append("[malformed-check]")
+            break
+    return tuple(sorted(expressions))
+
+
+def _schema_structure(connection: Any) -> tuple[Any, ...]:
+    tables = tuple(
+        row[0]
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        ).fetchall()
+    )
+    structure: list[Any] = []
+    for table in tables:
+        quoted = table.replace('"', '""')
+        sql = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
+        ).fetchone()[0]
+        columns = tuple(
+            (*row[:2], _sqlite_type_affinity(row[2]), *row[3:])
+            for row in connection.execute(f'PRAGMA table_xinfo("{quoted}")').fetchall()
+        )
+        foreign_keys = tuple(
+            connection.execute(f'PRAGMA foreign_key_list("{quoted}")').fetchall()
+        )
+        indexes = []
+        for index_row in connection.execute(
+            f'PRAGMA index_list("{quoted}")'
+        ).fetchall():
+            index_name = index_row[1]
+            quoted_index = index_name.replace('"', '""')
+            indexes.append(
+                (
+                    tuple(index_row[1:]),
+                    tuple(
+                        connection.execute(
+                            f'PRAGMA index_xinfo("{quoted_index}")'
+                        ).fetchall()
+                    ),
+                )
+            )
+        structure.append(
+            (table, columns, foreign_keys, tuple(indexes), _check_expressions(sql))
+        )
+    return tuple(structure)
+
+
+def _sqlite_type_affinity(declared_type: str) -> str:
+    normalized = declared_type.casefold()
+    if "int" in normalized:
+        return "integer"
+    if any(marker in normalized for marker in ("char", "clob", "text")):
+        return "text"
+    if not normalized or "blob" in normalized:
+        return "blob"
+    if any(marker in normalized for marker in ("real", "floa", "doub")):
+        return "real"
+    return "numeric"
+
+
+@lru_cache(maxsize=1)
+def _expected_schema() -> tuple[frozenset[tuple[str, str, str, str]], tuple[Any, ...]]:
+    canonical = create_engine("sqlite://")
+    try:
+        with canonical.begin() as connection:
+            Base.metadata.create_all(connection)
+            connection.exec_driver_sql(
+                "CREATE TABLE schema_migration "
+                "(version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
+            )
+            for migration in _MIGRATION_MODULES:
+                migration.apply(connection)
+            dbapi_connection = connection.connection.driver_connection
+            return (
+                _schema_manifest(dbapi_connection),
+                _schema_structure(dbapi_connection),
+            )
+    finally:
+        canonical.dispose()
+
+
+def _verify_schema_and_contents(connection: Connection) -> None:
+    _verify_schema_and_contents_dbapi(connection.connection.driver_connection)
+
+
+def _verify_schema_and_contents_dbapi(dbapi_connection: Any) -> None:
+    cursor = dbapi_connection.cursor()
+    try:
+        actual = _schema_manifest(dbapi_connection)
+        expected, expected_structure = _expected_schema()
+        actual_structure = _schema_structure(dbapi_connection)
+        actual_keys = {(kind, name) for kind, name, _, _ in actual}
+        expected_keys = {(kind, name) for kind, name, _, _ in expected}
+        exact_kinds = {"index"}
+        exact_triggers = {
+            "audit_log_no_delete",
+            "audit_log_no_update",
+            "send_attempt_is_immutable",
+            "send_attempt_no_direct_delete",
+            "send_resolution_is_final",
+        }
+        exact_expected = {
+            row for row in expected if row[0] in exact_kinds or row[1] in exact_triggers
+        }
+        exact_actual = {
+            row for row in actual if row[0] in exact_kinds or row[1] in exact_triggers
+        }
+        if (
+            actual_keys != expected_keys
+            or exact_actual != exact_expected
+            or actual_structure != expected_structure
+        ):
+            missing = sorted(expected_keys - actual_keys)
+            unexpected = sorted(actual_keys - expected_keys)
+            changed = sorted(
+                {(kind, name) for kind, name, _, _ in exact_actual}
+                & {(kind, name) for kind, name, _, _ in exact_expected}
+                - {
+                    (kind, name)
+                    for kind, name, table, sql in exact_actual
+                    if (kind, name, table, sql) in exact_expected
+                }
+            )
+            actual_tables = {row[0]: row[1:] for row in actual_structure}
+            expected_tables = {row[0]: row[1:] for row in expected_structure}
+            changed_tables = sorted(
+                name
+                for name in actual_tables.keys() | expected_tables.keys()
+                if actual_tables.get(name) != expected_tables.get(name)
+            )
+            raise RuntimeError(
+                "SQLite schema does not match the required manifest "
+                f"(missing={missing!r}, unexpected={unexpected!r}, "
+                f"changed={changed!r}, changed_tables={changed_tables!r})"
+            )
+        integrity = cursor.execute("PRAGMA integrity_check").fetchall()
+        if integrity != [("ok",)]:
+            raise RuntimeError("SQLite integrity check failed")
+        if cursor.execute("PRAGMA foreign_key_check").fetchone() is not None:
+            raise RuntimeError("SQLite foreign key check failed")
+    finally:
+        cursor.close()
 
 
 def get_journal_mode(connection: Connection) -> str:

@@ -98,8 +98,10 @@ class Settings(BaseSettings):
     @classmethod
     def require_loopback_mcp_url(cls, value: str) -> str:
         parsed = urlparse(value)
-        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-            raise ValueError("MCP_URL must be an absolute HTTP URL")
+        if parsed.scheme != "http" or not parsed.hostname:
+            raise ValueError(
+                "MCP_URL must be a direct absolute HTTP URL on a numeric loopback host"
+            )
         try:
             parsed_port = parsed.port
         except ValueError as error:
@@ -108,6 +110,11 @@ class Settings(BaseSettings):
             raise ValueError("MCP_URL must contain a valid port")
         if parsed.username is not None or parsed.password is not None:
             raise ValueError("MCP_URL must not contain userinfo or credentials")
+        if parsed.path != "/mcp" or parsed.params or parsed.query or parsed.fragment:
+            raise ValueError(
+                "MCP_URL must use the direct /mcp endpoint without parameters, "
+                "query, or fragment"
+            )
         try:
             host = normalize_loopback_host(parsed.hostname)
         except ValueError as error:

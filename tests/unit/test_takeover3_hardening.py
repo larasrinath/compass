@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import sqlite3
 import stat
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -28,6 +30,16 @@ from sqlalchemy.exc import DBAPIError
 
 NOW = "2026-09-02T12:00:00+00:00"
 LATER = "2026-09-02T12:05:00+00:00"
+
+
+@contextmanager
+def _migration_test_phase(database: Database) -> Iterator[None]:
+    """Grant the same private capability held by Database.initialize migrations."""
+    database._migration_phase = True
+    try:
+        yield
+    finally:
+        database._migration_phase = False
 
 
 def _seed_candidate(database: Database, suffix: str) -> tuple[str, str]:
@@ -1031,7 +1043,7 @@ def test_v0008_preflight_rejects_legacy_confirm_state_mismatch(
     database = Database(tmp_path / "legacy-confirm-state.db")
     database.initialize()
     candidate_id, draft_id = _seed_candidate(database, "legacy-family")
-    with database.engine.begin() as connection:
+    with _migration_test_phase(database), database.engine.begin() as connection:
         connection.execute(
             text("DELETE FROM schema_migration WHERE version=:version"),
             {"version": v0008_history_hardening.VERSION},
@@ -1089,7 +1101,7 @@ def test_v0008_each_statement_is_atomic_and_retryable(
 ) -> None:
     database = Database(tmp_path / f"interrupted-v8-{failure_after}.db")
     database.initialize()
-    with database.engine.begin() as connection:
+    with _migration_test_phase(database), database.engine.begin() as connection:
         connection.execute(
             text("DELETE FROM schema_migration WHERE version=:version"),
             {"version": v0008_history_hardening.VERSION},
@@ -1158,7 +1170,7 @@ _V0009_TRIGGER_NAMES = (
 
 
 def _prepare_pre_v0009_schema(database: Database, *, drop_column: bool) -> None:
-    with database.engine.begin() as connection:
+    with _migration_test_phase(database), database.engine.begin() as connection:
         connection.execute(
             text("DELETE FROM schema_migration WHERE version=:version"),
             {"version": v0012_score_session_provenance.VERSION},

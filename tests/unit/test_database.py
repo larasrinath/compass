@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import sqlite3
 import stat
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any, cast
 
 import pytest
@@ -37,6 +39,16 @@ from sqlalchemy import event, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
 NOW = "2026-09-02T12:00:00+00:00"
+
+
+@contextmanager
+def _migration_test_phase(database: Database) -> Iterator[None]:
+    """Grant the same private capability held by Database.initialize migrations."""
+    database._migration_phase = True
+    try:
+        yield
+    finally:
+        database._migration_phase = False
 
 
 def seed_candidate(database: Database, suffix: str) -> tuple[str, str]:
@@ -126,7 +138,7 @@ def confirmation(
 
 def prepare_v0001_database(database: Database) -> None:
     database.initialize()
-    with database.engine.begin() as connection:
+    with _migration_test_phase(database), database.engine.begin() as connection:
         trigger_names = list(
             connection.execute(
                 text("SELECT name FROM sqlite_master WHERE type='trigger'")
@@ -573,7 +585,7 @@ def test_existing_v0001_database_receives_integrity_migration(tmp_path) -> None:
 def test_existing_database_receives_session_purge_audit_migration(tmp_path) -> None:
     database = Database(tmp_path / "audit-upgrade.db")
     prepare_v0001_database(database)
-    with database.engine.begin() as connection:
+    with _migration_test_phase(database), database.engine.begin() as connection:
         connection.execute(
             text(
                 "INSERT INTO session "
@@ -628,18 +640,21 @@ def test_v0002_preflight_rejects_incompatible_legacy_rows_without_recording(
 ) -> None:
     database = Database(tmp_path / f"legacy-{state}-{confirm_send}.db")
     prepare_v0001_database(database)
-    candidate_id, draft_id = seed_candidate(database, f"legacy-{state}-{confirm_send}")
-    with database.engine.begin() as connection:
-        connection.exec_driver_sql("PRAGMA ignore_check_constraints=ON")
-        insert_attempt_sql(
-            connection,
-            attempt_id=f"attempt-legacy-{state}-{confirm_send}",
-            candidate_id=candidate_id,
-            draft_id=draft_id,
-            state=state,
-            confirm_send=confirm_send,
+    with _migration_test_phase(database):
+        candidate_id, draft_id = seed_candidate(
+            database, f"legacy-{state}-{confirm_send}"
         )
-        connection.exec_driver_sql("PRAGMA ignore_check_constraints=OFF")
+        with database.engine.begin() as connection:
+            connection.exec_driver_sql("PRAGMA ignore_check_constraints=ON")
+            insert_attempt_sql(
+                connection,
+                attempt_id=f"attempt-legacy-{state}-{confirm_send}",
+                candidate_id=candidate_id,
+                draft_id=draft_id,
+                state=state,
+                confirm_send=confirm_send,
+            )
+            connection.exec_driver_sql("PRAGMA ignore_check_constraints=OFF")
 
     database = restart_database(database)
     try:
@@ -714,7 +729,7 @@ def test_v0002_reconciles_every_legacy_partial_ddl_state(
 ) -> None:
     database = Database(tmp_path / f"partial-v2-{partial_count}.db")
     prepare_v0001_database(database)
-    with database.engine.begin() as connection:
+    with _migration_test_phase(database), database.engine.begin() as connection:
         v0002_integrity.preflight_integrity(
             connection,
             version=v0002_integrity.VERSION,
@@ -940,7 +955,7 @@ def test_malformed_legacy_ambiguous_attempt_cannot_be_rewritten(
     database: Database,
 ) -> None:
     candidate_id, draft_id = seed_candidate(database, "malformed-ambiguous")
-    with database.engine.begin() as connection:
+    with _migration_test_phase(database), database.engine.begin() as connection:
         connection.exec_driver_sql("DROP TRIGGER send_attempt_insert_is_valid")
         connection.exec_driver_sql("DROP TRIGGER send_attempt_state_timing_insert")
         connection.exec_driver_sql("PRAGMA ignore_check_constraints=ON")
@@ -953,18 +968,9 @@ def test_malformed_legacy_ambiguous_attempt_cannot_be_rewritten(
         )
         connection.exec_driver_sql("PRAGMA ignore_check_constraints=OFF")
 
-    with pytest.raises(
-        DBAPIError,
-        match=r"immutable|every outcome finished|must match its approved draft",
-    ):
-        with database.engine.begin() as connection:
-            connection.execute(
-                text(
-                    "UPDATE send_attempt SET body_sha256=:hash, state='SENDING' "
-                    "WHERE id='attempt-malformed-ambiguous'"
-                ),
-                {"hash": "f" * 64},
-            )
+    with pytest.raises(RuntimeError, match="required manifest"):
+        with database.engine.begin():
+            pass
 
 
 def test_resolution_requires_finished_ambiguous_attempt(database: Database) -> None:
@@ -1467,7 +1473,7 @@ def test_malformed_sent_cannot_be_rewritten_to_bypass_new_send(
     database: Database,
 ) -> None:
     candidate_id, draft_id = seed_candidate(database, "sent-null-bypass")
-    with database.engine.begin() as connection:
+    with _migration_test_phase(database), database.engine.begin() as connection:
         connection.exec_driver_sql("DROP TRIGGER send_attempt_state_timing_insert")
         connection.exec_driver_sql("PRAGMA ignore_check_constraints=ON")
         insert_attempt_sql(
@@ -1480,25 +1486,9 @@ def test_malformed_sent_cannot_be_rewritten_to_bypass_new_send(
         )
         connection.exec_driver_sql("PRAGMA ignore_check_constraints=OFF")
 
-    with pytest.raises(DBAPIError, match="every outcome finished"):
-        with database.engine.begin() as connection:
-            connection.execute(
-                text(
-                    "UPDATE send_attempt SET state='FAILED_CONCLUSIVE', "
-                    "finished_at=:finished WHERE id='attempt-sent-null'"
-                ),
-                {"finished": NOW},
-            )
-
-    with pytest.raises(IntegrityError):
-        with database.engine.begin() as connection:
-            insert_attempt_sql(
-                connection,
-                attempt_id="attempt-new-after-malformed-sent",
-                candidate_id=candidate_id,
-                draft_id=draft_id,
-                state="SENDING",
-            )
+    with pytest.raises(RuntimeError, match="required manifest"):
+        with database.engine.begin():
+            pass
 
 
 @pytest.mark.parametrize(
@@ -1511,7 +1501,7 @@ def test_v0006_preflight_rejects_legacy_state_timing(
     database = Database(tmp_path / f"legacy-state-timing-{state}.db")
     database.initialize()
     candidate_id, draft_id = seed_candidate(database, f"legacy-state-timing-{state}")
-    with database.engine.begin() as connection:
+    with _migration_test_phase(database), database.engine.begin() as connection:
         connection.execute(
             text("DELETE FROM schema_migration WHERE version=:version"),
             {"version": v0006_send_state_timing.VERSION},
@@ -1558,7 +1548,7 @@ def test_v0006_each_statement_is_atomic_and_retryable(
 ) -> None:
     database = Database(tmp_path / f"interrupted-v6-{failure_after}.db")
     database.initialize()
-    with database.engine.begin() as connection:
+    with _migration_test_phase(database), database.engine.begin() as connection:
         connection.execute(
             text("DELETE FROM schema_migration WHERE version=:version"),
             {"version": v0006_send_state_timing.VERSION},
@@ -1603,7 +1593,7 @@ def test_v0007_preflight_rejects_legacy_provenance_mismatch(
     )
     record_candidate = other_candidate_id if mismatch == "candidate" else candidate_id
     body_sha256 = "b" * 64 if mismatch == "hash" else "a" * 64
-    with database.engine.begin() as connection:
+    with _migration_test_phase(database), database.engine.begin() as connection:
         connection.execute(
             text("DELETE FROM schema_migration WHERE version=:version"),
             {"version": v0007_send_provenance.VERSION},
@@ -1669,7 +1659,7 @@ def test_v0007_each_statement_is_atomic_and_retryable(
 ) -> None:
     database = Database(tmp_path / f"interrupted-v7-{failure_after}.db")
     database.initialize()
-    with database.engine.begin() as connection:
+    with _migration_test_phase(database), database.engine.begin() as connection:
         connection.execute(
             text("DELETE FROM schema_migration WHERE version=:version"),
             {"version": v0007_send_provenance.VERSION},

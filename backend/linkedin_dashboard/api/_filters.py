@@ -58,6 +58,17 @@ _WINDOWS_PATH = re.compile(
     r"(?<![a-z0-9])(?:[a-z]:[\\/]|\\\\)[^\s\r\n\"'<>]+",
     flags=re.IGNORECASE,
 )
+_QUOTED_FILESYSTEM_PATH = re.compile(
+    r"(?P<quote>[\"'])(?:[a-z]:[\\/]|\\\\|/(?:etc|home|opt|private|srv|tmp|users|var)/)"
+    r"(?:(?!(?P=quote))[\s\S])+(?P=quote)",
+    flags=re.IGNORECASE,
+)
+_FILESYSTEM_PATH_WITH_SPACES = re.compile(
+    r"(?<![a-z0-9])(?:[a-z]:[\\/]|\\\\|/(?:etc|home|opt|private|srv|tmp|users|var)/)"
+    r"[^\r\n\"'<>;,]*?[a-z0-9_-]+\.[a-z0-9]{1,16}(?:[;,])?"
+    r"(?=$|[\s\"'<>])",
+    flags=re.IGNORECASE,
+)
 _FILE_URL = re.compile(
     r"\bfile:(?://[^\s\"'<>]*)?(?:[^\s\"'<>]*)",
     flags=re.IGNORECASE,
@@ -539,8 +550,6 @@ def _decoded_shadow_is_sensitive(value: str, decoded: str) -> str | None:
             decoded_path = urlsplit(decoded).path
         except ValueError:
             return "[redacted-url]"
-        if decoded_path == raw_path:
-            return None
         normalized_path = decoded_path.casefold()
         if (
             _LABELED_SECRET.search(decoded_path)
@@ -555,6 +564,8 @@ def _decoded_shadow_is_sensitive(value: str, decoded: str) -> str | None:
             or str(Path.home()).casefold() in normalized_path
         ):
             return "[redacted-path]"
+        if decoded_path == raw_path:
+            return None
         if _NETWORK_URL.search(decoded_path):
             return "[redacted-url]"
         return None
@@ -643,12 +654,21 @@ def _redact_string(
         sanitized_decoded_url = _URL_AUTHORITY.sub(
             _redact_authority, _sanitize_url_components(decoded)
         )
+        if replacement := _decoded_shadow_is_sensitive(
+            sanitized_decoded_url, sanitized_decoded_url
+        ):
+            return replacement
         if sanitized_decoded_url != decoded:
             return sanitized_decoded_url
     if changed and (replacement := _decoded_shadow_is_sensitive(working, decoded)):
         return replacement
 
-    sanitized = _FILE_URL.sub("[redacted-path]", working)
+    sanitized = _QUOTED_FILESYSTEM_PATH.sub(
+        lambda match: f"{match.group('quote')}[redacted-path]{match.group('quote')}",
+        working,
+    )
+    sanitized = _FILESYSTEM_PATH_WITH_SPACES.sub("[redacted-path]", sanitized)
+    sanitized = _FILE_URL.sub("[redacted-path]", sanitized)
     sanitized = sanitized.replace(str(Path.home()), "[redacted-home]")
     sanitized = sanitized.replace(".linkedin-mcp", "[redacted-profile]")
 
@@ -706,13 +726,13 @@ def _drop_key(value: Any) -> bool:
         decoded = _MALFORMED_PERCENT_TOKEN.sub("", decoded)
     normalized = decoded.casefold()
     compact = re.sub(r"[^a-z0-9]", "", normalized)
-    identifier_like = bool(re.fullmatch(r"[a-z0-9 ._-]+", normalized))
+    url_like = "://" in normalized or normalized.startswith("//")
     return (
         normalized in _DROP_KEYS
         or normalized.endswith(_DROP_KEY_SUFFIXES)
         or compact in _DROP_KEY_COMPACT
-        or (identifier_like and compact.endswith(("dir", "directory", "path")))
-        or (identifier_like and _is_sensitive_identifier(raw))
+        or (not url_like and compact.endswith(("dir", "directory", "path")))
+        or _is_sensitive_identifier(raw)
     )
 
 
@@ -1013,7 +1033,7 @@ class PrivacyFilterMiddleware:
                     response_kind = (
                         "json-bodyless"
                         if scope.get("method") == "HEAD"
-                        or message.get("status") in {204, 304}
+                        or message.get("status") in {204, 205, 304}
                         else "json"
                     )
                 elif media_type == "text/event-stream":
@@ -1048,6 +1068,22 @@ class PrivacyFilterMiddleware:
             if response_kind == "json-bodyless":
                 if message.get("more_body", False):
                     return
+                status = int(start.get("status", 200))
+                headers = list(start.get("headers", []))
+                if status == 204:
+                    headers = [
+                        (key, value)
+                        for key, value in headers
+                        if key.decode("latin-1").casefold() != "content-length"
+                    ]
+                elif status == 205:
+                    headers = [
+                        (key, value)
+                        for key, value in headers
+                        if key.decode("latin-1").casefold() != "content-length"
+                    ]
+                    headers.append((b"content-length", b"0"))
+                start["headers"] = headers
                 await send(start)
                 await send({"type": "http.response.body", "body": b""})
                 return
