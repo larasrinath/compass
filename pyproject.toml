@@ -1,0 +1,43 @@
+[project]
+name = "linkedin-dashboard"
+version = "0.1.0"
+description = "Local, human-reviewed sourcing dashboard for linkedin-mcp-server"
+readme = "README.md"
+requires-python = ">=3.12.4,<3.15"
+dependencies = [
+    "fastapi>=0.115,<1",
+    "pydantic-settings>=2.8,<3",
+    "sqlalchemy>=2.0.36,<3",
+    "uvicorn[standard]>=0.34,<1",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28,<1",
+    "pytest>=8.3,<10",
+    "pytest-asyncio>=0.25,<2",
+    "ruff>=0.11,<1",
+    "ty>=0.0.1a12",
+]
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "backend"}
+
+[tool.setuptools.packages.find]
+where = ["backend"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
+

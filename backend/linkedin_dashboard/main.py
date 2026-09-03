@@ -1,0 +1,63 @@
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
+import uvicorn
+from fastapi import FastAPI
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+
+from linkedin_dashboard import __version__
+from linkedin_dashboard.api._filters import PrivacyFilterMiddleware
+from linkedin_dashboard.api.audit import router as audit_router
+from linkedin_dashboard.api.health import router as health_router
+from linkedin_dashboard.correlation import CorrelationIdMiddleware
+from linkedin_dashboard.db.session import Database
+from linkedin_dashboard.settings import Settings
+
+
+def create_app(settings: Settings | None = None) -> FastAPI:
+    app_settings = settings or Settings()
+    database = Database(app_settings.db_path)
+
+    @asynccontextmanager
+    async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+        del application
+        database.initialize()
+        try:
+            yield
+        finally:
+            database.dispose()
+
+    app = FastAPI(
+        title="LinkedIn Dashboard",
+        version=__version__,
+        lifespan=lifespan,
+        docs_url="/api/docs",
+        openapi_url="/api/openapi.json",
+    )
+    app.state.settings = app_settings
+    app.state.database = database
+
+    app.add_middleware(
+        TrustedHostMiddleware,
+        allowed_hosts=["127.0.0.1", "localhost", "[::1]", "testserver"],
+    )
+    app.add_middleware(PrivacyFilterMiddleware)
+    app.add_middleware(CorrelationIdMiddleware)
+    app.include_router(health_router, prefix="/api")
+    app.include_router(audit_router, prefix="/api")
+    return app
+
+
+app = create_app()
+
+
+def run() -> None:
+    settings = Settings()
+    uvicorn.run(
+        create_app(settings),
+        host=settings.host,
+        port=settings.port,
+        access_log=False,
+    )
