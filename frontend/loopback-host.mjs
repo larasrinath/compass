@@ -30,29 +30,59 @@ export function assertLoopbackHost(host, surface) {
   return normalized
 }
 
-export function backendProxyTarget(env = process.env) {
-  const host = assertLoopbackHost(
-    env.HOST ?? '127.0.0.1',
-    'Dashboard backend proxy',
-  )
-  const rawPort = env.PORT ?? '8787'
+function validatedPort(rawPort, surface) {
   if (!/^\d+$/.test(String(rawPort))) {
-    throw new Error(`Dashboard backend proxy port must be an integer; received ${rawPort}`)
+    throw new Error(`${surface} port must be an integer; received ${rawPort}`)
   }
   const port = Number(rawPort)
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new Error(`Dashboard backend proxy port must be between 1 and 65535; received ${rawPort}`)
+    throw new Error(`${surface} port must be between 1 and 65535; received ${rawPort}`)
   }
-  const authority = host.includes(':') ? `[${host}]` : host
-  return `http://${authority}:${port}`
+  return port
 }
 
-export function loopbackOnlyPlugin() {
+function urlHost(host) {
+  return host.includes(':') ? `[${host}]` : host
+}
+
+export function backendProxyTarget(env = process.env) {
+  const surface = 'Dashboard backend proxy'
+  const host = assertLoopbackHost(env.HOST ?? '127.0.0.1', surface)
+  const port = validatedPort(env.PORT ?? '8787', surface)
+  return `http://${urlHost(host)}:${port}`
+}
+
+export function frontendBinding(env = process.env) {
+  const surface = 'Vite frontend'
+  const host = assertLoopbackHost(env.FRONTEND_HOST ?? '127.0.0.1', surface)
+  const port = validatedPort(env.FRONTEND_PORT ?? '5173', surface)
+  const authority = host.includes(':') ? `[${host}]` : host
+  return { host, port, origin: `http://${authority}:${port}` }
+}
+
+export function loopbackOnlyPlugin(expectedFrontend) {
   return {
     name: 'linkedin-dashboard-loopback-only',
     configResolved(config) {
-      assertLoopbackHost(config.server.host, 'Vite development server')
-      assertLoopbackHost(config.preview.host, 'Vite preview server')
+      const serverHost = assertLoopbackHost(
+        config.server.host,
+        'Vite development server',
+      )
+      const previewHost = assertLoopbackHost(
+        config.preview.host,
+        'Vite preview server',
+      )
+      if (
+        expectedFrontend !== undefined &&
+        (serverHost !== expectedFrontend.host ||
+          config.server.port !== expectedFrontend.port ||
+          previewHost !== expectedFrontend.host ||
+          config.preview.port !== expectedFrontend.port)
+      ) {
+        throw new Error(
+          'Vite listener must match configured FRONTEND_HOST and FRONTEND_PORT',
+        )
+      }
     },
   }
 }

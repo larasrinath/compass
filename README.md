@@ -32,11 +32,14 @@ npm run dev
 ```
 
 The API listens on `http://127.0.0.1:8787`; Vite listens on
-`http://127.0.0.1:5173` and derives its `/api` proxy target from the same
-validated `HOST` and `PORT` configuration. Both reject non-loopback host
-configuration. Start the API only through `uv run -m linkedin_dashboard`;
-there is intentionally no importable module-level ASGI application that can be
-bound with an unsafe Uvicorn CLI override.
+`http://127.0.0.1:5173`. Vite derives its listener from the validated
+`FRONTEND_HOST` and `FRONTEND_PORT` settings and its `/api` proxy from the
+validated backend `HOST` and `PORT` settings. IPv6 authorities are bracketed.
+Both processes reject non-loopback host configuration. Start the API only
+through `uv run -m linkedin_dashboard`; there is intentionally no importable
+module-level or zero-argument ASGI application that can be bound with an unsafe
+Uvicorn CLI override. The API also verifies its real listening socket against
+the configured host and port before initializing its database.
 
 ## Verification
 
@@ -53,4 +56,8 @@ database is created with mode `0600` at `~/.linkedin-dashboard/session.db`.
 Its parent directory is created with mode `0700`. A custom existing `DB_PATH`
 parent must already be owned by the current user and grant no group or world
 permissions; startup rejects an unsafe parent instead of changing its mode.
+Initialization holds and verifies the database inode before SQLite performs a
+write-capable operation, and schema migrations plus their version records are
+committed atomically. Send-attempt history can be removed only as part of a
+full-session purge.
 Through M5, `LLM_PROVIDER` is locked to the literal value `null`.

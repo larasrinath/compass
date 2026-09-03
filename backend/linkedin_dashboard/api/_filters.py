@@ -12,15 +12,24 @@ _DROP_KEYS = {
     "authorization",
     "browser_profile_path",
     "cookie_path",
+    "cwd",
     "db_path",
+    "dir",
+    "directory",
     "hostname",
+    "issue_template_path",
     "mcp_url",
+    "path",
     "portable_cookie_path",
     "proxy_password",
     "runtime",
+    "runtime_storage_state_path",
     "source_profile_dir",
     "suggested_gist_command",
+    "user_data_dir",
+    "working_directory",
 }
+_DROP_KEY_SUFFIXES = ("_dir", "_directory", "_path")
 
 _MALFORMED_JSON_BODY = b'{"detail":"Response could not be safely serialized"}'
 _URL_AUTHORITY = re.compile(
@@ -29,6 +38,21 @@ _URL_AUTHORITY = re.compile(
     flags=re.IGNORECASE,
 )
 _UTF8_BOM = b"\xef\xbb\xbf"
+_WINDOWS_PATH = re.compile(
+    r"(?<![a-z0-9])(?:[a-z]:[\\/]|\\\\)[^\s\r\n\"'<>]+",
+    flags=re.IGNORECASE,
+)
+_FILE_URL = re.compile(r"file:///(?:[^\s\"'<>]+)", flags=re.IGNORECASE)
+_UNIX_PATH = re.compile(r"(?<![a-z0-9:/])/(?!/)[^\s\"'<>]+", re.IGNORECASE)
+_LINKEDIN_PATH_PREFIXES = (
+    "/company/",
+    "/feed/",
+    "/in/",
+    "/jobs/",
+    "/messaging/",
+    "/posts/",
+    "/search/",
+)
 
 
 def _is_json_media_type(content_type: str) -> bool:
@@ -47,12 +71,27 @@ def _redact_string(value: str) -> str:
         return f"{match.group('prefix')}[redacted]@{host}"
 
     sanitized = _URL_AUTHORITY.sub(redact_authority, value)
+    sanitized = _FILE_URL.sub("[redacted-path]", sanitized)
     sanitized = sanitized.replace(str(Path.home()), "[redacted-home]")
-    return sanitized.replace(".linkedin-mcp", "[redacted-profile]")
+    sanitized = sanitized.replace(".linkedin-mcp", "[redacted-profile]")
+    sanitized = _WINDOWS_PATH.sub("[redacted-path]", sanitized)
+
+    def redact_unix_path(match: re.Match[str]) -> str:
+        candidate = match.group(0)
+        if candidate.casefold().startswith(_LINKEDIN_PATH_PREFIXES):
+            return candidate
+        return "[redacted-path]"
+
+    return _UNIX_PATH.sub(redact_unix_path, sanitized)
 
 
 def _redact_key(value: Any) -> Any:
     return _redact_string(value) if isinstance(value, str) else value
+
+
+def _drop_key(value: Any) -> bool:
+    normalized = str(value).casefold()
+    return normalized in _DROP_KEYS or normalized.endswith(_DROP_KEY_SUFFIXES)
 
 
 def sanitize_for_frontend(value: Any) -> Any:
@@ -61,7 +100,7 @@ def sanitize_for_frontend(value: Any) -> Any:
         return {
             _redact_key(key): sanitize_for_frontend(child)
             for key, child in value.items()
-            if str(key).casefold() not in _DROP_KEYS
+            if not _drop_key(key)
         }
     if isinstance(value, list):
         return [sanitize_for_frontend(child) for child in value]
@@ -81,12 +120,14 @@ def _strict_json_loads(value: bytes | str) -> Any:
 
 
 def _strict_json_dumps(value: Any) -> str:
-    return json.dumps(
+    serialized = json.dumps(
         value,
         ensure_ascii=False,
         separators=(",", ":"),
         allow_nan=False,
     )
+    serialized.encode("utf-8")
+    return serialized
 
 
 def _sanitize_sse_event(event: bytes, *, terminated: bool) -> bytes:
@@ -124,7 +165,10 @@ def _sanitize_sse_event(event: bytes, *, terminated: bool) -> bytes:
             else:
                 safe_payload = _redact_string(payload)
         else:
-            safe_payload = _strict_json_dumps(sanitize_for_frontend(value))
+            try:
+                safe_payload = _strict_json_dumps(sanitize_for_frontend(value))
+            except (UnicodeEncodeError, ValueError, TypeError, OverflowError):
+                safe_payload = _MALFORMED_JSON_BODY.decode()
         safe_data = [f"data: {line}" for line in safe_payload.split("\n")]
         output[data_position:data_position] = safe_data or ["data:"]
 
@@ -273,6 +317,7 @@ class PrivacyFilterMiddleware:
                 )
             except (
                 UnicodeDecodeError,
+                UnicodeEncodeError,
                 json.JSONDecodeError,
                 ValueError,
                 TypeError,

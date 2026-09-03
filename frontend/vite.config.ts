@@ -3,26 +3,31 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { defineConfig, loadEnv } from 'vite'
 
-import { backendProxyTarget, loopbackOnlyPlugin } from './loopback-host.mjs'
+import {
+  backendProxyTarget,
+  frontendBinding,
+  loopbackOnlyPlugin,
+} from './loopback-host.mjs'
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
   const backendEnv = { ...loadEnv(mode, projectRoot, ''), ...process.env }
+  const frontend = frontendBinding(backendEnv)
   return {
-    plugins: [react(), loopbackOnlyPlugin()],
+    plugins: [react(), loopbackOnlyPlugin(frontend)],
     server: {
-      host: '127.0.0.1',
-      port: 5173,
+      host: frontend.host,
+      port: frontend.port,
       strictPort: true,
       proxy: {
         '/api': backendProxyTarget(backendEnv),
       },
     },
     preview: {
-      host: '127.0.0.1',
-      port: 4173,
+      host: frontend.host,
+      port: frontend.port,
       strictPort: true,
     },
   }

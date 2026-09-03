@@ -12,7 +12,11 @@ from linkedin_dashboard.api.audit import router as audit_router
 from linkedin_dashboard.api.health import router as health_router
 from linkedin_dashboard.correlation import CorrelationIdMiddleware
 from linkedin_dashboard.db.session import Database
-from linkedin_dashboard.security import ConfiguredHostMiddleware, OriginGuardMiddleware
+from linkedin_dashboard.security import (
+    ConfiguredHostMiddleware,
+    OriginGuardMiddleware,
+    RuntimeBoundaryMiddleware,
+)
 from linkedin_dashboard.settings import Settings
 
 
@@ -22,7 +26,6 @@ def create_app(app_settings: Settings) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         del application
-        database.initialize()
         try:
             yield
         finally:
@@ -38,6 +41,12 @@ def create_app(app_settings: Settings) -> FastAPI:
     app.state.settings = app_settings
     app.state.database = database
 
+    app.add_middleware(
+        RuntimeBoundaryMiddleware,
+        host=app_settings.host,
+        port=app_settings.port,
+        database=database,
+    )
     app.add_middleware(ConfiguredHostMiddleware, allowed_host=app_settings.host)
     app.add_middleware(
         OriginGuardMiddleware,

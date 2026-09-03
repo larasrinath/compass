@@ -63,8 +63,21 @@ def test_every_json_response_crosses_the_privacy_filter(tmp_path) -> None:
                     },
                     "error_message": str(Path.home() / ".linkedin-mcp/profile failed"),
                     "hostname": "internal-host",
+                    "issue_template_path": "/opt/dashboard/issues/template.md",
+                    "runtime_storage_state_path": (
+                        r"C:\Users\operator\linkedin\state.json"
+                    ),
+                    "trace_output_dir": "/srv/dashboard/private-traces",
+                    "local_cache_path": "/var/private/dashboard-cache",
                     "suggested_gist_command": "upload-internal-diagnostics",
-                }
+                },
+                "profile_url": "https://www.linkedin.com/in/safe-person/",
+                "relative_url": "/in/safe-person/",
+                "custom_error": (
+                    "failed at /srv/custom-dashboard/session.db and "
+                    r"C:\private-dashboard\cookies.json plus "
+                    "file:///custom/private/runtime.json"
+                ),
             },
             "mcp_url": "http://127.0.0.1:8000/mcp",
         }
@@ -78,7 +91,16 @@ def test_every_json_response_crosses_the_privacy_filter(tmp_path) -> None:
     assert "runtime" not in payload["section_errors"]["experience"]
     assert "mcp_url" not in payload
     assert "hostname" not in body
+    assert "issue_template_path" not in body
+    assert "runtime_storage_state_path" not in body
+    assert "trace_output_dir" not in body
+    assert "local_cache_path" not in body
     assert "suggested_gist_command" not in body
+    assert "/srv/custom-dashboard/session.db" not in body
+    assert r"C:\private-dashboard\cookies.json" not in body
+    assert "file:///custom/private/runtime.json" not in body
+    assert "https://www.linkedin.com/in/safe-person/" in body
+    assert '"relative_url":"/in/safe-person/"' in body
     assert str(Path.home()) not in body
     assert ".linkedin-mcp" not in body
 
@@ -188,6 +210,54 @@ def test_sse_parser_does_not_dispatch_before_blank_line() -> None:
     assert parser.feed(b"\n", final=False) == b"data: delayed\n\n"
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b'{"value":"\\ud800leading"}',
+        b'{"value":"trailing\\udfff"}',
+    ],
+)
+def test_sse_surrogate_escape_becomes_safe_error_byte_by_byte(payload: bytes) -> None:
+    stream = (
+        b"event: unsafe\ndata: "
+        + payload
+        + b"\n\nevent: after\ndata: still-streaming\n\n"
+    )
+    parser = _SSEParser()
+    output: list[bytes] = []
+
+    for index, byte in enumerate(stream):
+        output.append(parser.feed(bytes([byte]), final=index == len(stream) - 1))
+
+    assert b"".join(output) == (
+        b'event: unsafe\ndata: {"detail":"Response could not be safely serialized"}\n\n'
+        b"event: after\ndata: still-streaming\n\n"
+    )
+
+
+def test_sse_redacts_custom_diagnostic_paths_byte_by_byte() -> None:
+    stream = (
+        b"event: diagnostic\r\n"
+        b'data: {"issue_template_path":"/custom/issues/template.md",'
+        b'"runtime_storage_state_path":"C:\\\\Users\\\\operator\\\\state.json",'
+        b'"trace_dir":"/srv/private-traces",'
+        b'"message":"failed /opt/private/session.db",'
+        b'"profile":"/in/safe-person/"}\r\n\r\n'
+    )
+    parser = _SSEParser()
+    output: list[bytes] = []
+    for index, byte in enumerate(stream):
+        output.append(parser.feed(bytes([byte]), final=index == len(stream) - 1))
+
+    text = b"".join(output).decode()
+    assert "issue_template_path" not in text
+    assert "runtime_storage_state_path" not in text
+    assert "trace_dir" not in text
+    assert "/opt/private/session.db" not in text
+    assert '"message":"failed [redacted-path]"' in text
+    assert '"profile":"/in/safe-person/"' in text
+
+
 def test_structured_json_suffix_crosses_privacy_filter(tmp_path) -> None:
     app = create_app(settings_for(tmp_path / "problem-json.db"))
 
@@ -244,10 +314,36 @@ def test_non_finite_declared_json_fails_closed(tmp_path, constant: str) -> None:
     assert response.json() == {"detail": "Response could not be safely serialized"}
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b'{"value":"\\ud800leading"}',
+        b'{"value":"trailing\\udfff"}',
+    ],
+)
+def test_surrogate_json_escape_fails_closed(tmp_path, payload: bytes) -> None:
+    app = create_app(settings_for(tmp_path / "surrogate.db"))
+
+    @app.get("/api/test/surrogate")
+    def surrogate_json() -> Response:
+        return Response(content=payload, media_type="application/json")
+
+    with client_for(app) as client:
+        response = client.get("/api/test/surrogate")
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Response could not be safely serialized"}
+
+
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
 def test_non_finite_values_cannot_be_encoded(value: float) -> None:
     with pytest.raises(ValueError, match="Out of range float values"):
         _strict_json_dumps({"value": value})
+
+
+def test_surrogate_values_cannot_be_encoded() -> None:
+    with pytest.raises(UnicodeEncodeError):
+        _strict_json_dumps({"value": "\ud800unsafe"})
 
 
 def test_credential_urls_are_redacted_in_values_and_keys_without_corruption() -> None:
@@ -277,6 +373,7 @@ def test_credential_urls_are_redacted_in_values_and_keys_without_corruption() ->
 def test_audit_api_redacts_credentials_embedded_in_strings(tmp_path) -> None:
     app = create_app(settings_for(tmp_path / "audit-privacy.db"))
     with client_for(app) as client:
+        assert client.get("/api/health").status_code == 200
         with app.state.database.sessions.begin() as db_session:
             db_session.add(
                 DashboardSession(
@@ -331,6 +428,32 @@ def test_unsafe_method_origin_guard(tmp_path) -> None:
     assert configured_origin.status_code == 200
     assert foreign_origin.status_code == 403
     assert foreign_origin.json() == {"detail": "Origin is not allowed"}
+
+
+def test_ipv6_frontend_origin_guard_matches_configured_vite_origin(tmp_path) -> None:
+    settings = Settings(
+        frontend_host="::1",
+        frontend_port=5191,
+        db_path=tmp_path / "ipv6-origin.db",
+    )
+    app = create_app(settings)
+
+    @app.post("/api/test/ipv6-mutate")
+    def mutate() -> dict[str, bool]:
+        return {"accepted": True}
+
+    with client_for(app) as client:
+        configured = client.post(
+            "/api/test/ipv6-mutate",
+            headers={"Origin": "http://[::1]:5191"},
+        )
+        wrong_port = client.post(
+            "/api/test/ipv6-mutate",
+            headers={"Origin": "http://[::1]:5173"},
+        )
+
+    assert configured.status_code == 200
+    assert wrong_port.status_code == 403
 
 
 @pytest.mark.parametrize(

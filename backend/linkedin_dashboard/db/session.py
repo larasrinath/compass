@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import os
 import stat
+from collections.abc import Callable
 from errno import ELOOP
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from sqlalchemy import Engine, create_engine, event, text
@@ -15,6 +17,7 @@ from linkedin_dashboard.db.migrations import (
     v0002_integrity,
     v0003_send_invariants,
     v0004_audit_cascade,
+    v0005_send_history,
 )
 from linkedin_dashboard.db.models import Base
 from linkedin_dashboard.settings import normalize_database_path
@@ -25,7 +28,10 @@ class Database:
 
     def __init__(self, path: Path) -> None:
         self.path = normalize_database_path(path)
-        self.engine = _create_engine(self.path)
+        self._database_fd: int | None = None
+        self._initialize_lock = Lock()
+        self._initialized = False
+        self.engine = _create_engine(self.path, lambda: self._database_fd)
         self.sessions = sessionmaker(
             bind=self.engine,
             autoflush=False,
@@ -34,40 +40,59 @@ class Database:
         )
 
     def initialize(self) -> None:
-        _create_private_directories(self.path.parent)
-        _require_private_directory(self.path.parent)
-        database_fd = _open_owner_only_file(self.path, create=True)
-        try:
-            Base.metadata.create_all(self.engine)
-            with self.engine.begin() as connection:
-                connection.exec_driver_sql(
-                    "CREATE TABLE IF NOT EXISTS schema_migration "
-                    "(version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
+        with self._initialize_lock:
+            if self._initialized:
+                return
+            _create_private_directories(self.path.parent)
+            _require_private_directory(self.path.parent)
+            database_fd = _open_owner_only_file(self.path, create=True)
+            self._database_fd = database_fd
+            try:
+                with self.engine.connect() as connection:
+                    connection.exec_driver_sql("BEGIN IMMEDIATE")
+                    try:
+                        self._initialize_schema(connection)
+                    except BaseException:
+                        connection.rollback()
+                        raise
+                    else:
+                        connection.commit()
+                _require_same_file(self.path, database_fd)
+                _secure_existing_sidecars(self.path)
+                self._initialized = True
+            except BaseException:
+                self.engine.dispose()
+                os.close(database_fd)
+                self._database_fd = None
+                raise
+
+    def _initialize_schema(self, connection: Connection) -> None:
+        Base.metadata.create_all(connection)
+        connection.exec_driver_sql(
+            "CREATE TABLE IF NOT EXISTS schema_migration "
+            "(version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
+        )
+        for version, apply in (
+            (v0001_constraints.VERSION, v0001_constraints.apply),
+            (v0002_integrity.VERSION, v0002_integrity.apply),
+            (v0003_send_invariants.VERSION, v0003_send_invariants.apply),
+            (v0004_audit_cascade.VERSION, v0004_audit_cascade.apply),
+            (v0005_send_history.VERSION, v0005_send_history.apply),
+        ):
+            applied = connection.execute(
+                text("SELECT 1 FROM schema_migration WHERE version = :version"),
+                {"version": version},
+            ).scalar_one_or_none()
+            if applied is None:
+                apply(connection)
+                connection.execute(
+                    text(
+                        "INSERT INTO schema_migration(version, applied_at) "
+                        "VALUES (:version, "
+                        "strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))"
+                    ),
+                    {"version": version},
                 )
-                for version, apply in (
-                    (v0001_constraints.VERSION, v0001_constraints.apply),
-                    (v0002_integrity.VERSION, v0002_integrity.apply),
-                    (v0003_send_invariants.VERSION, v0003_send_invariants.apply),
-                    (v0004_audit_cascade.VERSION, v0004_audit_cascade.apply),
-                ):
-                    applied = connection.execute(
-                        text("SELECT 1 FROM schema_migration WHERE version = :version"),
-                        {"version": version},
-                    ).scalar_one_or_none()
-                    if applied is None:
-                        apply(connection)
-                        connection.execute(
-                            text(
-                                "INSERT INTO schema_migration(version, applied_at) "
-                                "VALUES (:version, "
-                                "strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))"
-                            ),
-                            {"version": version},
-                        )
-            _require_same_file(self.path, database_fd)
-            _secure_existing_sidecars(self.path)
-        finally:
-            os.close(database_fd)
 
     def writable(self) -> bool:
         try:
@@ -80,10 +105,15 @@ class Database:
             return False
 
     def dispose(self) -> None:
-        self.engine.dispose()
+        with self._initialize_lock:
+            self.engine.dispose()
+            if self._database_fd is not None:
+                os.close(self._database_fd)
+                self._database_fd = None
+            self._initialized = False
 
 
-def _create_engine(path: Path) -> Engine:
+def _create_engine(path: Path, expected_fd: Callable[[], int | None]) -> Engine:
     engine = create_engine(
         f"sqlite:///{path}",
         connect_args={"check_same_thread": False},
@@ -94,6 +124,10 @@ def _create_engine(path: Path) -> Engine:
         dbapi_connection: Any, connection_record: Any
     ) -> None:  # pragma: no cover - SQLAlchemy callback signature
         del connection_record
+        database_fd = expected_fd()
+        if database_fd is None:
+            raise RuntimeError("database connections require secure initialization")
+        _verify_connection_target(dbapi_connection, path, database_fd)
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.execute("PRAGMA journal_mode=WAL")
@@ -102,6 +136,33 @@ def _create_engine(path: Path) -> Engine:
         _secure_existing_sidecars(path)
 
     return engine
+
+
+def _verify_connection_target(
+    dbapi_connection: Any, path: Path, expected_fd: int
+) -> None:
+    """Verify SQLite opened the held inode before any write-capable operation."""
+    cursor = dbapi_connection.cursor()
+    try:
+        rows = cursor.execute("PRAGMA database_list").fetchall()
+    finally:
+        cursor.close()
+    main_paths = [row[2] for row in rows if row[1] == "main"]
+    if len(main_paths) != 1 or Path(main_paths[0]) != path:
+        raise ValueError("SQLite opened an unexpected database path")
+
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    actual_fd = _open_existing_file(path, flags)
+    try:
+        actual_stat = os.fstat(actual_fd)
+        expected_stat = os.fstat(expected_fd)
+        if (actual_stat.st_dev, actual_stat.st_ino) != (
+            expected_stat.st_dev,
+            expected_stat.st_ino,
+        ):
+            raise ValueError(f"SQLite database target changed before opening: {path}")
+    finally:
+        os.close(actual_fd)
 
 
 def _create_private_directories(directory: Path) -> None:

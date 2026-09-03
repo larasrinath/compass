@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import stat
+from typing import Any, cast
 
 import pytest
 from linkedin_dashboard.db.migrations import (
@@ -9,9 +11,9 @@ from linkedin_dashboard.db.migrations import (
     v0002_integrity,
     v0003_send_invariants,
     v0004_audit_cascade,
+    v0005_send_history,
 )
 from linkedin_dashboard.db.models import (
-    Base,
     Candidate,
     CandidateScore,
     DashboardSession,
@@ -100,20 +102,35 @@ def attempt(
 
 
 def prepare_v0001_database(database: Database) -> None:
-    Base.metadata.create_all(database.engine)
+    database.initialize()
     with database.engine.begin() as connection:
-        connection.exec_driver_sql(
-            "CREATE TABLE schema_migration "
-            "(version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
+        trigger_names = list(
+            connection.execute(
+                text("SELECT name FROM sqlite_master WHERE type='trigger'")
+            ).scalars()
+        )
+        for trigger_name in trigger_names:
+            connection.exec_driver_sql(f'DROP TRIGGER "{trigger_name}"')
+        connection.execute(
+            text("DELETE FROM schema_migration WHERE version <> :version"),
+            {"version": v0001_constraints.VERSION},
         )
         v0001_constraints.apply(connection)
-        connection.execute(
-            text(
-                "INSERT INTO schema_migration(version, applied_at) "
-                "VALUES (:version, :applied_at)"
-            ),
-            {"version": v0001_constraints.VERSION, "applied_at": NOW},
-        )
+
+
+def restart_database(database: Database) -> Database:
+    path = database.path
+    database.dispose()
+    return Database(path)
+
+
+def migration_schema_objects(path) -> list[tuple[str, str, str]]:
+    with sqlite3.connect(path) as connection:
+        return connection.execute(
+            "SELECT type, name, sql FROM sqlite_master "
+            "WHERE type IN ('index', 'trigger') AND sql IS NOT NULL "
+            "ORDER BY type, name"
+        ).fetchall()
 
 
 def insert_attempt_sql(
@@ -295,9 +312,34 @@ def test_database_rejects_symlink_created_after_configuration(tmp_path) -> None:
     assert stat.S_IMODE(target.stat().st_mode) == 0o644
 
 
+def test_connection_inode_check_precedes_every_sqlite_write(
+    tmp_path, monkeypatch
+) -> None:
+    path = tmp_path / "connection-swap.db"
+    target = tmp_path / "unrelated-target.db"
+    sentinel = b"unrelated-target-must-remain-byte-identical"
+    target.write_bytes(sentinel)
+    database = Database(path)
+    original_creator = cast(Any, database.engine.pool._creator)
+
+    def swapped_creator():
+        path.unlink()
+        path.symlink_to(target)
+        return original_creator()
+
+    monkeypatch.setattr(database.engine.pool, "_creator", swapped_creator)
+    with pytest.raises(ValueError, match=r"unexpected database path|symbolic link"):
+        database.initialize()
+
+    assert target.read_bytes() == sentinel
+    assert not target.with_name(f"{target.name}-wal").exists()
+    assert not target.with_name(f"{target.name}-shm").exists()
+
+
 def test_existing_v0001_database_receives_integrity_migration(tmp_path) -> None:
     database = Database(tmp_path / "upgrade.db")
     prepare_v0001_database(database)
+    database = restart_database(database)
 
     try:
         database.initialize()
@@ -321,6 +363,7 @@ def test_existing_v0001_database_receives_integrity_migration(tmp_path) -> None:
         v0002_integrity.VERSION,
         v0003_send_invariants.VERSION,
         v0004_audit_cascade.VERSION,
+        v0005_send_history.VERSION,
     ]
     assert "NEW.candidate_id IS NOT OLD.candidate_id" in trigger_sql
 
@@ -350,6 +393,7 @@ def test_existing_database_receives_session_purge_audit_migration(tmp_path) -> N
             {"now": NOW},
         )
 
+    database = restart_database(database)
     try:
         database.initialize()
         with database.engine.begin() as connection:
@@ -395,21 +439,115 @@ def test_v0002_preflight_rejects_incompatible_legacy_rows_without_recording(
         )
         connection.exec_driver_sql("PRAGMA ignore_check_constraints=OFF")
 
+    database = restart_database(database)
     try:
         with pytest.raises(
             RuntimeError,
             match=rf"{v0002_integrity.VERSION}.*{expected}",
         ):
             database.initialize()
-        with database.engine.connect() as connection:
-            recorded = connection.execute(
-                text("SELECT 1 FROM schema_migration WHERE version=:version"),
-                {"version": v0002_integrity.VERSION},
-            ).scalar_one_or_none()
     finally:
         database.dispose()
 
+    with sqlite3.connect(database.path) as connection:
+        recorded = connection.execute(
+            "SELECT 1 FROM schema_migration WHERE version=?",
+            (v0002_integrity.VERSION,),
+        ).fetchone()
     assert recorded is None
+
+
+@pytest.mark.parametrize("failure_after", range(1, len(v0002_integrity.STATEMENTS) + 1))
+def test_v0002_each_statement_is_atomic_and_retryable(
+    tmp_path, monkeypatch, failure_after: int
+) -> None:
+    database = Database(tmp_path / f"interrupted-v2-{failure_after}.db")
+    prepare_v0001_database(database)
+    baseline = migration_schema_objects(database.path)
+    database = restart_database(database)
+    original_apply = v0002_integrity.apply
+
+    def interrupted_apply(connection) -> None:
+        v0002_integrity.preflight_integrity(
+            connection,
+            version=v0002_integrity.VERSION,
+        )
+        for index, statement in enumerate(v0002_integrity.STATEMENTS, start=1):
+            connection.exec_driver_sql(statement)
+            if index == failure_after:
+                raise RuntimeError(f"interrupted after statement {index}")
+
+    monkeypatch.setattr(v0002_integrity, "apply", interrupted_apply)
+    with pytest.raises(RuntimeError, match=f"statement {failure_after}"):
+        database.initialize()
+
+    assert migration_schema_objects(database.path) == baseline
+    with sqlite3.connect(database.path) as connection:
+        assert (
+            connection.execute(
+                "SELECT 1 FROM schema_migration WHERE version=?",
+                (v0002_integrity.VERSION,),
+            ).fetchone()
+            is None
+        )
+
+    monkeypatch.setattr(v0002_integrity, "apply", original_apply)
+    database.initialize()
+    try:
+        with database.engine.connect() as connection:
+            assert (
+                connection.execute(
+                    text("SELECT 1 FROM schema_migration WHERE version=:version"),
+                    {"version": v0002_integrity.VERSION},
+                ).scalar_one()
+                == 1
+            )
+    finally:
+        database.dispose()
+
+
+@pytest.mark.parametrize("partial_count", range(1, len(v0002_integrity.STATEMENTS) + 1))
+def test_v0002_reconciles_every_legacy_partial_ddl_state(
+    tmp_path, partial_count: int
+) -> None:
+    database = Database(tmp_path / f"partial-v2-{partial_count}.db")
+    prepare_v0001_database(database)
+    with database.engine.begin() as connection:
+        v0002_integrity.preflight_integrity(
+            connection,
+            version=v0002_integrity.VERSION,
+        )
+        for statement in v0002_integrity.STATEMENTS[:partial_count]:
+            connection.exec_driver_sql(statement)
+    database = restart_database(database)
+
+    try:
+        database.initialize()
+        with database.engine.connect() as connection:
+            assert (
+                connection.execute(
+                    text("SELECT 1 FROM schema_migration WHERE version=:version"),
+                    {"version": v0002_integrity.VERSION},
+                ).scalar_one()
+                == 1
+            )
+            trigger_names = list(
+                connection.execute(
+                    text(
+                        "SELECT name FROM sqlite_master "
+                        "WHERE type='trigger' ORDER BY name"
+                    )
+                ).scalars()
+            )
+    finally:
+        database.dispose()
+
+    assert {
+        "send_attempt_is_immutable",
+        "send_resolution_transition_is_valid",
+        "validate_session_booleans_insert",
+        "validate_send_attempt_booleans_update",
+    } <= set(trigger_names)
 
 
 def test_partial_unique_index_rejects_a_second_live_send(database: Database) -> None:
@@ -759,3 +897,116 @@ def test_resolution_transitions_once_and_is_final(database: Database) -> None:
                 confirm_send=True,
             )
         )
+
+
+def test_send_history_deletes_require_full_session_purge(database: Database) -> None:
+    candidate_id, draft_id = seed_candidate(database, "history-delete")
+    with database.sessions.begin() as db_session:
+        db_session.add(
+            attempt(
+                attempt_id="attempt-history-delete",
+                candidate_id=candidate_id,
+                draft_id=draft_id,
+                state="SENDING",
+                confirm_send=True,
+            )
+        )
+
+    direct_deletes = (
+        "DELETE FROM send_attempt WHERE id='attempt-history-delete'",
+        f"DELETE FROM message_draft WHERE id='{draft_id}'",
+        f"DELETE FROM candidate WHERE id='{candidate_id}'",
+    )
+    for statement in direct_deletes:
+        with pytest.raises(DBAPIError, match="full-session purge"):
+            with database.engine.begin() as connection:
+                connection.exec_driver_sql(statement)
+
+    with database.engine.begin() as connection:
+        connection.execute(
+            text("DELETE FROM session WHERE id=:id"),
+            {"id": "session-history-delete"},
+        )
+        counts = {
+            table: connection.exec_driver_sql(
+                f"SELECT COUNT(*) FROM {table}"
+            ).scalar_one()
+            for table in ("candidate", "message_draft", "send_attempt")
+        }
+
+    assert counts == {"candidate": 0, "message_draft": 0, "send_attempt": 0}
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("id", "attempt-reidentified-at-completion"),
+        ("candidate_id", "candidate-completion-target"),
+        ("draft_id", "draft-completion-target"),
+        ("idempotency_key", "f" * 64),
+        ("body_sha256", "e" * 64),
+        ("confirm_send", 0),
+        ("started_at", "2026-09-02T11:00:00+00:00"),
+    ],
+)
+def test_send_identity_cannot_change_while_completing(
+    database: Database, column: str, value: object
+) -> None:
+    candidate_id, draft_id = seed_candidate(database, "completion-source")
+    seed_candidate(database, "completion-target")
+    with database.sessions.begin() as db_session:
+        db_session.add(
+            attempt(
+                attempt_id="attempt-completion-identity",
+                candidate_id=candidate_id,
+                draft_id=draft_id,
+                state="SENDING",
+                confirm_send=True,
+            )
+        )
+
+    with pytest.raises(DBAPIError, match="identity and provenance are immutable"):
+        with database.engine.begin() as connection:
+            connection.execute(
+                text(
+                    f"UPDATE send_attempt SET {column}=:value, "
+                    "state='SENT', finished_at=:finished_at "
+                    "WHERE id='attempt-completion-identity'"
+                ),
+                {
+                    "value": value,
+                    "finished_at": NOW,
+                },
+            )
+
+
+def test_send_result_can_complete_without_changing_identity(database: Database) -> None:
+    candidate_id, draft_id = seed_candidate(database, "legal-completion")
+    with database.sessions.begin() as db_session:
+        db_session.add(
+            attempt(
+                attempt_id="attempt-legal-completion",
+                candidate_id=candidate_id,
+                draft_id=draft_id,
+                state="SENDING",
+                confirm_send=True,
+            )
+        )
+
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE send_attempt SET state='SENT', tool_status='success', "
+                "tool_sent=1, finished_at=:finished_at "
+                "WHERE id='attempt-legal-completion'"
+            ),
+            {"finished_at": NOW},
+        )
+        row = connection.execute(
+            text(
+                "SELECT candidate_id, draft_id, state, finished_at "
+                "FROM send_attempt WHERE id='attempt-legal-completion'"
+            )
+        ).one()
+
+    assert tuple(row) == (candidate_id, draft_id, "SENT", NOW)

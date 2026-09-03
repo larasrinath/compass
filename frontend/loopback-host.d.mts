@@ -7,4 +7,10 @@ export function assertLoopbackHost(
 export function backendProxyTarget(
   env?: Partial<Record<'HOST' | 'PORT', string | undefined>>,
 ): string
-export function loopbackOnlyPlugin(): Plugin
+export function frontendBinding(
+  env?: Partial<Record<'FRONTEND_HOST' | 'FRONTEND_PORT', string | undefined>>,
+): { host: string; port: number; origin: string }
+export function loopbackOnlyPlugin(expectedFrontend?: {
+  host: string
+  port: number
+}): Plugin

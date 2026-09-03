@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import ipaddress
+import socket
 from http import HTTPStatus
 
+import psutil
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from linkedin_dashboard.db.session import Database
 from linkedin_dashboard.settings import normalize_loopback_host
 
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS", "TRACE"}
@@ -93,5 +97,95 @@ class OriginGuardMiddleware:
         ]
         if origins and (len(origins) != 1 or origins[0] != self.allowed_origin):
             await _json_error(send, HTTPStatus.FORBIDDEN, "Origin is not allowed")
+            return
+        await self.app(scope, receive, send)
+
+
+def _resolved_addresses(host: str, port: int) -> set[str]:
+    if host != "localhost":
+        return {str(ipaddress.ip_address(host))}
+    return {
+        str(ipaddress.ip_address(result[4][0]))
+        for result in socket.getaddrinfo(
+            host,
+            port,
+            type=socket.SOCK_STREAM,
+        )
+    }
+
+
+def _listener_matches(scope: Scope, *, host: str, port: int) -> bool:
+    expected_addresses = _resolved_addresses(host, port)
+    server = scope.get("server")
+    if server is None or server[1] != port:
+        return False
+    try:
+        scope_address = str(ipaddress.ip_address(server[0]))
+    except ValueError:
+        return False
+    if scope_address not in expected_addresses:
+        return False
+
+    listeners: list[str] = []
+    for connection in psutil.Process().net_connections(kind="inet"):
+        if connection.status != psutil.CONN_LISTEN or not connection.laddr:
+            continue
+        address, listener_port = connection.laddr[:2]
+        if listener_port == port:
+            listeners.append(str(ipaddress.ip_address(address)))
+    return bool(listeners) and all(
+        listener in expected_addresses for listener in listeners
+    )
+
+
+class RuntimeBoundaryMiddleware:
+    """Initialize storage only after proving the real listener is configured."""
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        host: str,
+        port: int,
+        database: Database,
+    ) -> None:
+        self.app = app
+        self.host = normalize_loopback_host(host)
+        self.port = port
+        self.database = database
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] not in {"http", "websocket"}:
+            await self.app(scope, receive, send)
+            return
+
+        client = scope.get("client")
+        is_test_client = client is not None and client[0] == "testclient"
+        if not is_test_client and not _listener_matches(
+            scope,
+            host=self.host,
+            port=self.port,
+        ):
+            if scope["type"] == "websocket":
+                await send({"type": "websocket.close", "code": 1008})
+            else:
+                await _json_error(
+                    send,
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "Runtime listener does not match configured loopback binding",
+                )
+            return
+
+        try:
+            self.database.initialize()
+        except Exception:
+            if scope["type"] == "websocket":
+                await send({"type": "websocket.close", "code": 1011})
+            else:
+                await _json_error(
+                    send,
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "Local database could not be initialized safely",
+                )
             return
         await self.app(scope, receive, send)

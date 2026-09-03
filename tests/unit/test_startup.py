@@ -7,7 +7,7 @@ import sys
 import time
 from collections.abc import Sequence
 from pathlib import Path
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
 
@@ -108,3 +108,65 @@ def test_documented_module_entrypoint_starts_on_loopback(tmp_path) -> None:
             process.wait(timeout=5)
 
     assert (tmp_path / "entrypoint.db").exists()
+
+
+def test_programmatic_wildcard_listener_is_rejected_before_database(
+    tmp_path,
+) -> None:
+    os.chmod(tmp_path, 0o700)
+    port = _free_ipv4_port()
+    database_path = tmp_path / "wildcard.db"
+    source = (
+        "import uvicorn\n"
+        "from linkedin_dashboard.main import create_app\n"
+        "from linkedin_dashboard.settings import Settings\n"
+        "settings = Settings()\n"
+        "uvicorn.run(create_app(settings), host='0.0.0.0', "
+        "port=settings.port, access_log=False)\n"
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-c", source],
+        cwd=Path(__file__).resolve().parents[2],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env={
+            **os.environ,
+            "HOST": "127.0.0.1",
+            "PORT": str(port),
+            "DB_PATH": str(database_path),
+        },
+    )
+
+    try:
+        deadline = time.monotonic() + 10
+        response_body = ""
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                stdout, stderr = process.communicate()
+                raise AssertionError(
+                    f"wildcard server exited early ({process.returncode}):\n"
+                    f"{stdout}\n{stderr}"
+                )
+            try:
+                urlopen(f"http://127.0.0.1:{port}/api/health", timeout=0.25)
+            except HTTPError as error:
+                assert error.status == 503
+                response_body = error.read().decode()
+                break
+            except (URLError, TimeoutError):
+                time.sleep(0.05)
+            else:
+                raise AssertionError("wildcard listener served the dashboard")
+        else:
+            raise AssertionError("wildcard listener did not become reachable")
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+
+    assert "does not match configured loopback binding" in response_body
+    assert not database_path.exists()

@@ -86,6 +86,15 @@ def _boolean_trigger(
 STATEMENTS = (
     "DROP TRIGGER IF EXISTS send_attempt_is_immutable",
     "DROP TRIGGER IF EXISTS send_resolution_is_final",
+    "DROP TRIGGER IF EXISTS send_resolution_transition_is_valid",
+    "DROP TRIGGER IF EXISTS validate_session_booleans_insert",
+    "DROP TRIGGER IF EXISTS validate_session_booleans_update",
+    "DROP TRIGGER IF EXISTS validate_score_booleans_insert",
+    "DROP TRIGGER IF EXISTS validate_score_booleans_update",
+    "DROP TRIGGER IF EXISTS validate_draft_claim_booleans_insert",
+    "DROP TRIGGER IF EXISTS validate_draft_claim_booleans_update",
+    "DROP TRIGGER IF EXISTS validate_send_attempt_booleans_insert",
+    "DROP TRIGGER IF EXISTS validate_send_attempt_booleans_update",
     f"""
     CREATE TRIGGER send_attempt_is_immutable
     BEFORE UPDATE ON send_attempt
@@ -162,9 +171,6 @@ STATEMENTS = (
 
 def apply(connection: Connection) -> None:
     preflight_integrity(connection, version=VERSION)
-    connection.exec_driver_sql(
-        "DROP TRIGGER IF EXISTS send_resolution_transition_is_valid"
-    )
     for statement in STATEMENTS:
         connection.exec_driver_sql(statement)
 
