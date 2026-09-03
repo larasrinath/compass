@@ -1128,3 +1128,161 @@ def test_incomplete_identifier_decoding_drops_json_sse_and_headers(tmp_path) -> 
         assert secret not in sse_response.text
         assert secret not in json_response.headers.values()
     assert json_response.headers["x-safe-identifier"] == "visible-header"
+
+
+@pytest.mark.parametrize("bad_escape", ["%", "%H", "%GG"])
+def test_malformed_credential_identifiers_fail_closed_everywhere(
+    tmp_path, bad_escape: str
+) -> None:
+    credential_key = f"authorization{bad_escape}"
+    app = create_app(settings_for(tmp_path / f"malformed-{len(bad_escape)}.db"))
+    payload = (
+        "data: "
+        + _strict_json_dumps(
+            {"outer": {credential_key: "sse-secret", "safe": "visible"}}
+        )
+        + "\n\n"
+    ).encode()
+
+    @app.get(f"/api/test/malformed-{len(bad_escape)}")
+    def malformed_json() -> Response:
+        return Response(
+            content=_strict_json_dumps(
+                {"outer": {credential_key: "json-secret", "safe": "visible"}}
+            ),
+            media_type="application/json",
+            headers={
+                f"X-Authorization{bad_escape}": "header-secret",
+                "X-Safe": "visible-header",
+            },
+        )
+
+    @app.get(f"/api/test/malformed-stream-{len(bad_escape)}")
+    def malformed_sse() -> StreamingResponse:
+        return StreamingResponse(
+            (bytes([byte]) for byte in payload),
+            media_type="text/event-stream",
+        )
+
+    with client_for(app) as client:
+        json_response = client.get(f"/api/test/malformed-{len(bad_escape)}")
+        sse_response = client.get(f"/api/test/malformed-stream-{len(bad_escape)}")
+
+    assert json_response.json() == {"outer": {"safe": "visible"}}
+    assert '"safe":"visible"' in sse_response.text
+    for secret in ("json-secret", "sse-secret", "header-secret"):
+        assert secret not in json_response.text
+        assert secret not in sse_response.text
+        assert secret not in json_response.headers.values()
+    assert json_response.headers["x-safe"] == "visible-header"
+
+
+@pytest.mark.parametrize("bad_escape", ["%", "%H", "%GG"])
+def test_malformed_url_parameters_redact_only_unsafe_components(
+    bad_escape: str,
+) -> None:
+    value = (
+        "https://www.linkedin.com/in/safe-person;"
+        f"authorization{bad_escape}=matrix-secret/"
+        f"?safe=visible&api{bad_escape}key=query-secret"
+        f"#tab=experience&token{bad_escape}=fragment-secret"
+    )
+
+    sanitized = sanitize_for_frontend({"url": value})["url"]
+
+    assert sanitized.startswith("https://www.linkedin.com/in/safe-person")
+    assert "safe=visible" in sanitized
+    assert "tab=experience" in sanitized
+    assert bad_escape not in sanitized
+    for secret in ("matrix-secret", "query-secret", "fragment-secret"):
+        assert secret not in sanitized
+
+
+def test_form_encoded_and_quoted_secrets_do_not_leak_suffixes(tmp_path) -> None:
+    app = create_app(settings_for(tmp_path / "form-encoded-secrets.db"))
+    values = {
+        "form": "before Authorization+Bearer+form+encoded+secret",
+        "quoted": (
+            'safe-prefix Authorization: Bearer "quoted secret suffix-marker" safe-tail'
+        ),
+        "multi": "safe-prefix password=multi word multi-tail-marker; safe-tail",
+        "bearer": "safe-prefix Bearer standalone multi bearer-marker; safe-tail",
+    }
+    payload = ("data: " + _strict_json_dumps(values) + "\n\n").encode()
+
+    @app.get("/api/test/form-encoded-json")
+    def form_encoded_json() -> JSONResponse:
+        return JSONResponse(
+            values,
+            headers={
+                "X-Diagnostic": "safe Authorization+Bearer+header+secret",
+            },
+        )
+
+    @app.get("/api/test/form-encoded-sse")
+    def form_encoded_sse() -> StreamingResponse:
+        return StreamingResponse(
+            (bytes([byte]) for byte in payload),
+            media_type="text/event-stream",
+        )
+
+    with client_for(app) as client:
+        json_response = client.get("/api/test/form-encoded-json")
+        sse_response = client.get("/api/test/form-encoded-sse")
+
+    for output in (
+        json_response.text,
+        sse_response.text,
+        json_response.headers["x-diagnostic"],
+    ):
+        for secret_part in (
+            "form+encoded+secret",
+            "suffix-marker",
+            "multi-tail-marker",
+            "bearer-marker",
+            "header+secret",
+        ):
+            assert secret_part not in output
+    assert "safe-prefix" in json_response.text
+    assert "safe-tail" in json_response.text
+
+
+def test_literal_percent_in_safe_content_is_preserved(tmp_path) -> None:
+    app = create_app(settings_for(tmp_path / "safe-literal-percent.db"))
+
+    @app.get("/api/test/safe-literal-percent")
+    def safe_literal_percent() -> JSONResponse:
+        return JSONResponse(
+            {"message": "Coverage reached 100%", "growth%": "visible"},
+            headers={"X-Growth%": "visible-header"},
+        )
+
+    with client_for(app) as client:
+        response = client.get("/api/test/safe-literal-percent")
+
+    assert response.json() == {
+        "message": "Coverage reached 100%",
+        "growth%": "visible",
+    }
+    assert response.headers["x-growth%"] == "visible-header"
+
+
+@pytest.mark.parametrize(
+    "credential_key",
+    ["api%GGkey", "author%ization", "client%Hsecret", "access%token"],
+)
+def test_malformed_escape_cannot_split_a_credential_label(
+    credential_key: str,
+) -> None:
+    sanitized = sanitize_for_frontend(
+        {
+            credential_key: "field-secret",
+            "message": f"before {credential_key}=value-secret; after-safe",
+            "safe": "visible",
+        }
+    )
+
+    serialized = _strict_json_dumps(sanitized)
+    assert "field-secret" not in serialized
+    assert "value-secret" not in serialized
+    assert sanitized["safe"] == "visible"

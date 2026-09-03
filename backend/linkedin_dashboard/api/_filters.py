@@ -44,6 +44,8 @@ _DROP_KEY_COMPACT = {re.sub(r"[^a-z0-9]", "", key.casefold()) for key in _DROP_K
 _MAX_PERCENT_DECODE_PASSES = 12
 _MAX_PERCENT_DECODE_CHARS = 65_536
 _PERCENT_ESCAPE = re.compile(r"%[0-9a-f]{2}", re.IGNORECASE)
+_MALFORMED_PERCENT_ESCAPE = re.compile(r"%(?![0-9a-f]{2})", re.IGNORECASE)
+_MALFORMED_PERCENT_TOKEN = re.compile(r"%[0-9a-z]{0,2}", re.IGNORECASE)
 
 _MALFORMED_JSON_BODY = b'{"detail":"Response could not be safely serialized"}'
 _URL_AUTHORITY = re.compile(
@@ -74,17 +76,27 @@ _MATRIX_PARAMETER = re.compile(
     r"(?P<separator>;)(?P<key>[^=;/]*)"
     r"(?P<equals>=)(?P<value>[^;/]*)"
 )
-_LABELED_SECRET = re.compile(
-    r"(?P<label>\b(?:access[ _-]?(?:credentials?|key|token)|api[ _-]?key|"
+_SECRET_LABEL = (
+    r"(?:access[ _-]?(?:credentials?|key|token)|api[ _-]?key|"
     r"auth(?:orization|[ _-]?token)?|client[ _-]?(?:key|secret)|"
     r"cookie(?:[ _-]?path)?|credentials?|key|li_at|password|"
     r"proxy[ _-]?(?:password|username)|refresh[ _-]?token|secret|"
-    r"session[ _-]?token|token|x[ _-]?api[ _-]?key)\s*[:=]\s*)"
-    r"(?:bearer\s+)?[^;\s,&?#/]+",
+    r"session[ _-]?token|token|x[ _-]?api[ _-]?key)"
+)
+_SECRET_BOUNDARY = rf"(?=\s+\b{_SECRET_LABEL}\s*[:=]|[;,&?#\r\n]|$)"
+_LABELED_SECRET = re.compile(
+    rf"(?P<label>\b{_SECRET_LABEL}\s*[:=]\s*)"
+    rf"(?:bearer\s+)?(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|.+?{_SECRET_BOUNDARY})",
     re.IGNORECASE,
 )
 _AUTHORIZATION_BEARER = re.compile(
-    r"(?P<label>\bauthorization\s*[:=]\s*bearer\s+)[^;\s,]+",
+    r"(?P<label>\bauthorization(?:\s*[:=]\s*|\s+)bearer\s+)"
+    r"(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|.+?(?=[;,&?#\r\n]|$))",
+    re.IGNORECASE,
+)
+_BEARER_SECRET = re.compile(
+    r"(?P<label>\bbearer\s+)"
+    r"(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|.+?(?=[;,&?#\r\n]|$))",
     re.IGNORECASE,
 )
 _SENSITIVE_QUERY_KEYS = {
@@ -197,27 +209,32 @@ def _fully_unquote(value: str) -> str:
 
 def _bounded_unquote(value: str) -> tuple[str, bool, bool]:
     """Build a bounded decoding shadow without mutating the returned payload."""
-    if not _PERCENT_ESCAPE.search(value):
+    if "%" not in value and "+" not in value:
         return value, False, True
     if len(value) > _MAX_PERCENT_DECODE_CHARS:
         return value, False, False
 
     decoded = value
     for _ in range(_MAX_PERCENT_DECODE_PASSES):
+        if _MALFORMED_PERCENT_ESCAPE.search(decoded):
+            return decoded, decoded != value, False
         next_value = unquote_plus(decoded)
         if next_value == decoded:
             return decoded, decoded != value, True
         if len(next_value) > _MAX_PERCENT_DECODE_CHARS:
             return decoded, decoded != value, False
         decoded = next_value
-    return decoded, decoded != value, not _PERCENT_ESCAPE.search(decoded)
+    return (
+        decoded,
+        decoded != value,
+        not (
+            _PERCENT_ESCAPE.search(decoded) or _MALFORMED_PERCENT_ESCAPE.search(decoded)
+        ),
+    )
 
 
-def _is_sensitive_identifier(value: str) -> bool:
-    decoded, _, complete = _bounded_unquote(value)
-    if not complete:
-        return True
-    compact = re.sub(r"[^a-z0-9]", "", decoded.casefold())
+def _normalized_identifier_is_sensitive(value: str) -> bool:
+    compact = re.sub(r"[^a-z0-9]", "", value.casefold())
     sensitive_markers = (
         "accesscredential",
         "accesskey",
@@ -255,6 +272,27 @@ def _is_sensitive_identifier(value: str) -> bool:
     )
 
 
+def _malformed_decoding_shadows(value: str) -> tuple[str, str, str]:
+    """Expose literal-percent and invalid-token evasions for inspection."""
+    return (
+        value.replace("%", ""),
+        re.sub(r"%[0-9a-z]?", "", value, flags=re.IGNORECASE),
+        _MALFORMED_PERCENT_TOKEN.sub("", value),
+    )
+
+
+def _is_sensitive_identifier(value: str) -> bool:
+    decoded, _, complete = _bounded_unquote(value)
+    if complete:
+        return _normalized_identifier_is_sensitive(decoded)
+    if not _MALFORMED_PERCENT_ESCAPE.search(decoded):
+        return True
+    return any(
+        _normalized_identifier_is_sensitive(shadow)
+        for shadow in _malformed_decoding_shadows(decoded)
+    )
+
+
 def _parameter_value_is_sensitive(value: str) -> bool:
     decoded, _, complete = _bounded_unquote(value)
     if not complete:
@@ -276,12 +314,15 @@ def _parameter_value_is_sensitive(value: str) -> bool:
 def _sanitize_parameter_component(value: str) -> str:
     def redact_parameter(match: re.Match[str]) -> str:
         key = match.group("key")
+        _, _, key_complete = _bounded_unquote(key)
         if not (
-            _is_sensitive_identifier(key)
+            not key_complete
+            or _is_sensitive_identifier(key)
             or _parameter_value_is_sensitive(match.group("value"))
         ):
             return match.group(0)
-        return f"{match.group('separator')}{key}{match.group('equals')}[redacted]"
+        safe_key = key if key_complete else "[redacted]"
+        return f"{match.group('separator')}{safe_key}{match.group('equals')}[redacted]"
 
     return _COMPONENT_PARAMETER.sub(redact_parameter, value)
 
@@ -295,12 +336,15 @@ def _sanitize_url_components(value: str) -> str:
 
     def redact_matrix(match: re.Match[str]) -> str:
         key = match.group("key")
+        _, _, key_complete = _bounded_unquote(key)
         if not (
-            _is_sensitive_identifier(key)
+            not key_complete
+            or _is_sensitive_identifier(key)
             or _parameter_value_is_sensitive(match.group("value"))
         ):
             return match.group(0)
-        return f"{match.group('separator')}{key}{match.group('equals')}[redacted]"
+        safe_key = key if key_complete else "[redacted]"
+        return f"{match.group('separator')}{safe_key}{match.group('equals')}[redacted]"
 
     path = _MATRIX_PARAMETER.sub(redact_matrix, parsed.path)
     query = _sanitize_parameter_component(parsed.query)
@@ -390,7 +434,11 @@ def _decoded_shadow_is_sensitive(value: str, decoded: str) -> str | None:
         return None
 
     normalized = decoded.casefold()
-    if _LABELED_SECRET.search(decoded) or _AUTHORIZATION_BEARER.search(decoded):
+    if (
+        _LABELED_SECRET.search(decoded)
+        or _AUTHORIZATION_BEARER.search(decoded)
+        or _BEARER_SECRET.search(decoded)
+    ):
         return "[redacted]"
     if (
         _FILE_URL.search(decoded)
@@ -429,10 +477,24 @@ def _redact_string(
     if _is_linkedin_relative_url(value, field_name):
         return _sanitize_url_components(value)
 
-    decoded, changed, complete = _bounded_unquote(value)
+    # Remove unsafe URL components before judging residual encoding. This lets a
+    # malformed query label fail closed without sacrificing the surrounding URL.
+    working = _sanitize_url_components(value) if _NETWORK_URL.search(value) else value
+
+    decoded, changed, complete = _bounded_unquote(working)
     if not complete:
-        return "[redacted-encoded]"
-    if changed and (replacement := _decoded_shadow_is_sensitive(value, decoded)):
+        if _NETWORK_URL.search(value):
+            return "[redacted-url]"
+        if not _MALFORMED_PERCENT_ESCAPE.search(decoded):
+            return "[redacted-encoded]"
+        for malformed_shadow in _malformed_decoding_shadows(decoded):
+            if _decoded_shadow_is_sensitive(
+                working, malformed_shadow
+            ) or _is_sensitive_identifier(malformed_shadow):
+                return "[redacted-encoded]"
+        decoded = working
+        changed = False
+    if changed and (replacement := _decoded_shadow_is_sensitive(working, decoded)):
         return replacement
 
     def redact_authority(match: re.Match[str]) -> str:
@@ -442,7 +504,7 @@ def _redact_string(
         host = authority.rsplit("@", 1)[1]
         return f"{match.group('prefix')}[redacted]@{host}"
 
-    sanitized = _FILE_URL.sub("[redacted-path]", value)
+    sanitized = _FILE_URL.sub("[redacted-path]", working)
     sanitized = sanitized.replace(str(Path.home()), "[redacted-home]")
     sanitized = sanitized.replace(".linkedin-mcp", "[redacted-profile]")
 
@@ -462,6 +524,7 @@ def _redact_string(
     sanitized = _URL_AUTHORITY.sub(redact_authority, sanitized)
     sanitized = _LABELED_SECRET.sub(r"\g<label>[redacted]", sanitized)
     sanitized = _AUTHORIZATION_BEARER.sub(r"\g<label>[redacted]", sanitized)
+    sanitized = _BEARER_SECRET.sub(r"\g<label>[redacted]", sanitized)
     sanitized = _WINDOWS_PATH.sub("[redacted-path]", sanitized)
     sanitized = _UNIX_PATH.sub("[redacted-path]", sanitized)
     for index, url in enumerate(preserved_urls):
@@ -490,7 +553,11 @@ def _drop_key(value: Any) -> bool:
     raw = str(value)
     decoded, _, complete = _bounded_unquote(raw)
     if not complete:
-        return True
+        if not _MALFORMED_PERCENT_ESCAPE.search(decoded):
+            return True
+        if _is_sensitive_identifier(raw):
+            return True
+        decoded = _MALFORMED_PERCENT_TOKEN.sub("", decoded)
     normalized = decoded.casefold()
     compact = re.sub(r"[^a-z0-9]", "", normalized)
     identifier_like = bool(re.fullmatch(r"[a-z0-9 _-]+", normalized))

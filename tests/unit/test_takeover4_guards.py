@@ -4,7 +4,10 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-from linkedin_dashboard.db.migrations import v0010_takeover_guards
+from linkedin_dashboard.db.migrations import (
+    v0010_takeover_guards,
+    v0011_purged_evidence_ancestry,
+)
 from linkedin_dashboard.db.models import Candidate, DashboardSession, MessageDraft
 from linkedin_dashboard.db.session import Database
 from sqlalchemy import text
@@ -259,5 +262,165 @@ def test_v0010_each_statement_is_atomic_and_retryable(
     assert _schema_objects(retry.path) == baseline
 
     monkeypatch.setattr(v0010_takeover_guards, "apply", original_apply)
+    retry.initialize()
+    retry.dispose()
+
+
+@pytest.mark.parametrize("recursive_triggers", ["ON", "OFF"])
+@pytest.mark.parametrize(
+    ("table", "row_id"),
+    [
+        ("score_signal", "signal"),
+        ("score", "score"),
+        ("candidate", "candidate"),
+        ("role_brief", "brief"),
+    ],
+)
+def test_purged_evidence_blocks_every_ancestor_delete(
+    database: Database,
+    recursive_triggers: str,
+    table: str,
+    row_id: str,
+) -> None:
+    suffix = f"ancestor-{table}-{recursive_triggers.lower()}"
+    evidence_id = _seed_evidence(database, suffix)
+    path = database.path
+    database.dispose()
+
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
+        with pytest.raises(sqlite3.IntegrityError, match="purged evidence"):
+            connection.execute(
+                f'DELETE FROM "{table}" WHERE id=?', (f"{row_id}-{suffix}",)
+            )
+        assert connection.execute(
+            "SELECT purged_at FROM evidence WHERE id=?", (evidence_id,)
+        ).fetchone() == (LATER,)
+
+
+@pytest.mark.parametrize("recursive_triggers", ["ON", "OFF"])
+@pytest.mark.parametrize(
+    ("table", "row_id"),
+    [
+        ("score_signal", "signal"),
+        ("score", "score"),
+        ("candidate", "candidate"),
+        ("role_brief", "brief"),
+    ],
+)
+def test_replace_cannot_remove_purged_evidence_through_ancestor(
+    database: Database,
+    recursive_triggers: str,
+    table: str,
+    row_id: str,
+) -> None:
+    suffix = f"replace-{table}-{recursive_triggers.lower()}"
+    evidence_id = _seed_evidence(database, suffix)
+    path = database.path
+    database.dispose()
+
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
+        with pytest.raises(sqlite3.IntegrityError, match="purged evidence"):
+            connection.execute(
+                f'INSERT OR REPLACE INTO "{table}" SELECT * FROM "{table}" WHERE id=?',
+                (f"{row_id}-{suffix}",),
+            )
+        assert connection.execute(
+            "SELECT purged_at FROM evidence WHERE id=?", (evidence_id,)
+        ).fetchone() == (LATER,)
+
+
+@pytest.mark.parametrize("recursive_triggers", ["ON", "OFF"])
+@pytest.mark.parametrize(
+    ("table", "row_id"),
+    [
+        ("score_signal", "signal"),
+        ("score", "score"),
+        ("candidate", "candidate"),
+        ("role_brief", "brief"),
+    ],
+)
+def test_update_replace_cannot_reuse_purged_ancestor_identity(
+    database: Database,
+    recursive_triggers: str,
+    table: str,
+    row_id: str,
+) -> None:
+    target_suffix = f"update-target-{table}-{recursive_triggers.lower()}"
+    attacker_suffix = f"update-attacker-{table}-{recursive_triggers.lower()}"
+    protected_evidence = _seed_evidence(database, target_suffix)
+    _seed_evidence(database, attacker_suffix, purged=False)
+    path = database.path
+    database.dispose()
+
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
+        with pytest.raises(sqlite3.IntegrityError, match="purged evidence"):
+            connection.execute(
+                f'UPDATE OR REPLACE "{table}" SET id=? WHERE id=?',
+                (f"{row_id}-{target_suffix}", f"{row_id}-{attacker_suffix}"),
+            )
+        assert connection.execute(
+            "SELECT purged_at FROM evidence WHERE id=?", (protected_evidence,)
+        ).fetchone() == (LATER,)
+
+
+@pytest.mark.parametrize("recursive_triggers", ["ON", "OFF"])
+def test_full_session_purge_can_cross_all_tombstone_guards(
+    database: Database,
+    recursive_triggers: str,
+) -> None:
+    suffix = f"guarded-full-purge-{recursive_triggers.lower()}"
+    evidence_id = _seed_evidence(database, suffix)
+    path = database.path
+    database.dispose()
+
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
+        connection.execute("DELETE FROM session WHERE id=?", (f"session-{suffix}",))
+        assert connection.execute(
+            "SELECT COUNT(*) FROM evidence WHERE id=?", (evidence_id,)
+        ).fetchone() == (0,)
+
+
+@pytest.mark.parametrize(
+    "failure_after", range(1, len(v0011_purged_evidence_ancestry.STATEMENTS) + 1)
+)
+def test_v0011_each_statement_is_atomic_and_retryable(
+    tmp_path: Path, monkeypatch, failure_after: int
+) -> None:
+    database = Database(tmp_path / f"interrupted-v11-{failure_after}.db")
+    database.initialize()
+    with database.engine.begin() as connection:
+        connection.execute(
+            text("DELETE FROM schema_migration WHERE version=:version"),
+            {"version": v0011_purged_evidence_ancestry.VERSION},
+        )
+        for name in v0011_purged_evidence_ancestry.TRIGGER_NAMES:
+            connection.exec_driver_sql(f'DROP TRIGGER "{name}"')
+    baseline = _schema_objects(database.path)
+    database.dispose()
+    retry = Database(database.path)
+    original_apply = v0011_purged_evidence_ancestry.apply
+
+    def interrupted_apply(connection) -> None:
+        for index, statement in enumerate(
+            v0011_purged_evidence_ancestry.STATEMENTS, start=1
+        ):
+            connection.exec_driver_sql(statement)
+            if index == failure_after:
+                raise RuntimeError(f"interrupted after v11 statement {index}")
+
+    monkeypatch.setattr(v0011_purged_evidence_ancestry, "apply", interrupted_apply)
+    with pytest.raises(RuntimeError, match=f"v11 statement {failure_after}"):
+        retry.initialize()
+    assert _schema_objects(retry.path) == baseline
+
+    monkeypatch.setattr(v0011_purged_evidence_ancestry, "apply", original_apply)
     retry.initialize()
     retry.dispose()

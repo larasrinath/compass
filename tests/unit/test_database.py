@@ -17,6 +17,7 @@ from linkedin_dashboard.db.migrations import (
     v0008_history_hardening,
     v0009_integrity_completion,
     v0010_takeover_guards,
+    v0011_purged_evidence_ancestry,
 )
 from linkedin_dashboard.db.models import (
     Candidate,
@@ -558,6 +559,7 @@ def test_existing_v0001_database_receives_integrity_migration(tmp_path) -> None:
         v0008_history_hardening.VERSION,
         v0009_integrity_completion.VERSION,
         v0010_takeover_guards.VERSION,
+        v0011_purged_evidence_ancestry.VERSION,
     ]
     assert "NEW.candidate_id IS NOT OLD.candidate_id" in trigger_sql
 

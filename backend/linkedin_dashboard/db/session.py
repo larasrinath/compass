@@ -24,6 +24,7 @@ from linkedin_dashboard.db.migrations import (
     v0008_history_hardening,
     v0009_integrity_completion,
     v0010_takeover_guards,
+    v0011_purged_evidence_ancestry,
 )
 from linkedin_dashboard.db.models import Base
 from linkedin_dashboard.settings import normalize_database_path
@@ -90,6 +91,10 @@ class Database:
             (v0008_history_hardening.VERSION, v0008_history_hardening.apply),
             (v0009_integrity_completion.VERSION, v0009_integrity_completion.apply),
             (v0010_takeover_guards.VERSION, v0010_takeover_guards.apply),
+            (
+                v0011_purged_evidence_ancestry.VERSION,
+                v0011_purged_evidence_ancestry.apply,
+            ),
         ):
             applied = connection.execute(
                 text("SELECT 1 FROM schema_migration WHERE version = :version"),
