@@ -5,14 +5,17 @@ from linkedin_dashboard.mcp.envelope import MCPResponseEnvelope
 from linkedin_dashboard.mcp.errors import ErrorClass, MCPClientError, MCPErrorDetails
 from linkedin_dashboard.mcp.tools import (
     CompanyProfileResult,
+    LinkedInMessagingTools,
     LinkedInReadTools,
     PersonProfileResult,
     SearchPeopleResult,
+    SendMessageResult,
 )
 
 __all__ = [
     "CompanyProfileResult",
     "ErrorClass",
+    "LinkedInMessagingTools",
     "LinkedInReadTools",
     "MCPClient",
     "MCPClientError",
@@ -20,4 +23,5 @@ __all__ = [
     "MCPResponseEnvelope",
     "PersonProfileResult",
     "SearchPeopleResult",
+    "SendMessageResult",
 ]

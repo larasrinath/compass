@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, Protocol, Self
 from urllib.parse import urlparse
 
@@ -64,6 +65,13 @@ ClientFactory = Callable[[str, float], ClientSession]
 class MCPClient:
     """A short-lived direct client for one explicit MCP operation at a time."""
 
+    __slots__ = ("_client_factory", "_endpoint", "_timeout_seconds")
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if name in {"_endpoint", "_timeout_seconds"} and hasattr(self, name):
+            raise AttributeError(f"{name.removeprefix('_')} is immutable")
+        object.__setattr__(self, name, value)
+
     def __init__(
         self,
         url: str,
@@ -71,15 +79,29 @@ class MCPClient:
         timeout_seconds: float = DEFAULT_MCP_TIMEOUT_SECONDS,
         client_factory: ClientFactory | None = None,
     ) -> None:
-        self.url = _require_direct_loopback_endpoint(url)
+        self._endpoint = _require_direct_loopback_endpoint(url)
         if timeout_seconds <= 0:
             raise ValueError("MCP timeout must be positive")
-        self.timeout_seconds = timeout_seconds
+        self._timeout_seconds = timeout_seconds
         self._client_factory = client_factory or _default_client_factory
+
+    @property
+    def url(self) -> str:
+        return self._endpoint
+
+    @property
+    def timeout_seconds(self) -> float:
+        return self._timeout_seconds
+
+    def _operation_endpoint(self) -> str:
+        # Revalidate even private state so post-construction mutation cannot
+        # redirect a later explicit operation.
+        return _require_direct_loopback_endpoint(self._endpoint)
 
     async def list_tools(self) -> tuple[ToolDescription, ...]:
         try:
-            async with self._client_factory(self.url, self.timeout_seconds) as client:
+            endpoint = self._operation_endpoint()
+            async with self._client_factory(endpoint, self.timeout_seconds) as client:
                 tools = await client.list_tools()
             return tuple(
                 ToolDescription.model_validate(serialize_json_object(tool))
@@ -98,7 +120,8 @@ class MCPClient:
         arguments: dict[str, Any],
     ) -> MCPResponseEnvelope:
         try:
-            async with self._client_factory(self.url, self.timeout_seconds) as client:
+            endpoint = self._operation_endpoint()
+            async with self._client_factory(endpoint, self.timeout_seconds) as client:
                 raw_result = await client.call_tool_mcp(
                     name,
                     arguments,
@@ -127,15 +150,45 @@ def _default_client_factory(url: str, timeout_seconds: float) -> ClientSession:
     # topology. A fresh transport prevents stale MCP session reuse.
     transport = StreamableHttpTransport(
         url=url,
-        httpx_client_factory=_direct_httpx_client_factory,
+        httpx_client_factory=_DirectHttpxClientFactory(url),
     )
     return Client(transport=transport, timeout=timeout_seconds)
 
 
-def _direct_httpx_client_factory(
-    headers: dict[str, str] | None = None,
-    timeout: httpx.Timeout | None = None,
-    auth: httpx.Auth | None = None,
+@dataclass(frozen=True, slots=True)
+class _DirectHttpxClientFactory:
+    endpoint: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "endpoint", _require_direct_loopback_endpoint(self.endpoint)
+        )
+
+    def __call__(
+        self,
+        headers: dict[str, str] | None = None,
+        timeout: httpx.Timeout | None = None,
+        auth: httpx.Auth | None = None,
+        *,
+        follow_redirects: bool = False,
+    ) -> httpx.AsyncClient:
+        # FastMCP 3.4.4 explicitly requests follow_redirects=True even for a
+        # custom factory. The direct-server boundary intentionally ignores it.
+        del follow_redirects
+        return _direct_httpx_client(
+            self.endpoint,
+            headers=headers,
+            timeout=timeout,
+            auth=auth,
+        )
+
+
+def _direct_httpx_client(
+    endpoint: str,
+    *,
+    headers: dict[str, str] | None,
+    timeout: httpx.Timeout | None,
+    auth: httpx.Auth | None,
 ) -> httpx.AsyncClient:
     """Build a contained loopback client, overriding FastMCP's redirect default."""
     headers = dict(headers or {})
@@ -157,7 +210,32 @@ def _direct_httpx_client_factory(
         follow_redirects=False,
         timeout=timeout,
         trust_env=False,
+        event_hooks={"request": [_RequestBoundary(endpoint)]},
     )
+
+
+@dataclass(frozen=True, slots=True)
+class _RequestBoundary:
+    endpoint: str
+
+    async def __call__(self, request: httpx.Request) -> None:
+        if _require_direct_loopback_endpoint(str(request.url)) != self.endpoint:
+            raise httpx.RequestError(
+                "MCP request left its configured loopback endpoint",
+                request=request,
+            )
+        header_names = {name.casefold() for name in request.headers}
+        forbidden = (_FORBIDDEN_FORWARDING_HEADERS - {"host"}).intersection(
+            header_names
+        )
+        forbidden.update(
+            name for name in header_names if name.startswith("x-forwarded-")
+        )
+        if forbidden:
+            raise httpx.RequestError(
+                "MCP request contained a forbidden header",
+                request=request,
+            )
 
 
 def _require_direct_loopback_endpoint(value: str) -> str:

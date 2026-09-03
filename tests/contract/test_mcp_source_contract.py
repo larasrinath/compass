@@ -26,7 +26,8 @@ def test_read_only_tool_signatures_match_sibling_source_without_importing_it() -
     checkout = _server_checkout()
     person = checkout / "linkedin_mcp_server" / "tools" / "person.py"
     company = checkout / "linkedin_mcp_server" / "tools" / "company.py"
-    if not person.is_file() or not company.is_file():
+    messaging = checkout / "linkedin_mcp_server" / "tools" / "messaging.py"
+    if not person.is_file() or not company.is_file() or not messaging.is_file():
         pytest.skip("sibling linkedin-mcp-server checkout is absent")
 
     assert _nested_async_signature(person, "search_people") == [
@@ -48,6 +49,14 @@ def test_read_only_tool_signatures_match_sibling_source_without_importing_it() -
         "company_name",
         "ctx",
         "sections",
+        "extractor",
+    ]
+    assert _nested_async_signature(messaging, "send_message") == [
+        "linkedin_username",
+        "message",
+        "confirm_send",
+        "ctx",
+        "profile_urn",
         "extractor",
     ]
 

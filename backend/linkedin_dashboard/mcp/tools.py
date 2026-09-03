@@ -47,24 +47,28 @@ class PersonProfilePayload(ProfilePayload):
     profile_urn: str | None = None
 
 
-class ToolResult(BaseModel):
+class ToolResult[PayloadT: BaseModel](BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     response: MCPResponseEnvelope
-    payload: ProfilePayload | PersonProfilePayload | None
+    payload: PayloadT | None
     error: MCPErrorDetails | None = None
 
 
-class SearchPeopleResult(ToolResult):
-    payload: ProfilePayload | None
+class MessagePayload(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    url: str
+    status: str
+    message: str
+    recipient_selected: bool
+    sent: bool
 
 
-class PersonProfileResult(ToolResult):
-    payload: PersonProfilePayload | None
-
-
-class CompanyProfileResult(ToolResult):
-    payload: ProfilePayload | None
+type SearchPeopleResult = ToolResult[ProfilePayload]
+type PersonProfileResult = ToolResult[PersonProfilePayload]
+type CompanyProfileResult = ToolResult[ProfilePayload]
+type SendMessageResult = ToolResult[MessagePayload]
 
 
 class MCPCaller(Protocol):
@@ -104,7 +108,7 @@ class LinkedInReadTools:
         _include(arguments, "network", network)
         _include(arguments, "current_company", current_company)
         response = await self._client.call_tool("search_people", arguments)
-        return _parse_result(response, ProfilePayload, SearchPeopleResult)
+        return _parse_result(response, ProfilePayload)
 
     async def get_person_profile(
         self,
@@ -117,7 +121,7 @@ class LinkedInReadTools:
         _include(arguments, "sections", sections)
         _include(arguments, "max_scrolls", max_scrolls)
         response = await self._client.call_tool("get_person_profile", arguments)
-        return _parse_result(response, PersonProfilePayload, PersonProfileResult)
+        return _parse_result(response, PersonProfilePayload)
 
     async def get_company_profile(
         self,
@@ -128,7 +132,31 @@ class LinkedInReadTools:
         arguments: dict[str, object] = {"company_name": company_name}
         _include(arguments, "sections", sections)
         response = await self._client.call_tool("get_company_profile", arguments)
-        return _parse_result(response, ProfilePayload, CompanyProfileResult)
+        return _parse_result(response, ProfilePayload)
+
+
+class LinkedInMessagingTools:
+    """Transport-only messaging wrapper; policy and confirmation live elsewhere."""
+
+    def __init__(self, client: MCPCaller) -> None:
+        self._client = client
+
+    async def send_message(
+        self,
+        linkedin_username: str,
+        message: str,
+        confirm_send: bool,
+        *,
+        profile_urn: str | None = None,
+    ) -> SendMessageResult:
+        arguments: dict[str, object] = {
+            "linkedin_username": linkedin_username,
+            "message": message,
+            "confirm_send": confirm_send,
+        }
+        _include(arguments, "profile_urn", profile_urn)
+        response = await self._client.call_tool("send_message", arguments)
+        return _parse_result(response, MessagePayload)
 
 
 def _include(arguments: dict[str, object], name: str, value: object | None) -> None:
@@ -136,18 +164,17 @@ def _include(arguments: dict[str, object], name: str, value: object | None) -> N
         arguments[name] = value
 
 
-def _parse_result[PayloadT: ProfilePayload, ResultT: ToolResult](
+def _parse_result[PayloadT: BaseModel](
     response: MCPResponseEnvelope,
     payload_type: type[PayloadT],
-    result_type: type[ResultT],
-) -> ResultT:
+) -> ToolResult[PayloadT]:
     details = response_error_details(response)
     if response.is_error:
-        return result_type(response=response, payload=None, error=details)
+        return ToolResult[PayloadT](response=response, payload=None, error=details)
     try:
         parsed = payload_type.model_validate(response.result_payload())
     except ValueError as error:
         raise MCPClientError(
             error_details(error, partial_payload=response.as_dict())
         ) from error
-    return result_type(response=response, payload=parsed, error=details)
+    return ToolResult[PayloadT](response=response, payload=parsed, error=details)

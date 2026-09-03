@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 from linkedin_dashboard.mcp.envelope import MCPResponseEnvelope, parse_response_envelope
 from linkedin_dashboard.mcp.errors import ErrorClass
-from linkedin_dashboard.mcp.tools import LinkedInReadTools
+from linkedin_dashboard.mcp.tools import LinkedInMessagingTools, LinkedInReadTools
 
 
 class RecordingClient:
@@ -147,6 +147,56 @@ async def test_tool_error_remains_a_full_envelope_with_safe_classification() -> 
 
 def test_no_send_wrapper_is_exposed() -> None:
     assert not hasattr(LinkedInReadTools, "send_message")
+
+
+@pytest.mark.asyncio
+async def test_send_wrapper_has_exact_required_and_optional_arguments() -> None:
+    response = parse_response_envelope(
+        {
+            "content": [],
+            "structuredContent": {
+                "url": "https://www.linkedin.com/messaging/thread/abc123/",
+                "status": "confirmation_required",
+                "message": "Ready to send",
+                "recipient_selected": True,
+                "sent": False,
+                "future_send_field": "kept",
+            },
+            "isError": False,
+        }
+    )
+    client = RecordingClient(response)
+    tools = LinkedInMessagingTools(client)
+
+    first = await tools.send_message("alice", "Hello", False)
+    second = await tools.send_message(
+        "alice", "Hello", True, profile_urn="urn:li:fsd_profile:123"
+    )
+
+    assert client.calls == [
+        (
+            "send_message",
+            {
+                "linkedin_username": "alice",
+                "message": "Hello",
+                "confirm_send": False,
+            },
+        ),
+        (
+            "send_message",
+            {
+                "linkedin_username": "alice",
+                "message": "Hello",
+                "confirm_send": True,
+                "profile_urn": "urn:li:fsd_profile:123",
+            },
+        ),
+    ]
+    assert first.payload is not None
+    assert first.payload.status == "confirmation_required"
+    assert first.payload.sent is False
+    assert first.payload.model_extra == {"future_send_field": "kept"}
+    assert second.payload == first.payload
 
 
 @pytest.mark.asyncio

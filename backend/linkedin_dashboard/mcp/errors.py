@@ -37,6 +37,40 @@ _SAFE_MESSAGES: dict[ErrorClass, str] = {
     ErrorClass.UNKNOWN: "The MCP operation failed.",
 }
 
+# Exact public prefixes emitted by sibling SHA
+# f410bfdc32569f8763fde11338b24ec6a0797f0d. MCP strips Python exception types,
+# so these deliberately narrow strings are the protocol contract.
+_AUTH_REQUIRED_PREFIXES = (
+    "session expired. run with --login to create a new browser profile.",
+    "session expired. a login browser window has been opened.",
+    "authentication failed. run with --login to re-authenticate.",
+    "authentication not found. run with --login to create a browser profile.",
+    "no valid linkedin session is available in docker. create one with ",
+    "a linkedin login window is open and login is still in progress. ",
+    "no valid linkedin session is available yet. linkedin login is already "
+    "in progress ",
+    "the shared linkedin browser has no usable session, and it cannot sign in "
+    "by itself. ",
+    "the shared linkedin browser's session stopped working, and it cannot sign "
+    "in by itself. ",
+    "linkedin login was not completed. retry the tool call to reopen the browser ",
+    "could not retire the stale session: ",
+)
+_INVALID_REFERENCE_PREFIXES = (
+    "missing linkedin_username (the /in/ public identifier of the person).",
+    "that is a linkedin link but not a personal profile. pass the /in/ public "
+    "identifier ",
+    "that is not a linkedin public identifier. pass the part after /in/ ",
+    '"me" is linkedin\'s alias for the signed-in member, not a person you can look up.',
+    "that is a shortened linkedin link, and only a redirect resolves it. open "
+    "it and pass the /in/ public identifier ",
+    "missing company_name (the /company/ slug of the organization).",
+    "that is a linkedin link but not a company page. pass the /company/ slug, ",
+    "that is not a linkedin company slug. pass the part after /company/ ",
+    "that is a shortened linkedin link, and only a redirect resolves it. open "
+    "it and pass the /company/ slug ",
+)
+
 
 class MCPErrorDetails(BaseModel):
     """Frontend-safe classification with correlation and optional partial data."""
@@ -79,17 +113,7 @@ def classify(value: BaseException | MCPResponseEnvelope | dict[str, Any]) -> Err
         return ErrorClass.RATE_LIMIT
 
     text = _error_text(value, payload).casefold()
-    if _contains_any(
-        text,
-        (
-            "session expired",
-            "authentication failed",
-            "authentication not found",
-            "run with --login",
-            "login browser window has been opened",
-            "docker host login",
-        ),
-    ):
+    if text.startswith(_AUTH_REQUIRED_PREFIXES):
         return ErrorClass.AUTH_REQUIRED
     if _contains_any(
         text,
@@ -107,20 +131,14 @@ def classify(value: BaseException | MCPResponseEnvelope | dict[str, Any]) -> Err
             "browser setup still in progress",
             "setup is not complete yet",
             "downloading the patchright chromium browser",
+            "patchright chromium browser is missing.",
+            "chromium could not start because required system libraries are missing ",
         ),
     ):
         return ErrorClass.BROWSER_SETUP
     if _contains_any(text, ("rate limit detected", "rate-limited", "rate limited")):
         return ErrorClass.RATE_LIMIT
-    if _contains_any(
-        text,
-        (
-            "not a linkedin public identifier",
-            "pass the part after /in/",
-            "pass the /company/ slug",
-            "invalid reference",
-        ),
-    ):
+    if text.startswith(_INVALID_REFERENCE_PREFIXES):
         return ErrorClass.INVALID_REFERENCE
     if "profile not found" in text:
         return ErrorClass.PROFILE_NOT_FOUND

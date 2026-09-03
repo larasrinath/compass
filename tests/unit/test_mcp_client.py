@@ -204,20 +204,22 @@ def test_http_factory_disables_redirects_environment_and_auth(monkeypatch) -> No
 
     monkeypatch.setattr(client_module.httpx, "AsyncClient", CapturingClient)
     timeout = httpx.Timeout(240)
-    returned = client_module._direct_httpx_client_factory(
+    factory = client_module._DirectHttpxClientFactory("http://127.0.0.1:8000/mcp")
+    returned = factory(
         headers={"Accept": "application/json"},
         auth=None,
         timeout=timeout,
+        follow_redirects=True,
     )
 
     assert isinstance(returned, CapturingClient)
-    assert captured == {
-        "headers": {"Accept": "application/json"},
-        "auth": None,
-        "follow_redirects": False,
-        "timeout": timeout,
-        "trust_env": False,
-    }
+    assert captured["headers"] == {"Accept": "application/json"}
+    assert captured["auth"] is None
+    assert captured["follow_redirects"] is False
+    assert captured["timeout"] == timeout
+    assert captured["trust_env"] is False
+    assert set(captured["event_hooks"]) == {"request"}
+    assert len(captured["event_hooks"]["request"]) == 1
 
 
 @pytest.mark.parametrize(
@@ -236,11 +238,13 @@ def test_http_factory_disables_redirects_environment_and_auth(monkeypatch) -> No
     ],
 )
 def test_http_factory_rejects_sensitive_or_forwarding_headers(header: str) -> None:
+    factory = client_module._DirectHttpxClientFactory("http://127.0.0.1:8000/mcp")
     with pytest.raises(ValueError, match="forbidden header"):
-        client_module._direct_httpx_client_factory(
+        factory(
             headers={header: "secret"},
             auth=None,
             timeout=httpx.Timeout(240),
+            follow_redirects=True,
         )
 
 
@@ -262,7 +266,9 @@ def test_default_factory_supplies_no_headers_or_auth(monkeypatch) -> None:
 
     assert captured["transport"] == {
         "url": "http://127.0.0.1:8000/mcp",
-        "httpx_client_factory": client_module._direct_httpx_client_factory,
+        "httpx_client_factory": client_module._DirectHttpxClientFactory(
+            "http://127.0.0.1:8000/mcp"
+        ),
     }
     assert captured["client"]["timeout"] == 240.0
 
@@ -285,8 +291,8 @@ def test_direct_http_client_does_not_follow_redirect(monkeypatch) -> None:
         return original(transport=httpx.MockTransport(handler), **kwargs)
 
     monkeypatch.setattr(client_module.httpx, "AsyncClient", with_mock_transport)
-    client = client_module._direct_httpx_client_factory(
-        headers={}, auth=None, timeout=httpx.Timeout(240)
+    client = client_module._DirectHttpxClientFactory("http://127.0.0.1:8000/mcp")(
+        headers={}, auth=None, timeout=httpx.Timeout(240), follow_redirects=True
     )
 
     async def request() -> httpx.Response:
@@ -335,10 +341,13 @@ def test_hostile_proxy_environment_cannot_intercept_loopback(monkeypatch) -> Non
     monkeypatch.setenv("ALL_PROXY", proxy_url)
     monkeypatch.setenv("NO_PROXY", "")
 
-    client = client_module._direct_httpx_client_factory(
+    client = client_module._DirectHttpxClientFactory(
+        f"http://127.0.0.1:{target.server_port}/mcp"
+    )(
         headers={"Accept": "application/json"},
         auth=None,
         timeout=httpx.Timeout(5),
+        follow_redirects=True,
     )
 
     async def request() -> httpx.Response:
@@ -363,3 +372,30 @@ def test_hostile_proxy_environment_cannot_intercept_loopback(monkeypatch) -> Non
     forbidden_on_wire = client_module._FORBIDDEN_FORWARDING_HEADERS - {"host"}
     assert not lowered.intersection(forbidden_on_wire)
     assert not any(name.startswith("x-forwarded-") for name in lowered)
+
+
+@pytest.mark.asyncio
+async def test_endpoint_is_immutable_and_corruption_fails_before_factory() -> None:
+    factory = RecordingFactory()
+    client = MCPClient("http://127.0.0.1:8000/mcp", client_factory=factory)
+
+    with pytest.raises(AttributeError, match="immutable"):
+        client._endpoint = "http://192.0.2.1:8000/mcp"  # type: ignore[misc]
+    with pytest.raises(AttributeError):
+        client.url = "http://192.0.2.1:8000/mcp"  # ty: ignore[invalid-assignment]
+
+    object.__setattr__(client, "_endpoint", "http://192.0.2.1:8000/mcp")
+    with pytest.raises(MCPClientError) as caught:
+        await client.list_tools()
+
+    assert caught.value.details.error_class is ErrorClass.UNKNOWN
+    assert factory.arguments == []
+
+
+@pytest.mark.asyncio
+async def test_request_boundary_rejects_a_different_endpoint_before_transport() -> None:
+    boundary = client_module._RequestBoundary("http://127.0.0.1:8000/mcp")
+    request = httpx.Request("POST", "http://127.0.0.2:8000/mcp")
+
+    with pytest.raises(httpx.RequestError, match="left its configured"):
+        await boundary(request)
