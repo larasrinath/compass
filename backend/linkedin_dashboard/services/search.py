@@ -33,6 +33,7 @@ from linkedin_dashboard.parsing.identity import (
 from linkedin_dashboard.queue.jobs import JobKind
 from linkedin_dashboard.queue.worker import DurableJobQueue
 from linkedin_dashboard.services.brief import contains_protected_criterion
+from linkedin_dashboard.services.enrichment import profile_urn_routing_allowed
 
 MAX_SEARCHES_PER_SESSION = 40
 MAX_CANDIDATES_PER_SESSION = 200
@@ -818,9 +819,8 @@ class SearchService:
                         "profile_urn": candidate.profile_urn,
                         "profile_urn_is_scored": False,
                         "profile_urn_quarantined": (candidate.profile_urn_quarantined),
-                        "profile_urn_routing_allowed": bool(
-                            candidate.profile_urn
-                            and not candidate.profile_urn_quarantined
+                        "profile_urn_routing_allowed": profile_urn_routing_allowed(
+                            session, candidate
                         ),
                         "profile_contract_error": candidate.profile_contract_error,
                         "active_job_id": active_job_id,

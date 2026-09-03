@@ -46,6 +46,11 @@ section, reference, error, or parsed field is projected. A rate-limited result
 is never replayed: the operator may explicitly resume only the missing suffix,
 with the parent and continuation fetches linked in immutable history. Unknown
 sections fail loudly and are not retried.
+Admission reserves each job's complete navigation cost in the same transaction
+as the job and fetch history; batch admission is all-or-nothing. Claiming moves
+that reservation into `nav_used`. An interrupted delay refunds it only when the
+durable attempt phase proves the executor was never entered; once entered, the
+charge is retained conservatively even if no response arrives.
 
 The six local parsers cover main profile, experience, skills, education,
 projects, and certifications. Parsed values are exact substrings of an
@@ -61,8 +66,11 @@ shows a neutral “Provenance withheld” state. The frontend slices spans with
 `Array.from`, preserving astral-character alignment, and renders source text
 only as React text nodes.
 
-Profile URNs are write-once routing hints, never scoring inputs. The first
-non-null observation is retained; a later conflict or returned-profile URL
+Profile URNs are write-once routing hints, never scoring inputs. An exact,
+fetch-bound immutable observation must be committed before the compare-and-set
+that accepts the first non-null URN. Routing requires that accepted observation
+and no divergent observation; the column alone never authorizes routing. A
+later conflict or independently verified returned-profile URL
 mismatch permanently quarantines routing while preserving an immutable
 observation and audit record. Database attestations bind every projected
 section, error, reference, and parsed span to the exact committed MCP envelope.

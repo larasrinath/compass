@@ -39,6 +39,7 @@ from linkedin_dashboard.db.migrations import (
     v0018_candidate_identity,
     v0019_profile_enrichment,
     v0020_m3_integrity_corrections,
+    v0021_m3_final_integrity,
 )
 from linkedin_dashboard.db.models import Base
 from linkedin_dashboard.db.unicode_identity import (
@@ -68,6 +69,7 @@ _MIGRATION_MODULES = (
     v0018_candidate_identity,
     v0019_profile_enrichment,
     v0020_m3_integrity_corrections,
+    v0021_m3_final_integrity,
 )
 
 _SCHEMA_ACTIONS = {

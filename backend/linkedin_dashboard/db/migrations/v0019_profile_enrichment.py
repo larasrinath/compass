@@ -146,17 +146,16 @@ def _add_lineage_column(
 ) -> None:
     if column in _columns(connection, table):
         return
-    count = int(
-        connection.exec_driver_sql(f'SELECT count(*) FROM "{table}"').scalar_one()
-    )
-    if count:
-        raise RuntimeError(
-            f"cannot apply {VERSION}: existing {table} rows have no exact lineage"
-        )
+    existing_columns = tuple(sorted(_columns(connection, table)))
     old = f"__{VERSION}_{table}"
     connection.exec_driver_sql("PRAGMA legacy_alter_table=ON")
     connection.exec_driver_sql(f'ALTER TABLE "{table}" RENAME TO "{old}"')
     model.create(connection)
+    joined = ", ".join(f'"{name}"' for name in existing_columns)
+    connection.exec_driver_sql(
+        f'INSERT INTO "{table}" ({joined}, "{column}") '
+        f'SELECT {joined}, NULL FROM "{old}"'
+    )
     connection.exec_driver_sql(f'DROP TABLE "{old}"')
     connection.exec_driver_sql("PRAGMA legacy_alter_table=OFF")
 
@@ -165,16 +164,26 @@ def _upgrade_profile_fetch(connection: Connection) -> None:
     required = {"processed_at", "request_stage", "parent_fetch_id", "root_fetch_id"}
     if required.issubset(_columns(connection, "profile_fetch")):
         return
-    count = int(
-        connection.exec_driver_sql("SELECT count(*) FROM profile_fetch").scalar_one()
-    )
-    if count:
-        raise RuntimeError(
-            f"cannot apply {VERSION}: existing profile fetch rows lack request lineage"
-        )
     old = f"__{VERSION}_profile_fetch"
     connection.exec_driver_sql("PRAGMA legacy_alter_table=ON")
     connection.exec_driver_sql(f'ALTER TABLE profile_fetch RENAME TO "{old}"')
     cast(Table, ProfileFetch.__table__).create(connection)
+    connection.exec_driver_sql(
+        f"""INSERT INTO profile_fetch
+          (id,candidate_id,job_id,tool,requested_sections,args,started_at,
+           finished_at,duration_ms,outcome,raw_response,projection_payload,
+           projection_source,contract_error,returned_url,processed_at,
+           request_stage,parent_fetch_id,root_fetch_id)
+        SELECT id,candidate_id,job_id,tool,requested_sections,args,started_at,
+          finished_at,duration_ms,outcome,raw_response,NULL,NULL,
+          CASE WHEN raw_response IS NOT NULL AND raw_response<>'null'
+            THEN 'legacy_m2_unprojected' ELSE NULL END,
+          returned_url,coalesce(finished_at,started_at),
+          CASE WHEN json_array_length(requested_sections)=2
+             AND json_extract(requested_sections,'$[0]')='main_profile'
+             AND json_extract(requested_sections,'$[1]')='experience'
+            THEN 'stage1' ELSE 'stage2' END,
+          NULL,id FROM {old}"""
+    )
     connection.exec_driver_sql(f'DROP TABLE "{old}"')
     connection.exec_driver_sql("PRAGMA legacy_alter_table=OFF")

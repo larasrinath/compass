@@ -16,6 +16,7 @@ from linkedin_dashboard.db.models import (
     DashboardSession,
     Job,
     JobAttempt,
+    NavigationReservation,
     ParsedField,
     ProfileFetch,
     ProfileIdentityObservation,
@@ -31,6 +32,7 @@ from linkedin_dashboard.parsing.spans import VerifiedSpan
 from linkedin_dashboard.parsing.verify import SpanProposal, verify_proposal
 from linkedin_dashboard.queue.jobs import JobPayload, PersonProfilePayload
 from linkedin_dashboard.queue.worker import ProgressReporter, RawCapture
+from linkedin_dashboard.services.enrichment import profile_urn_routing_allowed
 from linkedin_dashboard.settings import Settings
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -248,12 +250,39 @@ def test_profile_urn_is_write_once_and_conflict_quarantines_routing(tmp_path) ->
     app = create_app(_settings(tmp_path / "urn.db"), queue_executor=executor)
     with TestClient(app, base_url="http://127.0.0.1") as client:
         candidate_id = _seed_candidate(app, client)
-        for sections in (
-            ["experience"],
-            ["skills"],
-            ["education"],
-            ["projects"],
+        with pytest.raises(IntegrityError, match="needs observation"):
+            with app.state.database.engine.begin() as connection:
+                connection.exec_driver_sql(
+                    "UPDATE candidate SET profile_urn=? WHERE id=?",
+                    ("urn:li:fsd_profile:forged", candidate_id),
+                )
+        with pytest.raises(
+            IntegrityError, match="requires immutable profile observation"
         ):
+            with app.state.database.engine.begin() as connection:
+                connection.exec_driver_sql(
+                    "UPDATE candidate SET profile_urn_quarantined=1 WHERE id=?",
+                    (candidate_id,),
+                )
+        with pytest.raises(IntegrityError, match="identity already exists"):
+            with app.state.database.engine.begin() as connection:
+                connection.exec_driver_sql(
+                    "INSERT OR REPLACE INTO candidate "
+                    "SELECT * FROM candidate WHERE id=?",
+                    (candidate_id,),
+                )
+
+        first = client.post(
+            f"/api/candidates/{candidate_id}/enrich",
+            json={"sections": ["experience"]},
+        )
+        assert first.status_code == 202
+        assert _wait(app, first.json()["job_id"]).state == "done"
+        first_detail = client.get(f"/api/candidates/{candidate_id}").json()
+        assert first_detail["profile_urn"] == "urn:li:fsd_profile:one"
+        assert first_detail["profile_urn_routing_allowed"] is True
+
+        for sections in (["skills"], ["education"], ["projects"]):
             response_value = client.post(
                 f"/api/candidates/{candidate_id}/enrich",
                 json={"sections": sections},
@@ -284,7 +313,7 @@ def test_profile_urn_is_write_once_and_conflict_quarantines_routing(tmp_path) ->
             assert candidate is not None
             assert candidate.profile_urn == "urn:li:fsd_profile:one"
             assert candidate.profile_contract_error == "profile_urn_conflict"
-        with pytest.raises(IntegrityError, match="write-once"):
+        with pytest.raises(IntegrityError, match="identity is immutable"):
             with app.state.database.engine.begin() as connection:
                 connection.exec_driver_sql(
                     "UPDATE candidate SET profile_urn=? WHERE id=?",
@@ -329,6 +358,130 @@ def test_returned_url_mismatch_quarantines_without_trusted_projection(tmp_path) 
             assert observation.verdict == "url_mismatch"
 
 
+def test_concurrent_observation_and_cas_accept_exactly_one_profile_urn(
+    tmp_path,
+) -> None:
+    app = create_app(
+        _settings(tmp_path / "urn-race.db"), queue_executor=ProfileExecutor([])
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        candidate_id = _seed_candidate(app, client)
+        with app.state.database.sessions() as session:
+            candidate = session.get(Candidate, candidate_id)
+            assert candidate is not None
+            session_id = candidate.session_id
+
+        with app.state.database.engine.begin() as connection:
+            for suffix in ("one", "two"):
+                job_id = f"urn-race-job-{suffix}"
+                fetch_id = f"urn-race-fetch-{suffix}"
+                urn = f"urn:li:fsd_profile:{suffix}"
+                payload = {"linkedin_username": "ada", "sections": ["experience"]}
+                projection = {
+                    "url": "https://www.linkedin.com/in/ada/",
+                    "profile_urn": urn,
+                    "sections": {
+                        "main_profile": "Ada\nEngineer\nChicago",
+                        "experience": "Experience\nEngineer\nAcme",
+                    },
+                }
+                raw = {"structuredContent": projection}
+                connection.exec_driver_sql(
+                    "INSERT INTO job "
+                    "(id,session_id,kind,payload,state,attempts,max_attempts,queued_at,"
+                    "started_at,finished_at,error,correlation_id,claim_token) VALUES "
+                    "(?,?,'get_person_profile',?,'done',1,2,'now','now','now',NULL,?,NULL)",
+                    (job_id, session_id, json.dumps(payload), f"correlation-{suffix}"),
+                )
+                connection.exec_driver_sql(
+                    "INSERT INTO job_attempt "
+                    "(id,job_id,attempt_number,worker_token,started_at,"
+                    "response_received_at,external_call_started_at,finished_at,outcome,"
+                    "raw_response,raw_error,error_class,safe_error_message,retry_at) "
+                    "VALUES (?,?,1,?,'now','now','now','now','ok',?,NULL,NULL,NULL,"
+                    "NULL)",
+                    (
+                        f"urn-race-attempt-{suffix}",
+                        job_id,
+                        f"worker-{suffix}",
+                        json.dumps(raw),
+                    ),
+                )
+                connection.exec_driver_sql(
+                    "INSERT INTO profile_fetch "
+                    "(id,candidate_id,job_id,tool,requested_sections,args,started_at,"
+                    "finished_at,duration_ms,outcome,raw_response,projection_payload,"
+                    "projection_source,contract_error,returned_url,processed_at,"
+                    "request_stage,parent_fetch_id,root_fetch_id) VALUES "
+                    "(?,?,?,'get_person_profile',?,?,'now',NULL,NULL,NULL,NULL,NULL,"
+                    "NULL,NULL,NULL,NULL,'stage1',NULL,?)",
+                    (
+                        fetch_id,
+                        candidate_id,
+                        job_id,
+                        json.dumps(["main_profile", "experience"]),
+                        json.dumps(payload),
+                        fetch_id,
+                    ),
+                )
+                connection.exec_driver_sql(
+                    "UPDATE profile_fetch SET raw_response=?,projection_payload=?,"
+                    "projection_source='structured_content',returned_url=?,"
+                    "finished_at='now',duration_ms=1,outcome='ok',processed_at='now' "
+                    "WHERE id=?",
+                    (
+                        json.dumps(raw),
+                        json.dumps(projection),
+                        projection["url"],
+                        fetch_id,
+                    ),
+                )
+
+        def observe_and_assign(suffix: str) -> str:
+            urn = f"urn:li:fsd_profile:{suffix}"
+            with app.state.database.engine.begin() as connection:
+                connection.exec_driver_sql(
+                    "INSERT INTO profile_identity_observation "
+                    "(id,fetch_id,candidate_id,returned_url,observed_urn,verdict,"
+                    "observed_at) VALUES (?,?,?,?,?,'accepted','now')",
+                    (
+                        f"urn-race-observation-{suffix}",
+                        f"urn-race-fetch-{suffix}",
+                        candidate_id,
+                        "https://www.linkedin.com/in/ada/",
+                        urn,
+                    ),
+                )
+                result = connection.exec_driver_sql(
+                    "UPDATE candidate SET profile_urn=? "
+                    "WHERE id=? AND profile_urn IS NULL",
+                    (urn, candidate_id),
+                )
+                assert result.rowcount == 1
+            return urn
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [
+                pool.submit(observe_and_assign, suffix) for suffix in ("one", "two")
+            ]
+            outcomes: list[str] = []
+            failures = 0
+            for future in futures:
+                try:
+                    outcomes.append(future.result(timeout=3))
+                except IntegrityError:
+                    failures += 1
+        assert len(outcomes) == 1
+        assert failures == 1
+        with app.state.database.sessions() as session:
+            candidate = session.get(Candidate, candidate_id)
+            assert candidate is not None and candidate.profile_urn == outcomes[0]
+            assert profile_urn_routing_allowed(session, candidate) is True
+            assert (
+                session.scalar(select(func.count(ProfileIdentityObservation.id))) == 1
+            )
+
+
 @pytest.mark.parametrize(
     "malformed",
     [
@@ -363,6 +516,9 @@ def test_malformed_profile_shapes_preserve_raw_but_project_nothing(
             assert session.scalar(select(func.count(ProfileSection.id))) == 0
             assert session.scalar(select(func.count(SectionError.id))) == 0
             assert session.scalar(select(func.count(SectionReference.id))) == 0
+            candidate = session.get(Candidate, candidate_id)
+            assert candidate is not None
+            assert candidate.profile_urn_quarantined is False
 
 
 def test_rate_limit_creates_only_missing_canonical_suffix_and_fetch_row(
@@ -527,7 +683,7 @@ def test_failed_stage_one_retains_candidate_and_terminal_fetch(tmp_path) -> None
             assert fetch.finished_at is not None
             assert fetch.raw_response is None
             dashboard_session = session.get(DashboardSession, candidate.session_id)
-            assert dashboard_session is not None and dashboard_session.nav_used == 0
+            assert dashboard_session is not None and dashboard_session.nav_used == 2
 
 
 def test_profile_failure_after_response_does_not_refund_navigation(tmp_path) -> None:
@@ -669,16 +825,11 @@ def test_budget_exhaustion_and_cancel_finish_fetch_history_immediately(
             dashboard_session = session.get(DashboardSession, candidate.session_id)
             assert dashboard_session is not None
             dashboard_session.nav_used = dashboard_session.nav_budget
-        job_id = client.post(
-            f"/api/candidates/{budget_candidate}/enrich", json={}
-        ).json()["job_id"]
-        assert _wait(app, job_id).state == "failed"
+        rejected = client.post(f"/api/candidates/{budget_candidate}/enrich", json={})
+        assert rejected.status_code == 409
         with app.state.database.sessions() as session:
-            fetch = session.scalar(
-                select(ProfileFetch).where(ProfileFetch.job_id == job_id)
-            )
-            assert fetch is not None and fetch.outcome == "error"
-            assert fetch.finished_at is not None
+            assert session.scalar(select(func.count(ProfileFetch.id))) == 0
+            assert session.scalar(select(func.count(Job.id))) == 0
 
         cancelled_candidate = _seed_candidate(app, client, "cancelled")
         with app.state.database.sessions.begin() as session:
@@ -699,6 +850,70 @@ def test_budget_exhaustion_and_cancel_finish_fetch_history_immediately(
             )
             assert fetch is not None and fetch.outcome == "error"
             assert fetch.finished_at is not None
+
+
+def test_paused_admission_reserves_budget_and_batch_rolls_back_wholly(tmp_path) -> None:
+    app = create_app(
+        _settings(tmp_path / "admission.db"), queue_executor=ProfileExecutor([])
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        first_id = _seed_candidate(app, client, "first")
+        with app.state.database.sessions.begin() as session:
+            first = session.get(Candidate, first_id)
+            assert first is not None
+            dashboard_session = session.get(DashboardSession, first.session_id)
+            control = session.get(QueueControl, 1)
+            assert dashboard_session is not None and control is not None
+            dashboard_session.nav_budget = 2
+            control.state = "paused"
+            control.pause_reason = "AUTH_REQUIRED"
+            control.operator_resume_required = True
+            for username in ("second", "third"):
+                session.add(
+                    Candidate(
+                        id=f"candidate-{username}",
+                        session_id=first.session_id,
+                        username=username,
+                        profile_url=f"https://www.linkedin.com/in/{username}",
+                        display_name=username.title(),
+                        profile_urn=None,
+                        first_seen_at="2026-09-03T00:00:00+00:00",
+                        stage="discovered",
+                        retrieval_status="pending",
+                    )
+                )
+        accepted = client.post(f"/api/candidates/{first_id}/enrich", json={})
+        assert accepted.status_code == 202
+        rejected = client.post("/api/candidates/candidate-second/enrich", json={})
+        assert rejected.status_code == 409
+        with app.state.database.sessions() as session:
+            assert session.scalar(select(func.count(Job.id))) == 1
+            reservation = session.scalar(select(NavigationReservation))
+            assert reservation is not None and reservation.state == "reserved"
+
+        assert (
+            client.post(f"/api/jobs/{accepted.json()['job_id']}/cancel").status_code
+            == 200
+        )
+        batch = client.post(
+            "/api/candidates/enrich-batch",
+            json={
+                "candidate_ids": ["candidate-second", "candidate-third"],
+                "sections": ["experience"],
+            },
+        )
+        assert batch.status_code == 409
+        with app.state.database.sessions() as session:
+            assert (
+                session.scalar(
+                    select(func.count(ProfileFetch.id)).where(
+                        ProfileFetch.candidate_id.in_(
+                            ("candidate-second", "candidate-third")
+                        )
+                    )
+                )
+                == 0
+            )
 
 
 def test_all_parsers_are_total_and_verified_span_cannot_be_forged() -> None:
@@ -962,9 +1177,12 @@ def test_m3_history_rejects_update_delete_replace_and_forged_projection(
                 f"DELETE FROM {table} WHERE id=?",
                 f"INSERT OR REPLACE INTO {table} SELECT * FROM {table} WHERE id=?",
             ):
-                with pytest.raises(IntegrityError):
+                try:
                     with app.state.database.engine.begin() as connection:
                         connection.exec_driver_sql(statement, (row_id,))
+                except IntegrityError:
+                    continue
+                raise AssertionError(f"unguarded mutation: {table}: {statement}")
 
         with pytest.raises(IntegrityError, match="exact committed fetch content"):
             with app.state.database.engine.begin() as connection:
@@ -974,6 +1192,33 @@ def test_m3_history_rejects_update_delete_replace_and_forged_projection(
                     "char_len) "
                     "VALUES ('forged-section',?,?, 'main_profile','Invented','now',8)",
                     (candidate_id, row_ids["profile_fetch"]),
+                )
+
+        with pytest.raises(IntegrityError, match="projection history is immutable"):
+            with app.state.database.engine.begin() as connection:
+                connection.exec_driver_sql(
+                    "UPDATE profile_fetch SET contract_error='forged' WHERE id=?",
+                    (row_ids["profile_fetch"],),
+                )
+        with pytest.raises(IntegrityError, match="source item already exists"):
+            with app.state.database.engine.begin() as connection:
+                connection.exec_driver_sql(
+                    "INSERT INTO section_error "
+                    "(id,candidate_id,search_run_id,fetch_id,section_name,error_type,"
+                    "error_message,extra,source_item) SELECT 'forged-error',"
+                    "candidate_id,search_run_id,fetch_id,section_name,error_type,"
+                    "error_message,extra,source_item FROM section_error WHERE id=?",
+                    (row_ids["section_error"],),
+                )
+        with pytest.raises(IntegrityError, match="source position already exists"):
+            with app.state.database.engine.begin() as connection:
+                connection.exec_driver_sql(
+                    "INSERT INTO section_reference "
+                    "(id,candidate_id,section_name,kind,url,text,context,value,fetch_id,"
+                    "source_position) SELECT 'forged-reference',candidate_id,"
+                    "section_name,kind,url,text,context,value,fetch_id,source_position "
+                    "FROM section_reference WHERE id=?",
+                    (row_ids["section_reference"],),
                 )
 
         with app.state.database.engine.begin() as connection:

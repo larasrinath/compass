@@ -90,7 +90,7 @@ def _seed_candidate(database: Database, suffix: str) -> tuple[str, str]:
                 session_id=session_id,
                 username=f"person-{suffix}",
                 profile_url=f"https://www.linkedin.com/in/person-{suffix}/",
-                profile_urn=f"urn:li:fsd_profile:{suffix}",
+                profile_urn=None,
                 first_seen_at=NOW,
                 stage="discovered",
                 retrieval_status="pending",

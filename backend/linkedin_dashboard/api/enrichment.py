@@ -21,6 +21,7 @@ from linkedin_dashboard.db.models import (
 from linkedin_dashboard.services.enrichment import (
     EXTRA_PERSON_SECTIONS,
     EnrichmentService,
+    profile_urn_routing_allowed,
 )
 
 router = APIRouter(tags=["enrichment"])
@@ -195,8 +196,8 @@ def candidate_detail(candidate_id: str, request: Request) -> dict[str, Any]:
             "profile_urn": candidate.profile_urn,
             "profile_urn_is_scored": False,
             "profile_urn_quarantined": candidate.profile_urn_quarantined,
-            "profile_urn_routing_allowed": bool(
-                candidate.profile_urn and not candidate.profile_urn_quarantined
+            "profile_urn_routing_allowed": profile_urn_routing_allowed(
+                session, candidate
             ),
             "profile_contract_error": candidate.profile_contract_error,
             "stage": candidate.stage,

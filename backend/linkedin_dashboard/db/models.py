@@ -312,6 +312,7 @@ class JobAttempt(Base):
     worker_token: Mapped[str] = mapped_column(String(36), nullable=False)
     started_at: Mapped[str] = mapped_column(String(32), nullable=False)
     response_received_at: Mapped[str | None] = mapped_column(String(32))
+    external_call_started_at: Mapped[str | None] = mapped_column(String(32))
     finished_at: Mapped[str | None] = mapped_column(String(32))
     outcome: Mapped[str] = mapped_column(String(16), nullable=False)
     raw_response: Mapped[dict[str, Any] | None] = mapped_column(JSON)
@@ -349,6 +350,36 @@ class QueueControl(Base):
     last_mcp_finished_at: Mapped[str | None] = mapped_column(String(32))
     owner_token: Mapped[str | None] = mapped_column(String(36))
     updated_at: Mapped[str] = mapped_column(String(32), nullable=False)
+
+
+class NavigationReservation(Base):
+    __tablename__ = "navigation_reservation"
+    __table_args__ = (
+        CheckConstraint("cost > 0", name="ck_navigation_reservation_cost"),
+        CheckConstraint(
+            "refunded_navigations BETWEEN 0 AND cost",
+            name="ck_navigation_reservation_refund",
+        ),
+        CheckConstraint(
+            "state IN ('reserved','charged','released')",
+            name="ck_navigation_reservation_state",
+        ),
+    )
+
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("job.id", ondelete="CASCADE"), primary_key=True
+    )
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("session.id", ondelete="CASCADE"), nullable=False
+    )
+    cost: Mapped[int] = mapped_column(Integer, nullable=False)
+    refunded_navigations: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    reserved_at: Mapped[str] = mapped_column(String(32), nullable=False)
+    charged_at: Mapped[str | None] = mapped_column(String(32))
+    released_at: Mapped[str | None] = mapped_column(String(32))
 
 
 class ProfileFetch(Base):
@@ -460,6 +491,7 @@ class SectionError(Base):
     error_type: Mapped[str] = mapped_column(String(64), nullable=False)
     error_message: Mapped[str] = mapped_column(Text, nullable=False)
     extra: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    source_item: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
 
 class SectionReference(Base):
@@ -478,6 +510,7 @@ class SectionReference(Base):
     fetch_id: Mapped[str | None] = mapped_column(
         ForeignKey("profile_fetch.id", ondelete="CASCADE")
     )
+    source_position: Mapped[int | None] = mapped_column(Integer)
 
 
 class ParsedField(Base):

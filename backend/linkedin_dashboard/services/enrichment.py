@@ -80,6 +80,35 @@ def canonical_sections(sections: list[str] | tuple[str, ...]) -> list[str]:
     return [name for name in EXTRA_PERSON_SECTIONS if name in requested]
 
 
+def profile_urn_routing_allowed(session: Any, candidate: Candidate) -> bool:
+    if candidate.profile_urn is None or candidate.profile_urn_quarantined:
+        return False
+    accepted = session.scalar(
+        select(ProfileIdentityObservation.id)
+        .where(
+            ProfileIdentityObservation.candidate_id == candidate.id,
+            ProfileIdentityObservation.verdict == "accepted",
+            ProfileIdentityObservation.observed_urn == candidate.profile_urn,
+        )
+        .limit(1)
+    )
+    divergent = session.scalar(
+        select(ProfileIdentityObservation.id)
+        .where(
+            ProfileIdentityObservation.candidate_id == candidate.id,
+            (
+                ProfileIdentityObservation.verdict.in_(("conflict", "url_mismatch"))
+                | (
+                    ProfileIdentityObservation.observed_urn.is_not(None)
+                    & (ProfileIdentityObservation.observed_urn != candidate.profile_urn)
+                )
+            ),
+        )
+        .limit(1)
+    )
+    return accepted is not None and divergent is None
+
+
 def _attested_payload(raw: dict[str, Any]) -> tuple[dict[str, Any], str]:
     structured = raw.get("structuredContent")
     if not isinstance(structured, dict):
@@ -233,13 +262,50 @@ class EnrichmentResultProcessor:
             )
             self._mark_contract_failure(fetch_id, str(error))
             return
+        contract_error: ProfileContractError | None = None
+        url_mismatch = False
+        with self.database.sessions() as session:
+            fetch, candidate = self._ensure_fetch(session, job_id)
+            if fetch is None or candidate is None:
+                raise LookupError("profile fetch has no matching candidate")
+            try:
+                _validate_profile_payload(
+                    attested,
+                    username=candidate.username,
+                    requested_sections=fetch.requested_sections,
+                )
+            except ProfileContractError as error:
+                contract_error = error
+                returned_url = attested.get("url")
+                if isinstance(returned_url, str):
+                    try:
+                        returned_username = normalize_person_reference(returned_url)
+                    except ValueError:
+                        pass
+                    else:
+                        url_mismatch = (
+                            returned_username.casefold()
+                            != candidate.username.casefold()
+                        )
         fetch_id = self._persist_fetch_raw(
             job_id,
             raw,
             projection_payload=attested,
             projection_source=source,
-            contract_error=None,
+            contract_error=(
+                "profile_contract_error" if contract_error is not None else None
+            ),
         )
+        if contract_error is not None:
+            logger.error(
+                "Profile contract failure for fetch %s: %s", fetch_id, contract_error
+            )
+            self._mark_contract_failure(
+                fetch_id,
+                str(contract_error),
+                result=attested if url_mismatch else None,
+            )
+            return
         self._parse_fetch(fetch_id, attested)
 
     def process_failure(
@@ -370,25 +436,6 @@ class EnrichmentResultProcessor:
             if candidate is None:
                 raise LookupError("profile candidate disappeared")
             now = _now()
-            try:
-                _validate_profile_payload(
-                    result,
-                    username=candidate.username,
-                    requested_sections=fetch.requested_sections,
-                )
-            except ProfileContractError as error:
-                logger.error(
-                    "Profile contract failure for fetch %s: %s", fetch.id, error
-                )
-                if isinstance(result.get("url"), str) and (
-                    result.get("profile_urn") is None
-                    or isinstance(result.get("profile_urn"), str)
-                ):
-                    self._observe_url_mismatch(session, fetch, candidate, result, now)
-                self._mark_contract_failure_in_session(
-                    session, fetch, candidate, str(error), now
-                )
-                return
             fetch.returned_url = result["url"]
             self._observe_identity(session, fetch, candidate, result, now)
             sections_value = result.get("sections")
@@ -447,6 +494,7 @@ class EnrichmentResultProcessor:
                         error_type=error_type,
                         error_message=error_message,
                         extra=safe,
+                        source_item=error_value,
                     )
                 )
 
@@ -455,7 +503,7 @@ class EnrichmentResultProcessor:
             for section_name, items in references.items():
                 if not isinstance(items, list):
                     continue
-                for item in items:
+                for source_position, item in enumerate(items):
                     if not isinstance(item, dict):
                         continue
                     session.add(
@@ -477,6 +525,7 @@ class EnrichmentResultProcessor:
                             if item.get("value") is not None
                             else None,
                             fetch_id=fetch.id,
+                            source_position=source_position,
                         )
                     )
 
@@ -510,7 +559,13 @@ class EnrichmentResultProcessor:
             fetch.duration_ms = _duration_ms(fetch.started_at, now)
             fetch.processed_at = now
 
-    def _mark_contract_failure(self, fetch_id: str, reason: str) -> None:
+    def _mark_contract_failure(
+        self,
+        fetch_id: str,
+        reason: str,
+        *,
+        result: dict[str, Any] | None = None,
+    ) -> None:
         with self.database.sessions.begin() as session:
             fetch = session.get(ProfileFetch, fetch_id)
             if fetch is None or fetch.processed_at is not None:
@@ -518,6 +573,8 @@ class EnrichmentResultProcessor:
             candidate = session.get(Candidate, fetch.candidate_id)
             if candidate is None:
                 return
+            if result is not None:
+                self._observe_url_mismatch(session, fetch, candidate, result, _now())
             self._mark_contract_failure_in_session(
                 session, fetch, candidate, reason, _now()
             )
@@ -535,10 +592,6 @@ class EnrichmentResultProcessor:
             if isinstance(result.get("profile_urn"), str)
             else None
         )
-        candidate.profile_urn_quarantined = True
-        candidate.profile_contract_error = (
-            candidate.profile_contract_error or "profile_url_mismatch"
-        )
         session.add(
             ProfileIdentityObservation(
                 id=str(uuid4()),
@@ -550,6 +603,11 @@ class EnrichmentResultProcessor:
                 observed_at=now,
             )
         )
+        session.flush()
+        candidate.profile_urn_quarantined = True
+        candidate.profile_contract_error = (
+            candidate.profile_contract_error or "profile_url_mismatch"
+        )
 
     @staticmethod
     def _mark_contract_failure_in_session(
@@ -559,7 +617,6 @@ class EnrichmentResultProcessor:
         reason: str,
         now: str,
     ) -> None:
-        fetch.contract_error = fetch.contract_error or "profile_contract_error"
         fetch.outcome = "error"
         fetch.finished_at = now
         fetch.duration_ms = _duration_ms(fetch.started_at, now)
@@ -595,6 +652,24 @@ class EnrichmentResultProcessor:
         if observed_urn is None:
             verdict = "missing"
         elif candidate.profile_urn is None and not candidate.profile_urn_quarantined:
+            verdict = "accepted"
+        elif candidate.profile_urn == observed_urn:
+            verdict = "same"
+        else:
+            verdict = "conflict"
+
+        observation = ProfileIdentityObservation(
+            id=str(uuid4()),
+            candidate_id=candidate.id,
+            fetch_id=fetch.id,
+            returned_url=result["url"],
+            observed_urn=observed_urn,
+            verdict=verdict,
+            observed_at=now,
+        )
+        session.add(observation)
+        session.flush()
+        if verdict == "accepted":
             claimed = session.execute(
                 update(Candidate)
                 .where(
@@ -604,20 +679,10 @@ class EnrichmentResultProcessor:
                 )
                 .values(profile_urn=observed_urn)
             )
-            if isinstance(claimed, CursorResult) and claimed.rowcount == 1:
-                candidate.profile_urn = observed_urn
-                verdict = "accepted"
-            else:
-                session.refresh(candidate)
-                verdict = (
-                    "same" if candidate.profile_urn == observed_urn else "conflict"
-                )
-        elif candidate.profile_urn == observed_urn:
-            verdict = "same"
-        else:
-            verdict = "conflict"
-
-        if verdict == "conflict":
+            if not isinstance(claimed, CursorResult) or claimed.rowcount != 1:
+                raise RuntimeError("profile URN observation lost its assignment race")
+            candidate.profile_urn = observed_urn
+        elif verdict == "conflict":
             session.execute(
                 update(Candidate)
                 .where(Candidate.id == candidate.id)
@@ -632,17 +697,6 @@ class EnrichmentResultProcessor:
             candidate.profile_contract_error = (
                 candidate.profile_contract_error or "profile_urn_conflict"
             )
-
-        observation = ProfileIdentityObservation(
-            id=str(uuid4()),
-            candidate_id=candidate.id,
-            fetch_id=fetch.id,
-            returned_url=result["url"],
-            observed_urn=observed_urn,
-            verdict=verdict,
-            observed_at=now,
-        )
-        session.add(observation)
         job = session.get(Job, fetch.job_id)
         session.add(
             AuditLog(
@@ -810,7 +864,65 @@ class EnrichmentService:
                 raise RuntimeError(
                     "one or more candidates already have an active fetch"
                 )
-        job_ids: list[str] = []
+        usernames = {candidate.id: candidate.username for candidate in candidates}
+        requests: list[tuple[JobKind, dict[str, Any], Any]] = []
         for candidate_id in candidate_ids:
-            job_ids.append(await self.enqueue(candidate_id, requested))
-        return job_ids
+            username = usernames[candidate_id]
+            payload = PersonProfilePayload(
+                linkedin_username=username,
+                sections=requested,
+            )
+
+            def related(
+                db: Any,
+                job: Job,
+                *,
+                candidate_id: str = candidate_id,
+                username: str = username,
+            ) -> None:
+                fetch_id = str(uuid4())
+                candidate = db.get(Candidate, candidate_id)
+                if candidate is None:
+                    raise LookupError("candidate does not exist")
+                candidate.retrieval_status = "pending"
+                db.add(
+                    ProfileFetch(
+                        id=fetch_id,
+                        candidate_id=candidate_id,
+                        job_id=job.id,
+                        tool=JobKind.GET_PERSON_PROFILE.value,
+                        requested_sections=["main_profile", *requested],
+                        args={
+                            "linkedin_username": username,
+                            "sections": requested,
+                        },
+                        started_at=job.queued_at,
+                        finished_at=None,
+                        duration_ms=None,
+                        outcome=None,
+                        raw_response=None,
+                        returned_url=None,
+                        processed_at=None,
+                        request_stage=(
+                            "stage1"
+                            if requested == list(STAGE_ONE_SECTIONS)
+                            else "stage2"
+                        ),
+                        parent_fetch_id=None,
+                        root_fetch_id=fetch_id,
+                    )
+                )
+
+            requests.append(
+                (
+                    JobKind.GET_PERSON_PROFILE,
+                    persisted_payload(payload),
+                    related,
+                )
+            )
+        try:
+            return await self.queue.enqueue_many(candidates[0].session_id, requests)
+        except IntegrityError as error:
+            raise RuntimeError(
+                "one or more candidates already have an active fetch"
+            ) from error
