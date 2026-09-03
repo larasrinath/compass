@@ -10,6 +10,8 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
+import pytest
+
 
 def _free_ipv4_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
@@ -108,6 +110,30 @@ def test_documented_module_entrypoint_starts_on_loopback(tmp_path) -> None:
             process.wait(timeout=5)
 
     assert (tmp_path / "entrypoint.db").exists()
+
+
+@pytest.mark.parametrize("host", ["::1%lo0", "::ffff:127.0.0.1"])
+def test_entrypoint_rejects_scoped_and_mapped_ipv6_before_database(
+    tmp_path, host: str
+) -> None:
+    database_path = tmp_path / "unsafe-ip.db"
+    result = subprocess.run(
+        [sys.executable, "-m", "linkedin_dashboard"],
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+        env={
+            **os.environ,
+            "HOST": host,
+            "DB_PATH": str(database_path),
+        },
+    )
+
+    assert result.returncode != 0
+    assert "loopback" in f"{result.stdout}\n{result.stderr}"
+    assert not database_path.exists()
 
 
 def test_programmatic_wildcard_listener_is_rejected_before_database(

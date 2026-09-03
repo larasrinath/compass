@@ -470,13 +470,118 @@ def test_credential_urls_are_redacted_in_values_and_keys_without_corruption() ->
     )
 
     assert sanitized == {
-        "//[redacted]@host.example/path": ("https://[redacted]@host.example/path"),
+        "[redacted-path]": ("https://[redacted]@host.example/path"),
         "safe": [
             "https://host.example/path@segment",
             "https://host.example/path//name@segment",
             "mailto:user@example.com",
         ],
     }
+
+
+def test_json_response_redacts_query_labeled_file_and_header_secrets(
+    tmp_path,
+) -> None:
+    app = create_app(settings_for(tmp_path / "expanded-privacy.db"))
+
+    @app.get("/api/test/expanded-privacy")
+    def expanded_privacy() -> JSONResponse:
+        return JSONResponse(
+            {
+                "url": (
+                    "https://example.test/profile?access_token=access-query-secret"
+                    "&token=token-query-secret&key=key-query-secret"
+                    "&password=password-query-secret&cookie=cookie-query-secret"
+                    "&authToken=auth-query-secret&safe=visible"
+                ),
+                "message": (
+                    "proxy_password=proxy-secret "
+                    "Authorization: Bearer bearer-secret "
+                    "Cookie: li_at=cookie-secret; JSESSIONID=visible"
+                ),
+                "files": [
+                    "file:///opt/private/one",
+                    "file://localhost/opt/private/two",
+                    "file://fileserver/private/three",
+                    "file:/opt/private/four",
+                ],
+                "network_share": "//fileserver/private/share",
+                "safe_url_context": {"url": "//www.linkedin.com/in/safe-person/"},
+            },
+            headers={
+                "X-AccessToken": "header-access-secret",
+                "X-ApiKey": "header-key-secret",
+                "X-Diagnostic": (
+                    "https://example.test/?password=header-query-secret "
+                    "proxy_password=header-label-secret"
+                ),
+            },
+        )
+
+    with client_for(app) as client:
+        response = client.get("/api/test/expanded-privacy")
+
+    body = response.text
+    assert response.status_code == 200
+    for secret in (
+        "access-query-secret",
+        "token-query-secret",
+        "key-query-secret",
+        "password-query-secret",
+        "cookie-query-secret",
+        "auth-query-secret",
+        "proxy-secret",
+        "bearer-secret",
+        "cookie-secret",
+        "file://",
+        "fileserver/private/share",
+    ):
+        assert secret not in body
+    assert "safe=visible" in body
+    assert "JSESSIONID=visible" in body
+    assert '"network_share":"[redacted-path]"' in body
+    assert '"url":"//www.linkedin.com/in/safe-person/"' in body
+    assert "x-accesstoken" not in response.headers
+    assert "x-apikey" not in response.headers
+    assert "header-query-secret" not in response.headers["x-diagnostic"]
+    assert "header-label-secret" not in response.headers["x-diagnostic"]
+
+
+def test_byte_split_sse_redacts_query_labeled_and_file_secrets(tmp_path) -> None:
+    app = create_app(settings_for(tmp_path / "expanded-sse-privacy.db"))
+    payload = (
+        b'data: {"url":"https://example.test/?token=query-secret",'
+        b'"message":"proxy_password=proxy-secret Authorization: Bearer '
+        b'bearer-secret Cookie: li_at=cookie-secret",'
+        b'"file":"file://localhost/opt/private/data",'
+        b'"share":"//fileserver/private/share"}\n\n'
+    )
+
+    @app.get("/api/test/expanded-sse-privacy")
+    def expanded_sse_privacy() -> StreamingResponse:
+        return StreamingResponse(
+            (bytes([byte]) for byte in payload),
+            media_type="text/event-stream",
+            headers={
+                "X-AccessToken": "header-secret",
+                "X-Diagnostic": "Cookie: li_at=header-cookie-secret",
+            },
+        )
+
+    with client_for(app) as client:
+        response = client.get("/api/test/expanded-sse-privacy")
+
+    for secret in (
+        "query-secret",
+        "proxy-secret",
+        "bearer-secret",
+        "cookie-secret",
+        "file://",
+        "fileserver/private/share",
+    ):
+        assert secret not in response.text
+    assert "x-accesstoken" not in response.headers
+    assert "header-cookie-secret" not in response.headers["x-diagnostic"]
 
 
 def test_audit_api_redacts_credentials_embedded_in_strings(tmp_path) -> None:

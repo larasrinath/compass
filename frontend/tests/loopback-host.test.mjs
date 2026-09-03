@@ -46,10 +46,31 @@ test('rejects wildcard and implicit CLI hosts', () => {
     'localhost',
     'LOCALHOST',
     '[127.0.0.1]',
+    '::1%lo0',
+    '[::1%lo0]',
+    '::ffff:127.0.0.1',
+    '[::ffff:127.0.0.1]',
     true,
     undefined,
   ]) {
     assert.throws(() => assertLoopbackHost(host, 'test'), /explicit loopback/)
+  }
+})
+
+test('Vite startup rejects scoped and mapped IPv6 overrides', () => {
+  for (const host of ['::1%lo0', '::ffff:127.0.0.1']) {
+    const result = spawnSync(process.execPath, [vite, '--host', host], {
+      cwd: frontendRoot,
+      encoding: 'utf8',
+      timeout: 10_000,
+    })
+
+    assert.notEqual(result.status, 0)
+    assert.equal(result.signal, null)
+    assert.match(
+      `${result.stdout}\n${result.stderr}`,
+      /Vite development server host must be an explicit loopback address/,
+    )
   }
 })
 

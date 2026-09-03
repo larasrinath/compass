@@ -14,6 +14,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 def normalize_loopback_host(value: str) -> str:
     """Return the runtime-safe canonical form of a loopback host."""
     host = value.strip()
+    if "%" in host:
+        raise ValueError(f"host must be an unscoped loopback address; got {value!r}")
 
     if host.startswith("[") or host.endswith("]"):
         if not (host.startswith("[") and host.endswith("]")):
@@ -33,7 +35,11 @@ def normalize_loopback_host(value: str) -> str:
         except ValueError as error:
             raise ValueError(f"host must be loopback-only; got {value!r}") from error
 
-    if not address.is_loopback:
+    if address.version == 6 and (
+        address.ipv4_mapped is not None or address.compressed != "::1"
+    ):
+        raise ValueError(f"host must be loopback-only; got {value!r}")
+    if address.version == 4 and not address.is_loopback:
         raise ValueError(f"host must be loopback-only; got {value!r}")
     return address.compressed
 

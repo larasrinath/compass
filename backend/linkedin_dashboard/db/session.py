@@ -19,6 +19,7 @@ from linkedin_dashboard.db.migrations import (
     v0004_audit_cascade,
     v0005_send_history,
     v0006_send_state_timing,
+    v0007_send_provenance,
 )
 from linkedin_dashboard.db.models import Base
 from linkedin_dashboard.settings import normalize_database_path
@@ -81,6 +82,7 @@ class Database:
             (v0004_audit_cascade.VERSION, v0004_audit_cascade.apply),
             (v0005_send_history.VERSION, v0005_send_history.apply),
             (v0006_send_state_timing.VERSION, v0006_send_state_timing.apply),
+            (v0007_send_provenance.VERSION, v0007_send_provenance.apply),
         ):
             applied = connection.execute(
                 text("SELECT 1 FROM schema_migration WHERE version = :version"),
@@ -127,18 +129,55 @@ def _create_engine(path: Path, expected_fd: Callable[[], int | None]) -> Engine:
         dbapi_connection: Any, connection_record: Any
     ) -> None:  # pragma: no cover - SQLAlchemy callback signature
         del connection_record
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA recursive_triggers=ON")
+        recursive_triggers = cursor.execute("PRAGMA recursive_triggers").fetchone()[0]
+        if recursive_triggers != 1:
+            cursor.close()
+            raise RuntimeError("SQLite recursive triggers could not be enabled")
         database_fd = expected_fd()
         if database_fd is None:
+            cursor.close()
             raise RuntimeError("database connections require secure initialization")
-        _verify_connection_target(dbapi_connection, path, database_fd)
+        cursor.close()
+        _revalidate_storage(dbapi_connection, path, database_fd)
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("PRAGMA busy_timeout=5000")
         cursor.close()
-        _secure_existing_sidecars(path)
+
+    @event.listens_for(engine, "checkout")
+    def validate_sqlite_checkout(
+        dbapi_connection: Any, connection_record: Any, connection_proxy: Any
+    ) -> None:  # pragma: no cover - SQLAlchemy callback signature
+        del connection_record, connection_proxy
+        database_fd = expected_fd()
+        if database_fd is None:
+            raise RuntimeError("database connections require secure initialization")
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA recursive_triggers=ON")
+            recursive_triggers = cursor.execute("PRAGMA recursive_triggers").fetchone()[
+                0
+            ]
+        finally:
+            cursor.close()
+        if recursive_triggers != 1:
+            raise RuntimeError("SQLite recursive triggers could not be enabled")
+        _revalidate_storage(dbapi_connection, path, database_fd)
 
     return engine
+
+
+def _revalidate_storage(dbapi_connection: Any, path: Path, expected_fd: int) -> None:
+    """Re-prove the configured storage boundary before a pooled connection escapes."""
+    if normalize_database_path(path) != path:
+        raise ValueError("configured database path changed after startup")
+    _require_private_directory(path.parent)
+    _require_same_file(path, expected_fd)
+    _verify_connection_target(dbapi_connection, path, expected_fd)
+    _secure_existing_sidecars(path)
 
 
 def _verify_connection_target(

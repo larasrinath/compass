@@ -4,7 +4,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import unquote_plus, urlsplit
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -43,9 +43,38 @@ _WINDOWS_PATH = re.compile(
     r"(?<![a-z0-9])(?:[a-z]:[\\/]|\\\\)[^\s\r\n\"'<>]+",
     flags=re.IGNORECASE,
 )
-_FILE_URL = re.compile(r"file:///(?:[^\s\"'<>]+)", flags=re.IGNORECASE)
+_FILE_URL = re.compile(
+    r"\bfile:(?://[^/\s\"'<>]*)?/(?:[^\s\"'<>]+)",
+    flags=re.IGNORECASE,
+)
 _NETWORK_URL = re.compile(r"(?:(?:https?):)?//[^\s\"'<>]+", re.IGNORECASE)
 _UNIX_PATH = re.compile(r"(?<![a-z0-9/])/(?!/)[^\s\"'<>]+", re.IGNORECASE)
+_QUERY_PARAMETER = re.compile(
+    r"(?P<separator>[?&])(?P<key>[^=&#]*)(?P<equals>=)(?P<value>[^&#]*)"
+)
+_LABELED_SECRET = re.compile(
+    r"(?P<label>\b(?:proxy[_-]?password|li_at)\s*=\s*)[^;\s,&]+",
+    re.IGNORECASE,
+)
+_AUTHORIZATION_BEARER = re.compile(
+    r"(?P<label>\bauthorization\s*:\s*bearer\s+)[^;\s,]+",
+    re.IGNORECASE,
+)
+_SENSITIVE_QUERY_KEYS = {
+    "accesskey",
+    "accesstoken",
+    "apikey",
+    "auth",
+    "authorization",
+    "authtoken",
+    "cookie",
+    "key",
+    "liat",
+    "password",
+    "proxypassword",
+    "secret",
+    "token",
+}
 _LINKEDIN_URL_KEYS = {
     "profile_url",
     "relative_url",
@@ -86,6 +115,11 @@ _SENSITIVE_HEADER_PARTS = {
     "secret",
     "token",
 }
+_SENSITIVE_HEADER_COMPACT = _SENSITIVE_QUERY_KEYS | {
+    "credentials",
+    "proxyauthorization",
+    "setcookie",
+}
 _STRUCTURAL_HEADER_NAMES = ("content-length",)
 
 
@@ -107,6 +141,29 @@ def _is_linkedin_relative_url(value: str, field_name: str | None) -> bool:
     )
 
 
+def _compact_identifier(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", unquote_plus(value).casefold())
+
+
+def _is_sensitive_identifier(value: str) -> bool:
+    compact = _compact_identifier(value)
+    return (
+        compact in _SENSITIVE_QUERY_KEYS
+        or compact.endswith(("token", "password", "secret", "cookie"))
+        or compact.startswith("auth")
+    )
+
+
+def _sanitize_url_query(value: str) -> str:
+    def redact_parameter(match: re.Match[str]) -> str:
+        key = match.group("key")
+        if not _is_sensitive_identifier(key):
+            return match.group(0)
+        return f"{match.group('separator')}{key}{match.group('equals')}[redacted]"
+
+    return _QUERY_PARAMETER.sub(redact_parameter, value)
+
+
 def _redact_string(
     value: str,
     *,
@@ -122,7 +179,9 @@ def _redact_string(
         host = authority.rsplit("@", 1)[1]
         return f"{match.group('prefix')}[redacted]@{host}"
 
-    sanitized = _FILE_URL.sub("[redacted-path]", value)
+    sanitized = _LABELED_SECRET.sub(r"\g<label>[redacted]", value)
+    sanitized = _AUTHORIZATION_BEARER.sub(r"\g<label>[redacted]", sanitized)
+    sanitized = _FILE_URL.sub("[redacted-path]", sanitized)
     sanitized = _URL_AUTHORITY.sub(redact_authority, sanitized)
     sanitized = sanitized.replace(str(Path.home()), "[redacted-home]")
     sanitized = sanitized.replace(".linkedin-mcp", "[redacted-profile]")
@@ -130,7 +189,10 @@ def _redact_string(
     preserved_urls: list[str] = []
 
     def preserve_network_url(match: re.Match[str]) -> str:
-        preserved_urls.append(match.group(0))
+        url = _sanitize_url_query(match.group(0))
+        if url.startswith("//") and field_name not in _LINKEDIN_URL_KEYS:
+            return "[redacted-path]"
+        preserved_urls.append(url)
         return f"[preserved-url-{len(preserved_urls) - 1}]"
 
     sanitized = _NETWORK_URL.sub(preserve_network_url, sanitized)
@@ -177,7 +239,14 @@ def _sensitive_header_name(name: str) -> bool:
     underscored = normalized.replace("-", "_")
     if _drop_key(underscored):
         return True
-    return bool(set(re.split(r"[-_]", normalized)) & _SENSITIVE_HEADER_PARTS)
+    parts = set(re.split(r"[-_]", normalized))
+    compact = _compact_identifier(normalized)
+    without_extension_prefix = compact[1:] if compact.startswith("x") else compact
+    return (
+        bool(parts & _SENSITIVE_HEADER_PARTS)
+        or (without_extension_prefix in _SENSITIVE_HEADER_COMPACT)
+        or _is_sensitive_identifier(without_extension_prefix)
+    )
 
 
 def _sanitize_headers(headers: list[tuple[bytes, bytes]]) -> list[tuple[bytes, bytes]]:

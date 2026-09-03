@@ -13,6 +13,7 @@ from linkedin_dashboard.db.migrations import (
     v0004_audit_cascade,
     v0005_send_history,
     v0006_send_state_timing,
+    v0007_send_provenance,
 )
 from linkedin_dashboard.db.models import (
     Candidate,
@@ -22,6 +23,7 @@ from linkedin_dashboard.db.models import (
     MessageDraft,
     RoleBrief,
     SendAttempt,
+    SendConfirmation,
 )
 from linkedin_dashboard.db.session import Database, get_journal_mode
 from sqlalchemy import event, text
@@ -102,6 +104,19 @@ def attempt(
     )
 
 
+def confirmation(
+    *, token: str, candidate_id: str, draft_id: str, body_sha256: str = "a" * 64
+) -> SendConfirmation:
+    return SendConfirmation(
+        token=token,
+        candidate_id=candidate_id,
+        draft_id=draft_id,
+        body_sha256=body_sha256,
+        created_at=NOW,
+        expires_at=NOW,
+    )
+
+
 def prepare_v0001_database(database: Database) -> None:
     database.initialize()
     with database.engine.begin() as connection:
@@ -176,6 +191,13 @@ def insert_attempt_sql(
 def test_database_uses_wal_and_owner_only_permissions(database: Database) -> None:
     with database.engine.connect() as connection:
         assert get_journal_mode(connection).casefold() == "wal"
+        assert connection.exec_driver_sql("PRAGMA recursive_triggers").scalar_one() == 1
+
+    with database.engine.connect() as connection:
+        connection.exec_driver_sql("PRAGMA recursive_triggers=OFF")
+
+    with database.engine.connect() as connection:
+        assert connection.exec_driver_sql("PRAGMA recursive_triggers").scalar_one() == 1
 
     assert stat.S_IMODE(os.stat(database.path).st_mode) == 0o600
     assert database.writable()
@@ -337,6 +359,91 @@ def test_connection_inode_check_precedes_every_sqlite_write(
     assert not target.with_name(f"{target.name}-shm").exists()
 
 
+def test_checkout_rejects_post_init_main_hardlink_before_write(
+    database: Database, tmp_path
+) -> None:
+    alias = tmp_path / "post-init-hardlink.db"
+    os.link(database.path, alias)
+
+    with pytest.raises(ValueError, match="exactly one hard link"):
+        with database.engine.begin() as connection:
+            connection.exec_driver_sql(
+                "CREATE TABLE must_not_exist (value TEXT NOT NULL)"
+            )
+
+    with sqlite3.connect(f"file:{alias}?mode=ro", uri=True) as connection:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+    assert "must_not_exist" not in tables
+
+
+def test_checkout_rejects_path_replacement_without_mutating_either_database(
+    database: Database, tmp_path
+) -> None:
+    with database.engine.connect() as connection:
+        connection.exec_driver_sql("PRAGMA wal_checkpoint(TRUNCATE)")
+    original_before = database.path.read_bytes()
+    moved = tmp_path / "moved-original.db"
+    database.path.rename(moved)
+
+    staged = tmp_path / "staged-replacement.db"
+    with sqlite3.connect(staged) as connection:
+        connection.execute("CREATE TABLE replacement_sentinel (value TEXT NOT NULL)")
+        connection.execute("INSERT INTO replacement_sentinel VALUES ('untouched')")
+    os.chmod(staged, 0o600)
+    staged.rename(database.path)
+    replacement_before = database.path.read_bytes()
+
+    with pytest.raises(ValueError, match=r"changed|unexpected"):
+        with database.engine.begin() as connection:
+            connection.exec_driver_sql(
+                "CREATE TABLE must_not_exist (value TEXT NOT NULL)"
+            )
+
+    assert moved.read_bytes() == original_before
+    assert database.path.read_bytes() == replacement_before
+    with sqlite3.connect(f"file:{database.path}?mode=ro", uri=True) as connection:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+    assert "replacement_sentinel" in tables
+    assert "must_not_exist" not in tables
+
+
+def test_checkout_rejects_post_init_hardlinked_sidecar_before_write(
+    database: Database, tmp_path
+) -> None:
+    sidecar = database.path.with_name(f"{database.path.name}-wal")
+    if not sidecar.exists():
+        sidecar.write_bytes(b"post-init-sidecar")
+        os.chmod(sidecar, 0o600)
+    alias = tmp_path / "post-init-sidecar-hardlink"
+    os.link(sidecar, alias)
+
+    with pytest.raises(ValueError, match="exactly one hard link"):
+        with database.engine.begin() as connection:
+            connection.exec_driver_sql(
+                "CREATE TABLE must_not_exist (value TEXT NOT NULL)"
+            )
+
+    assert alias.exists()
+    with sqlite3.connect(f"file:{database.path}?mode=ro", uri=True) as connection:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+    assert "must_not_exist" not in tables
+
+
 def test_hard_linked_database_is_rejected_without_mutating_original(tmp_path) -> None:
     parent = tmp_path / "private-hardlink"
     parent.mkdir(mode=0o700)
@@ -432,6 +539,7 @@ def test_existing_v0001_database_receives_integrity_migration(tmp_path) -> None:
         v0004_audit_cascade.VERSION,
         v0005_send_history.VERSION,
         v0006_send_state_timing.VERSION,
+        v0007_send_provenance.VERSION,
     ]
     assert "NEW.candidate_id IS NOT OLD.candidate_id" in trigger_sql
 
@@ -819,7 +927,10 @@ def test_malformed_legacy_ambiguous_attempt_cannot_be_rewritten(
         )
         connection.exec_driver_sql("PRAGMA ignore_check_constraints=OFF")
 
-    with pytest.raises(DBAPIError, match=r"immutable|every outcome finished"):
+    with pytest.raises(
+        DBAPIError,
+        match=r"immutable|every outcome finished|must match its approved draft",
+    ):
         with database.engine.begin() as connection:
             connection.execute(
                 text(
@@ -1007,6 +1118,201 @@ def test_send_history_deletes_require_full_session_purge(database: Database) -> 
     assert counts == {"candidate": 0, "message_draft": 0, "send_attempt": 0}
 
 
+@pytest.mark.parametrize("conflict", ["primary_key", "idempotency_key"])
+def test_insert_or_replace_cannot_overwrite_send_history(
+    database: Database, conflict: str
+) -> None:
+    candidate_id, draft_id = seed_candidate(database, f"replace-{conflict}")
+    with database.sessions.begin() as db_session:
+        db_session.add(
+            attempt(
+                attempt_id=f"attempt-replace-{conflict}",
+                candidate_id=candidate_id,
+                draft_id=draft_id,
+                state="SENDING",
+                confirm_send=True,
+            )
+        )
+
+    existing_id = f"attempt-replace-{conflict}"
+    replacement_id = existing_id if conflict == "primary_key" else f"new-{existing_id}"
+    existing_key = (existing_id + "0" * 64)[:64]
+    with pytest.raises(DBAPIError, match="full-session purge"):
+        with database.engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT OR REPLACE INTO send_attempt "
+                    "(id, candidate_id, draft_id, idempotency_key, body_sha256, "
+                    "confirm_send, state, started_at, resolution) VALUES "
+                    "(:id, :candidate_id, :draft_id, :key, :hash, 1, "
+                    "'SENDING', :started_at, 'unresolved')"
+                ),
+                {
+                    "id": replacement_id,
+                    "candidate_id": candidate_id,
+                    "draft_id": draft_id,
+                    "key": existing_key,
+                    "hash": "a" * 64,
+                    "started_at": NOW,
+                },
+            )
+
+    with database.engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT id, idempotency_key FROM send_attempt "
+                "WHERE candidate_id=:candidate_id"
+            ),
+            {"candidate_id": candidate_id},
+        ).all()
+    assert rows == [(existing_id, existing_key)]
+
+
+@pytest.mark.parametrize("record_type", ["confirmation", "attempt"])
+@pytest.mark.parametrize("mismatch", ["candidate", "hash"])
+def test_send_records_must_match_their_approved_draft(
+    database: Database, record_type: str, mismatch: str
+) -> None:
+    candidate_id, draft_id = seed_candidate(database, f"provenance-{record_type}")
+    other_candidate_id, _ = seed_candidate(database, f"provenance-{record_type}-other")
+    record_candidate = other_candidate_id if mismatch == "candidate" else candidate_id
+    body_sha256 = "b" * 64 if mismatch == "hash" else "a" * 64
+
+    with pytest.raises(DBAPIError, match="must match its approved draft"):
+        with database.sessions.begin() as db_session:
+            if record_type == "confirmation":
+                db_session.add(
+                    confirmation(
+                        token=f"token-{record_type}-{mismatch}",
+                        candidate_id=record_candidate,
+                        draft_id=draft_id,
+                        body_sha256=body_sha256,
+                    )
+                )
+            else:
+                record = attempt(
+                    attempt_id=f"attempt-{record_type}-{mismatch}",
+                    candidate_id=record_candidate,
+                    draft_id=draft_id,
+                    state="SENDING",
+                    confirm_send=True,
+                )
+                record.body_sha256 = body_sha256
+                db_session.add(record)
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("candidate_id", "candidate-confirmation-rewrite-target"),
+        ("body_sha256", "b" * 64),
+    ],
+)
+def test_confirmation_provenance_cannot_be_rewritten(
+    database: Database, column: str, value: str
+) -> None:
+    candidate_id, draft_id = seed_candidate(database, "confirmation-rewrite-source")
+    seed_candidate(database, "confirmation-rewrite-target")
+    with database.sessions.begin() as db_session:
+        db_session.add(
+            confirmation(
+                token="token-confirmation-rewrite",
+                candidate_id=candidate_id,
+                draft_id=draft_id,
+            )
+        )
+
+    with pytest.raises(DBAPIError, match="must match its approved draft"):
+        with database.engine.begin() as connection:
+            connection.execute(
+                text(
+                    f"UPDATE send_confirmation SET {column}=:value WHERE token=:token"
+                ),
+                {"value": value, "token": "token-confirmation-rewrite"},
+            )
+
+    with database.engine.connect() as connection:
+        persisted = connection.execute(
+            text(
+                "SELECT candidate_id, body_sha256 FROM send_confirmation "
+                "WHERE token=:token"
+            ),
+            {"token": "token-confirmation-rewrite"},
+        ).one()
+    assert tuple(persisted) == (candidate_id, "a" * 64)
+
+
+@pytest.mark.parametrize("record_type", ["confirmation", "attempt"])
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("id", "draft-rewrite-target-id"),
+        ("candidate_id", "candidate-draft-rewrite-target"),
+        ("version", 2),
+        ("body", "Changed"),
+        ("body_sha256", "c" * 64),
+        ("char_count", 7),
+    ],
+)
+def test_referenced_draft_requires_a_new_version_for_edits(
+    database: Database, record_type: str, column: str, value: object
+) -> None:
+    candidate_id, draft_id = seed_candidate(database, "draft-rewrite-source")
+    seed_candidate(database, "draft-rewrite-target")
+    with database.sessions.begin() as db_session:
+        if record_type == "confirmation":
+            db_session.add(
+                confirmation(
+                    token="token-draft-rewrite",
+                    candidate_id=candidate_id,
+                    draft_id=draft_id,
+                )
+            )
+        else:
+            db_session.add(
+                attempt(
+                    attempt_id="attempt-draft-rewrite",
+                    candidate_id=candidate_id,
+                    draft_id=draft_id,
+                    state="SENDING",
+                    confirm_send=True,
+                )
+            )
+
+    with pytest.raises(DBAPIError, match="create a new draft version"):
+        with database.engine.begin() as connection:
+            connection.execute(
+                text(f"UPDATE message_draft SET {column}=:value WHERE id=:id"),
+                {"value": value, "id": draft_id},
+            )
+
+
+def test_new_draft_version_remains_allowed_after_reference(database: Database) -> None:
+    candidate_id, draft_id = seed_candidate(database, "new-draft-version")
+    with database.sessions.begin() as db_session:
+        db_session.add(
+            confirmation(
+                token="token-new-draft-version",
+                candidate_id=candidate_id,
+                draft_id=draft_id,
+            )
+        )
+        db_session.add(
+            MessageDraft(
+                id="draft-new-version-2",
+                candidate_id=candidate_id,
+                version=2,
+                body="Updated hello",
+                body_sha256="d" * 64,
+                char_count=13,
+                generator="manual",
+                grounding_status="pass",
+                grounding_report={},
+                created_at=NOW,
+            )
+        )
+
+
 @pytest.mark.parametrize(
     ("column", "value"),
     [
@@ -1035,7 +1341,10 @@ def test_send_identity_cannot_change_while_completing(
             )
         )
 
-    with pytest.raises(DBAPIError, match="identity and provenance are immutable"):
+    with pytest.raises(
+        DBAPIError,
+        match=r"identity and provenance are immutable|must match its approved draft",
+    ):
         with database.engine.begin() as connection:
             connection.execute(
                 text(
@@ -1243,5 +1552,111 @@ def test_v0006_each_statement_is_atomic_and_retryable(
 
     assert migration_schema_objects(database.path) == baseline
     monkeypatch.setattr(v0006_send_state_timing, "apply", original_apply)
+    database.initialize()
+    database.dispose()
+
+
+@pytest.mark.parametrize("record_type", ["confirmation", "attempt"])
+@pytest.mark.parametrize("mismatch", ["candidate", "hash"])
+def test_v0007_preflight_rejects_legacy_provenance_mismatch(
+    tmp_path, record_type: str, mismatch: str
+) -> None:
+    database = Database(tmp_path / f"legacy-provenance-{record_type}-{mismatch}.db")
+    database.initialize()
+    candidate_id, draft_id = seed_candidate(
+        database, f"legacy-provenance-{record_type}-{mismatch}"
+    )
+    other_candidate_id, _ = seed_candidate(
+        database, f"legacy-provenance-{record_type}-{mismatch}-other"
+    )
+    record_candidate = other_candidate_id if mismatch == "candidate" else candidate_id
+    body_sha256 = "b" * 64 if mismatch == "hash" else "a" * 64
+    with database.engine.begin() as connection:
+        connection.execute(
+            text("DELETE FROM schema_migration WHERE version=:version"),
+            {"version": v0007_send_provenance.VERSION},
+        )
+        connection.exec_driver_sql(f"DROP TRIGGER send_{record_type}_provenance_insert")
+        if record_type == "confirmation":
+            connection.execute(
+                text(
+                    "INSERT INTO send_confirmation "
+                    "(token, candidate_id, draft_id, body_sha256, created_at, "
+                    "expires_at) VALUES "
+                    "('legacy-token', :candidate, :draft, :hash, :now, :now)"
+                ),
+                {
+                    "candidate": record_candidate,
+                    "draft": draft_id,
+                    "hash": body_sha256,
+                    "now": NOW,
+                },
+            )
+        else:
+            connection.execute(
+                text(
+                    "INSERT INTO send_attempt "
+                    "(id, candidate_id, draft_id, idempotency_key, body_sha256, "
+                    "confirm_send, state, started_at, resolution) VALUES "
+                    "('legacy-attempt', :candidate, :draft, :key, :hash, 1, "
+                    "'SENDING', :now, 'unresolved')"
+                ),
+                {
+                    "candidate": record_candidate,
+                    "draft": draft_id,
+                    "key": f"legacy-{mismatch}".ljust(64, "0"),
+                    "hash": body_sha256,
+                    "now": NOW,
+                },
+            )
+
+    database = restart_database(database)
+    try:
+        with pytest.raises(RuntimeError, match="incompatible send provenance"):
+            database.initialize()
+    finally:
+        database.dispose()
+
+    with sqlite3.connect(database.path) as connection:
+        assert (
+            connection.execute(
+                "SELECT 1 FROM schema_migration WHERE version=?",
+                (v0007_send_provenance.VERSION,),
+            ).fetchone()
+            is None
+        )
+        table = f"send_{record_type}"
+        assert connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone() == (1,)
+
+
+@pytest.mark.parametrize(
+    "failure_after", range(1, len(v0007_send_provenance.STATEMENTS) + 1)
+)
+def test_v0007_each_statement_is_atomic_and_retryable(
+    tmp_path, monkeypatch, failure_after: int
+) -> None:
+    database = Database(tmp_path / f"interrupted-v7-{failure_after}.db")
+    database.initialize()
+    with database.engine.begin() as connection:
+        connection.execute(
+            text("DELETE FROM schema_migration WHERE version=:version"),
+            {"version": v0007_send_provenance.VERSION},
+        )
+    baseline = migration_schema_objects(database.path)
+    database = restart_database(database)
+    original_apply = v0007_send_provenance.apply
+
+    def interrupted_apply(connection) -> None:
+        for index, statement in enumerate(v0007_send_provenance.STATEMENTS, start=1):
+            connection.exec_driver_sql(statement)
+            if index == failure_after:
+                raise RuntimeError(f"interrupted after statement {index}")
+
+    monkeypatch.setattr(v0007_send_provenance, "apply", interrupted_apply)
+    with pytest.raises(RuntimeError, match=f"statement {failure_after}"):
+        database.initialize()
+
+    assert migration_schema_objects(database.path) == baseline
+    monkeypatch.setattr(v0007_send_provenance, "apply", original_apply)
     database.initialize()
     database.dispose()

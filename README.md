@@ -43,7 +43,8 @@ the configured host and port before initializing its database.
 All three network settings (`HOST`, `FRONTEND_HOST`, and the host in `MCP_URL`)
 must use numeric loopback literals. Hostnames such as `localhost` are rejected
 so startup and runtime checks never depend on DNS; equivalent IPv6 loopback
-spellings are canonicalized to `::1`.
+spellings are canonicalized to `::1`. Scoped and IPv4-mapped IPv6 addresses are
+rejected consistently by the API and Vite processes.
 
 ## Verification
 
@@ -63,7 +64,15 @@ permissions; startup rejects an unsafe parent instead of changing its mode.
 Initialization holds and verifies the database inode before SQLite performs a
 write-capable operation, and schema migrations plus their version records are
 committed atomically. Database and SQLite sidecar files with more than one hard
-link are rejected before permission or SQLite operations. Send-attempt history
+link are rejected before permission or SQLite operations and are revalidated,
+along with the configured path and held inode, on every pooled connection
+checkout. Recursive SQLite triggers are enforced so replacement statements
+cannot bypass append-only audit and send-history guards. Send-attempt history
 can be removed only as part of a full-session purge. The database also enforces
-that `SENDING` is the only unfinished state and every outcome state is finished.
+that `SENDING` is the only unfinished state and every outcome state is finished,
+that confirmations and attempts agree with their referenced draft, and that a
+referenced draft can be changed only by creating a new version. The final API
+privacy boundary redacts filesystem diagnostics, credential-bearing URLs,
+sensitive query parameters and labeled credentials from bodies, streams and
+response headers.
 Through M5, `LLM_PROVIDER` is locked to the literal value `null`.

@@ -4,6 +4,7 @@ function normalizeHost(host) {
   if (typeof host !== 'string') return null
 
   let candidate = host.trim().toLowerCase()
+  if (candidate.includes('%')) return null
   let bracketed = false
   if (candidate.startsWith('[') || candidate.endsWith(']')) {
     if (!(candidate.startsWith('[') && candidate.endsWith(']'))) return null

@@ -48,12 +48,16 @@ def test_loopback_hosts_are_normalized_for_runtime(
         "LOCALHOST",
         "",
         "[127.0.0.1]",
+        "::1%lo0",
+        "[::1%25lo0]",
+        "::ffff:127.0.0.1",
+        "[::ffff:127.0.0.1]",
         "[::1",
         "::1]",
     ],
 )
 def test_non_loopback_backend_host_is_rejected(host: str, tmp_path) -> None:
-    with pytest.raises(ValidationError, match="loopback-only"):
+    with pytest.raises(ValidationError, match="loopback"):
         Settings(host=host, db_path=tmp_path / "dashboard.db")
 
 
@@ -71,6 +75,18 @@ def test_localhost_mcp_url_is_rejected(tmp_path) -> None:
             mcp_url="http://localhost:8000/mcp",
             db_path=tmp_path / "dashboard.db",
         )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://[::1%25lo0]:8000/mcp",
+        "http://[::ffff:127.0.0.1]:8000/mcp",
+    ],
+)
+def test_scoped_and_mapped_mcp_ipv6_are_rejected(url: str, tmp_path) -> None:
+    with pytest.raises(ValidationError, match=r"unscoped|numeric loopback"):
+        Settings(mcp_url=url, db_path=tmp_path / "dashboard.db")
 
 
 def test_literal_loopbacks_never_use_dns(monkeypatch, tmp_path) -> None:
