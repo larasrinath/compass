@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from typing import Any, cast
 
 import pytest
+from linkedin_dashboard.db import session as session_module
 from linkedin_dashboard.db.migrations import (
     v0001_constraints,
     v0002_integrity,
@@ -35,20 +36,36 @@ from linkedin_dashboard.db.models import (
     SendConfirmation,
 )
 from linkedin_dashboard.db.session import Database, get_journal_mode
-from sqlalchemy import event, text
+from sqlalchemy import create_engine, event, text
+from sqlalchemy.engine import URL
 from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy.pool import NullPool
 
 NOW = "2026-09-02T12:00:00+00:00"
 
 
 @contextmanager
 def _migration_test_phase(database: Database) -> Iterator[None]:
-    """Grant the same private capability held by Database.initialize migrations."""
-    database._migration_phase = True
+    """Use an isolated non-runtime engine to construct historical fixtures."""
+    runtime_engine = database.engine
+    migration_engine = create_engine(
+        URL.create("sqlite", database=str(database.path)), poolclass=NullPool
+    )
+
+    @event.listens_for(migration_engine, "connect")
+    def configure(connection, record) -> None:
+        del record
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("PRAGMA recursive_triggers=ON")
+
+    database.engine = migration_engine
+    database.sessions.configure(bind=migration_engine)
     try:
         yield
     finally:
-        database._migration_phase = False
+        database.sessions.configure(bind=runtime_engine)
+        database.engine = runtime_engine
+        migration_engine.dispose()
 
 
 def seed_candidate(database: Database, suffix: str) -> tuple[str, str]:
@@ -374,14 +391,21 @@ def test_connection_inode_check_precedes_every_sqlite_write(
     sentinel = b"unrelated-target-must-remain-byte-identical"
     target.write_bytes(sentinel)
     database = Database(path)
-    original_creator = cast(Any, database.engine.pool._creator)
+    original_factory = session_module._create_migration_engine
 
-    def swapped_creator():
-        path.unlink()
-        path.symlink_to(target)
-        return original_creator()
+    def swapped_factory(database_path, expected_fd):
+        engine, authorizer = original_factory(database_path, expected_fd)
+        original_creator = cast(Any, engine.pool._creator)
 
-    monkeypatch.setattr(database.engine.pool, "_creator", swapped_creator)
+        def swapped_creator():
+            path.unlink()
+            path.symlink_to(target)
+            return original_creator()
+
+        monkeypatch.setattr(engine.pool, "_creator", swapped_creator)
+        return engine, authorizer
+
+    monkeypatch.setattr(session_module, "_create_migration_engine", swapped_factory)
     with pytest.raises(ValueError, match=r"unexpected database path|symbolic link"):
         database.initialize()
 

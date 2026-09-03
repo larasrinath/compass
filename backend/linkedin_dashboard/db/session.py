@@ -3,7 +3,8 @@ from __future__ import annotations
 import os
 import sqlite3
 import stat
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from errno import ELOOP
 from functools import lru_cache
 from pathlib import Path
@@ -13,6 +14,7 @@ from typing import Any
 from sqlalchemy import Engine, create_engine, event, text
 from sqlalchemy.engine import URL, Connection
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import NullPool
 
 from linkedin_dashboard.db.migrations import (
     v0001_constraints,
@@ -81,11 +83,11 @@ class Database:
         self._database_fd: int | None = None
         self._initialize_lock = Lock()
         self._initialized = False
-        self._migration_phase = False
-        self.engine = _create_engine(
+        self._initializing = False
+        self.engine = _create_runtime_engine(
             self.path,
             lambda: self._database_fd,
-            lambda: self._migration_phase,
+            lambda: self._initialized and not self._initializing,
         )
         self.sessions = sessionmaker(
             bind=self.engine,
@@ -98,21 +100,30 @@ class Database:
         with self._initialize_lock:
             if self._initialized:
                 return
-            _create_private_directories(self.path.parent)
-            _require_private_directory(self.path.parent)
-            database_fd = _open_owner_only_file(self.path, create=True)
-            self._database_fd = database_fd
-            is_new_database = os.fstat(database_fd).st_size == 0
+            self._initializing = True
+            database_fd: int | None = None
+            migration_engine: Engine | None = None
             try:
+                _create_private_directories(self.path.parent)
+                _require_private_directory(self.path.parent)
+                database_fd = _open_owner_only_file(self.path, create=True)
+                self._database_fd = database_fd
                 _secure_existing_sidecars(self.path)
-                self._migration_phase = True
+                migration_engine, migration_authorizer = _create_migration_engine(
+                    self.path, database_fd
+                )
                 try:
-                    with self.engine.connect() as connection:
+                    with migration_engine.connect() as connection:
+                        bootstrap = _database_has_no_user_schema(connection)
                         connection.exec_driver_sql("BEGIN IMMEDIATE")
                         try:
-                            self._initialize_schema(
-                                connection, bootstrap=is_new_database
+                            migrations_applied = self._initialize_schema(
+                                connection,
+                                bootstrap=bootstrap,
+                                migration_authorizer=migration_authorizer,
                             )
+                            if migrations_applied:
+                                _reconcile_invariant_objects(connection)
                             _verify_schema_and_contents(connection)
                         except BaseException:
                             connection.rollback()
@@ -120,17 +131,26 @@ class Database:
                         else:
                             connection.commit()
                 finally:
-                    self._migration_phase = False
+                    migration_engine.dispose()
                 _require_same_file(self.path, database_fd)
                 _secure_existing_sidecars(self.path)
                 self._initialized = True
             except BaseException:
                 self.engine.dispose()
-                os.close(database_fd)
+                if database_fd is not None:
+                    os.close(database_fd)
                 self._database_fd = None
                 raise
+            finally:
+                self._initializing = False
 
-    def _initialize_schema(self, connection: Connection, *, bootstrap: bool) -> None:
+    def _initialize_schema(
+        self,
+        connection: Connection,
+        *,
+        bootstrap: bool,
+        migration_authorizer: _MigrationAuthorizer,
+    ) -> bool:
         if bootstrap:
             Base.metadata.create_all(connection)
             connection.exec_driver_sql(
@@ -142,6 +162,7 @@ class Database:
         ).scalar_one_or_none():
             raise RuntimeError("existing database has no migration history")
 
+        migrations_applied = False
         for migration in _MIGRATION_MODULES:
             version = migration.VERSION
             applied = connection.execute(
@@ -149,15 +170,18 @@ class Database:
                 {"version": version},
             ).scalar_one_or_none()
             if applied is None:
+                migrations_applied = True
                 migration.apply(connection)
-                connection.execute(
-                    text(
-                        "INSERT INTO schema_migration(version, applied_at) "
-                        "VALUES (:version, "
-                        "strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))"
-                    ),
-                    {"version": version},
-                )
+                with migration_authorizer.history_write():
+                    connection.execute(
+                        text(
+                            "INSERT INTO schema_migration(version, applied_at) "
+                            "VALUES (:version, "
+                            "strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))"
+                        ),
+                        {"version": version},
+                    )
+        return migrations_applied
 
     def writable(self) -> bool:
         try:
@@ -178,10 +202,10 @@ class Database:
             self._initialized = False
 
 
-def _create_engine(
+def _create_runtime_engine(
     path: Path,
     expected_fd: Callable[[], int | None],
-    migration_phase: Callable[[], bool],
+    runtime_ready: Callable[[], bool],
 ) -> Engine:
     engine = create_engine(
         URL.create("sqlite", database=str(path)),
@@ -193,13 +217,17 @@ def _create_engine(
         dbapi_connection: Any, connection_record: Any
     ) -> None:  # pragma: no cover - SQLAlchemy callback signature
         del connection_record
+        if not runtime_ready():
+            raise RuntimeError("runtime database is unavailable during initialization")
         database_fd = expected_fd()
         if database_fd is None:
             raise RuntimeError("database connections require secure initialization")
         _revalidate_storage(dbapi_connection, path, database_fd)
         dbapi_connection.set_authorizer(
             lambda *arguments: _sqlite_authorizer(
-                *arguments, allow_schema_changes=migration_phase()
+                *arguments,
+                allow_schema_changes=False,
+                allow_migration_history=False,
             )
         )
         _configure_required_pragmas(dbapi_connection)
@@ -209,20 +237,70 @@ def _create_engine(
         dbapi_connection: Any, connection_record: Any, connection_proxy: Any
     ) -> None:  # pragma: no cover - SQLAlchemy callback signature
         del connection_record, connection_proxy
+        if not runtime_ready():
+            raise RuntimeError("runtime database is unavailable during initialization")
         database_fd = expected_fd()
         if database_fd is None:
             raise RuntimeError("database connections require secure initialization")
         _revalidate_storage(dbapi_connection, path, database_fd)
         dbapi_connection.set_authorizer(
             lambda *arguments: _sqlite_authorizer(
-                *arguments, allow_schema_changes=migration_phase()
+                *arguments,
+                allow_schema_changes=False,
+                allow_migration_history=False,
             )
         )
         _configure_required_pragmas(dbapi_connection)
-        if not migration_phase():
-            _verify_schema_and_contents_dbapi(dbapi_connection)
+        _verify_schema_and_contents_dbapi(dbapi_connection)
 
     return engine
+
+
+class _MigrationAuthorizer:
+    """Connection-local schema authority with one narrow history-write window."""
+
+    def __init__(self) -> None:
+        self._history_write = False
+
+    def __call__(self, *arguments: Any) -> int:
+        return _sqlite_authorizer(
+            *arguments,
+            allow_schema_changes=True,
+            allow_migration_history=self._history_write,
+        )
+
+    @contextmanager
+    def history_write(self) -> Iterator[None]:
+        if self._history_write:
+            raise RuntimeError("migration history capability is already active")
+        self._history_write = True
+        try:
+            yield
+        finally:
+            self._history_write = False
+
+
+def _create_migration_engine(
+    path: Path, expected_fd: int
+) -> tuple[Engine, _MigrationAuthorizer]:
+    """Build a one-connection capability that can author only migration schema."""
+    engine = create_engine(
+        URL.create("sqlite", database=str(path)),
+        connect_args={"check_same_thread": False},
+        poolclass=NullPool,
+    )
+    authorizer = _MigrationAuthorizer()
+
+    @event.listens_for(engine, "connect")
+    def configure_migration_sqlite(
+        dbapi_connection: Any, connection_record: Any
+    ) -> None:  # pragma: no cover - SQLAlchemy callback signature
+        del connection_record
+        _revalidate_storage(dbapi_connection, path, expected_fd)
+        dbapi_connection.set_authorizer(authorizer)
+        _configure_required_pragmas(dbapi_connection)
+
+    return engine, authorizer
 
 
 def _configure_required_pragmas(dbapi_connection: Any) -> None:
@@ -248,6 +326,10 @@ def _configure_required_pragmas(dbapi_connection: Any) -> None:
         cursor.execute("PRAGMA trusted_schema=OFF")
         if cursor.execute("PRAGMA trusted_schema").fetchone()[0] != 0:
             raise RuntimeError("SQLite trusted_schema could not be disabled")
+
+        cursor.execute("PRAGMA synchronous=FULL")
+        if cursor.execute("PRAGMA synchronous").fetchone()[0] != 2:
+            raise RuntimeError("SQLite synchronous durability could not be enabled")
 
         journal_mode = cursor.execute("PRAGMA journal_mode=WAL").fetchone()[0]
         if str(journal_mode).casefold() != "wal":
@@ -441,6 +523,7 @@ def _sqlite_authorizer(
     trigger_name: str | None,
     *,
     allow_schema_changes: bool = False,
+    allow_migration_history: bool = False,
 ) -> int:
     """Prevent managed SQL from dismantling required SQLite invariants."""
     del database_name, trigger_name
@@ -450,16 +533,17 @@ def _sqlite_authorizer(
         return sqlite3.SQLITE_DENY
     if (
         action in {sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE}
-        and (argument_one or "").casefold()
-        in {"sqlite_master", "sqlite_schema", "schema_migration"}
+        and (argument_one or "").casefold() in {"sqlite_master", "sqlite_schema"}
         and not allow_schema_changes
     ):
         return sqlite3.SQLITE_DENY
     if (
-        action == sqlite3.SQLITE_PRAGMA
-        and argument_two is not None
-        and not allow_schema_changes
+        action in {sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE}
+        and (argument_one or "").casefold() == "schema_migration"
+        and not allow_migration_history
     ):
+        return sqlite3.SQLITE_DENY
+    if action == sqlite3.SQLITE_PRAGMA and argument_two is not None:
         pragma = (argument_one or "").casefold()
         setting = argument_two.strip(" \t'\"").casefold()
         if pragma in {"foreign_keys", "recursive_triggers"} and setting not in {
@@ -471,6 +555,8 @@ def _sqlite_authorizer(
             return sqlite3.SQLITE_DENY
         if pragma == "journal_mode" and setting != "wal":
             return sqlite3.SQLITE_DENY
+        if pragma == "synchronous" and setting not in {"2", "full"}:
+            return sqlite3.SQLITE_DENY
         if pragma in {
             "writable_schema",
             "ignore_check_constraints",
@@ -481,7 +567,48 @@ def _sqlite_authorizer(
 
 
 def _normalized_schema_sql(value: str) -> str:
-    return " ".join(value.split()).casefold()
+    output: list[str] = []
+    quote: str | None = None
+    pending_space = False
+    index = 0
+    while index < len(value):
+        character = value[index]
+        if quote is not None:
+            output.append(character)
+            if character == quote:
+                if index + 1 < len(value) and value[index + 1] == quote:
+                    output.append(value[index + 1])
+                    index += 1
+                else:
+                    quote = None
+            index += 1
+            continue
+        if character in {"'", '"'}:
+            if pending_space and output:
+                output.append(" ")
+            pending_space = False
+            quote = character
+            output.append(character)
+        elif character.isspace():
+            pending_space = True
+        else:
+            if pending_space and output:
+                output.append(" ")
+            pending_space = False
+            output.append(character)
+        index += 1
+    return "".join(output).strip()
+
+
+def _database_has_no_user_schema(connection: Connection) -> bool:
+    return (
+        connection.exec_driver_sql(
+            "SELECT COUNT(*) FROM sqlite_master "
+            "WHERE type IN ('table','index','trigger','view') "
+            "AND name NOT LIKE 'sqlite_%'"
+        ).scalar_one()
+        == 0
+    )
 
 
 def _schema_manifest(connection: Any) -> frozenset[tuple[str, str, str, str]]:
@@ -498,9 +625,10 @@ def _schema_manifest(connection: Any) -> frozenset[tuple[str, str, str, str]]:
 
 def _check_expressions(sql: str) -> tuple[str, ...]:
     normalized = _normalized_schema_sql(sql)
+    shadow = normalized.casefold()
     expressions: list[str] = []
     cursor = 0
-    while (start := normalized.find("check (", cursor)) >= 0:
+    while (start := shadow.find("check (", cursor)) >= 0:
         expression_start = start + len("check ")
         depth = 0
         quote: str | None = None
@@ -583,7 +711,11 @@ def _sqlite_type_affinity(declared_type: str) -> str:
 
 
 @lru_cache(maxsize=1)
-def _expected_schema() -> tuple[frozenset[tuple[str, str, str, str]], tuple[Any, ...]]:
+def _expected_schema() -> tuple[
+    frozenset[tuple[str, str, str, str]],
+    tuple[Any, ...],
+    tuple[tuple[str, str, str], ...],
+]:
     canonical = create_engine("sqlite://")
     try:
         with canonical.begin() as connection:
@@ -595,12 +727,38 @@ def _expected_schema() -> tuple[frozenset[tuple[str, str, str, str]], tuple[Any,
             for migration in _MIGRATION_MODULES:
                 migration.apply(connection)
             dbapi_connection = connection.connection.driver_connection
+            if dbapi_connection is None:  # pragma: no cover - SQLite always supplies it
+                raise RuntimeError("canonical SQLite connection is unavailable")
+            invariant_ddl = tuple(
+                (kind, name, _normalized_schema_sql(sql))
+                for kind, name, sql in dbapi_connection.execute(
+                    "SELECT type, name, sql FROM sqlite_master "
+                    "WHERE type IN ('trigger','index') "
+                    "AND name NOT LIKE 'sqlite_%' ORDER BY rowid"
+                ).fetchall()
+            )
             return (
                 _schema_manifest(dbapi_connection),
                 _schema_structure(dbapi_connection),
+                invariant_ddl,
             )
     finally:
         canonical.dispose()
+
+
+def _reconcile_invariant_objects(connection: Connection) -> None:
+    """Canonicalize guards only when migration history proves work was pending."""
+    _, _, expected_objects = _expected_schema()
+    current = connection.exec_driver_sql(
+        "SELECT type, name FROM sqlite_master "
+        "WHERE type IN ('trigger','index') "
+        "AND name NOT LIKE 'sqlite_%' ORDER BY type, name"
+    ).fetchall()
+    for kind, name in current:
+        quoted = name.replace('"', '""')
+        connection.exec_driver_sql(f'DROP {kind.upper()} "{quoted}"')
+    for _, _, sql in expected_objects:
+        connection.exec_driver_sql(sql)
 
 
 def _verify_schema_and_contents(connection: Connection) -> None:
@@ -611,24 +769,13 @@ def _verify_schema_and_contents_dbapi(dbapi_connection: Any) -> None:
     cursor = dbapi_connection.cursor()
     try:
         actual = _schema_manifest(dbapi_connection)
-        expected, expected_structure = _expected_schema()
+        expected, expected_structure, _ = _expected_schema()
         actual_structure = _schema_structure(dbapi_connection)
         actual_keys = {(kind, name) for kind, name, _, _ in actual}
         expected_keys = {(kind, name) for kind, name, _, _ in expected}
-        exact_kinds = {"index"}
-        exact_triggers = {
-            "audit_log_no_delete",
-            "audit_log_no_update",
-            "send_attempt_is_immutable",
-            "send_attempt_no_direct_delete",
-            "send_resolution_is_final",
-        }
-        exact_expected = {
-            row for row in expected if row[0] in exact_kinds or row[1] in exact_triggers
-        }
-        exact_actual = {
-            row for row in actual if row[0] in exact_kinds or row[1] in exact_triggers
-        }
+        exact_kinds = {"index", "trigger"}
+        exact_expected = {row for row in expected if row[0] in exact_kinds}
+        exact_actual = {row for row in actual if row[0] in exact_kinds}
         if (
             actual_keys != expected_keys
             or exact_actual != exact_expected

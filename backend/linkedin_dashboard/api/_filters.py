@@ -65,8 +65,7 @@ _QUOTED_FILESYSTEM_PATH = re.compile(
 )
 _FILESYSTEM_PATH_WITH_SPACES = re.compile(
     r"(?<![a-z0-9])(?:[a-z]:[\\/]|\\\\|/(?:etc|home|opt|private|srv|tmp|users|var)/)"
-    r"[^\r\n\"'<>;,]*?[a-z0-9_-]+\.[a-z0-9]{1,16}(?:[;,])?"
-    r"(?=$|[\s\"'<>])",
+    r"[^\r\n\"'<>;,|]+(?:[;,|]|$|(?=[\"'<>]))",
     flags=re.IGNORECASE,
 )
 _FILE_URL = re.compile(
@@ -199,6 +198,14 @@ _SENSITIVE_HEADER_COMPACT = _SENSITIVE_QUERY_KEYS | {
     "setcookie",
 }
 _STRUCTURAL_HEADER_NAMES = ("content-length",)
+_PROVENANCE_ROUTES = (
+    re.compile(r"^/api/searches/[^/]+$"),
+    re.compile(r"^/api/candidates/[^/]+$"),
+    re.compile(r"^/api/candidates/[^/]+/sections/[^/]+$"),
+    re.compile(r"^/api/session/export$"),
+)
+_PROVENANCE_TEXT_FIELDS = {"claim_text", "matched_term", "raw_text", "snippet"}
+_DIAGNOSTIC_CONTAINERS = {"error", "errors", "section_error", "section_errors"}
 
 
 def _is_json_media_type(content_type: str) -> bool:
@@ -667,7 +674,6 @@ def _redact_string(
         lambda match: f"{match.group('quote')}[redacted-path]{match.group('quote')}",
         working,
     )
-    sanitized = _FILESYSTEM_PATH_WITH_SPACES.sub("[redacted-path]", sanitized)
     sanitized = _FILE_URL.sub("[redacted-path]", sanitized)
     sanitized = sanitized.replace(str(Path.home()), "[redacted-home]")
     sanitized = sanitized.replace(".linkedin-mcp", "[redacted-profile]")
@@ -691,6 +697,7 @@ def _redact_string(
     sanitized = _LABELED_SECRET.sub(r"\g<label>[redacted]", sanitized)
     sanitized = _AUTHORIZATION_BEARER.sub(r"\g<label>[redacted]", sanitized)
     sanitized = _BEARER_SECRET.sub(r"\g<label>[redacted]", sanitized)
+    sanitized = _FILESYSTEM_PATH_WITH_SPACES.sub("[redacted-path]", sanitized)
     sanitized = _WINDOWS_PATH.sub("[redacted-path]", sanitized)
     sanitized = _UNIX_PATH.sub("[redacted-path]", sanitized)
     for index, url in enumerate(preserved_urls):
@@ -741,6 +748,7 @@ def sanitize_for_frontend(
     *,
     field_name: str | None = None,
     _trusted_openapi: bool = False,
+    _preserve_provenance_text: bool = False,
     _location: tuple[str, ...] = (),
 ) -> Any:
     """Recursively remove process-local diagnostics and path material."""
@@ -754,6 +762,7 @@ def sanitize_for_frontend(
                 child,
                 field_name=str(key).casefold(),
                 _trusted_openapi=_trusted_openapi,
+                _preserve_provenance_text=_preserve_provenance_text,
                 _location=(*_location, str(key)),
             )
             for key, child in value.items()
@@ -765,6 +774,7 @@ def sanitize_for_frontend(
                 child,
                 field_name=field_name,
                 _trusted_openapi=_trusted_openapi,
+                _preserve_provenance_text=_preserve_provenance_text,
                 _location=_location,
             )
             for child in value
@@ -775,17 +785,43 @@ def sanitize_for_frontend(
                 child,
                 field_name=field_name,
                 _trusted_openapi=_trusted_openapi,
+                _preserve_provenance_text=_preserve_provenance_text,
                 _location=_location,
             )
             for child in value
         ]
     if isinstance(value, str):
+        if _preserve_provenance_text and _is_provenance_text_location(_location):
+            return value
         return _redact_string(
             value,
             field_name=field_name,
             trusted_openapi=_trusted_openapi,
         )
     return value
+
+
+def _is_provenance_text_location(location: tuple[str, ...]) -> bool:
+    normalized = tuple(part.casefold() for part in location)
+    if not normalized or any(part in _DIAGNOSTIC_CONTAINERS for part in normalized):
+        return False
+    leaf = normalized[-1]
+    if leaf in {"error_message", "diagnostic", "message", "runtime"}:
+        return False
+    if leaf in _PROVENANCE_TEXT_FIELDS:
+        return True
+    if "sections" in normalized:
+        return normalized.index("sections") < len(normalized) - 1
+    return any(
+        part in {"evidence", "parsed_field", "parsed_fields"} for part in normalized
+    ) and leaf in {"text", "value"}
+
+
+def _request_preserves_provenance(scope: Scope) -> bool:
+    if scope.get("method") != "GET":
+        return False
+    path = str(scope.get("path", ""))
+    return any(pattern.fullmatch(path) for pattern in _PROVENANCE_ROUTES)
 
 
 def _sensitive_header_name(name: str) -> bool:
@@ -884,7 +920,9 @@ def _strict_json_dumps(value: Any) -> str:
     return serialized
 
 
-def _sanitize_sse_event(event: bytes, *, terminated: bool) -> bytes:
+def _sanitize_sse_event(
+    event: bytes, *, terminated: bool, preserve_provenance_text: bool = False
+) -> bytes:
     try:
         text = event.decode("utf-8")
     except UnicodeDecodeError:
@@ -920,7 +958,12 @@ def _sanitize_sse_event(event: bytes, *, terminated: bool) -> bytes:
                 safe_payload = _redact_string(payload)
         else:
             try:
-                safe_payload = _strict_json_dumps(sanitize_for_frontend(value))
+                safe_payload = _strict_json_dumps(
+                    sanitize_for_frontend(
+                        value,
+                        _preserve_provenance_text=preserve_provenance_text,
+                    )
+                )
             except (UnicodeEncodeError, ValueError, TypeError, OverflowError):
                 safe_payload = _MALFORMED_JSON_BODY.decode()
         safe_data = [f"data: {line}" for line in safe_payload.split("\n")]
@@ -933,10 +976,11 @@ def _sanitize_sse_event(event: bytes, *, terminated: bool) -> bytes:
 class _SSEParser:
     """Incrementally split an SSE stream on every legal line ending."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, preserve_provenance_text: bool = False) -> None:
         self.buffer = b""
         self.event_lines: list[bytes] = []
         self.stream_started = False
+        self.preserve_provenance_text = preserve_provenance_text
 
     def feed(self, chunk: bytes, *, final: bool) -> bytes:
         self.buffer += chunk
@@ -961,7 +1005,9 @@ class _SSEParser:
                 if self.event_lines:
                     output.append(
                         _sanitize_sse_event(
-                            b"\n".join(self.event_lines), terminated=True
+                            b"\n".join(self.event_lines),
+                            terminated=True,
+                            preserve_provenance_text=self.preserve_provenance_text,
                         )
                     )
                     self.event_lines.clear()
@@ -972,7 +1018,11 @@ class _SSEParser:
 
         if final and self.event_lines:
             output.append(
-                _sanitize_sse_event(b"\n".join(self.event_lines), terminated=False)
+                _sanitize_sse_event(
+                    b"\n".join(self.event_lines),
+                    terminated=False,
+                    preserve_provenance_text=self.preserve_provenance_text,
+                )
             )
             self.event_lines.clear()
         return b"".join(output)
@@ -1011,7 +1061,8 @@ class PrivacyFilterMiddleware:
         start: Message | None = None
         chunks: list[bytes] = []
         response_kind = "passthrough"
-        sse_parser = _SSEParser()
+        preserve_provenance_text = _request_preserves_provenance(scope)
+        sse_parser = _SSEParser(preserve_provenance_text=preserve_provenance_text)
         trusted_openapi = scope.get("path") == "/api/openapi.json"
 
         async def capture(message: Message) -> None:
@@ -1100,6 +1151,7 @@ class PrivacyFilterMiddleware:
                     sanitize_for_frontend(
                         payload,
                         _trusted_openapi=trusted_openapi,
+                        _preserve_provenance_text=preserve_provenance_text,
                     )
                 ).encode("utf-8")
             except (

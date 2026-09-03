@@ -25,8 +25,10 @@ from linkedin_dashboard.db.models import (
     SendConfirmation,
 )
 from linkedin_dashboard.db.session import Database
-from sqlalchemy import insert, text
+from sqlalchemy import create_engine, event, insert, text
+from sqlalchemy.engine import URL
 from sqlalchemy.exc import DBAPIError
+from sqlalchemy.pool import NullPool
 
 NOW = "2026-09-02T12:00:00+00:00"
 LATER = "2026-09-02T12:05:00+00:00"
@@ -34,12 +36,26 @@ LATER = "2026-09-02T12:05:00+00:00"
 
 @contextmanager
 def _migration_test_phase(database: Database) -> Iterator[None]:
-    """Grant the same private capability held by Database.initialize migrations."""
-    database._migration_phase = True
+    """Use an isolated non-runtime engine to construct historical fixtures."""
+    runtime_engine = database.engine
+    migration_engine = create_engine(
+        URL.create("sqlite", database=str(database.path)), poolclass=NullPool
+    )
+
+    @event.listens_for(migration_engine, "connect")
+    def configure(connection, record) -> None:
+        del record
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("PRAGMA recursive_triggers=ON")
+
+    database.engine = migration_engine
+    database.sessions.configure(bind=migration_engine)
     try:
         yield
     finally:
-        database._migration_phase = False
+        database.sessions.configure(bind=runtime_engine)
+        database.engine = runtime_engine
+        migration_engine.dispose()
 
 
 def _seed_candidate(database: Database, suffix: str) -> tuple[str, str]:
