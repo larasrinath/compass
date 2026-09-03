@@ -13,11 +13,8 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
-    event,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-
-from linkedin_dashboard.db.unicode_identity import unicode_casefold
 
 
 def new_id() -> str:
@@ -197,7 +194,6 @@ class Candidate(Base):
             "retrieval_status IN ('pending','ok','partial','rate_limited','failed')",
             name="ck_candidate_retrieval_status",
         ),
-        UniqueConstraint("session_id", "dedupe_key", name="uq_candidate_dedupe_key"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -205,24 +201,12 @@ class Candidate(Base):
         ForeignKey("session.id", ondelete="CASCADE"), nullable=False
     )
     username: Mapped[str] = mapped_column(Text, nullable=False)
-    # SQLite derives and freezes this through v0017 triggers. The server default
-    # provides a sentinel for direct inserts that omit the internal key.
-    dedupe_key: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     profile_url: Mapped[str] = mapped_column(Text, nullable=False)
     display_name: Mapped[str | None] = mapped_column(Text)
     profile_urn: Mapped[str | None] = mapped_column(Text)
     first_seen_at: Mapped[str] = mapped_column(String(32), nullable=False)
     stage: Mapped[str] = mapped_column(String(16), nullable=False)
     retrieval_status: Mapped[str] = mapped_column(String(16), nullable=False)
-
-
-@event.listens_for(Candidate, "before_insert")
-def _set_candidate_dedupe_key(
-    _mapper: Any, _connection: Any, target: Candidate
-) -> None:
-    """Keep trusted ORM fixture/maintenance writes on the canonical identity path."""
-    if not target.dedupe_key:
-        target.dedupe_key = unicode_casefold(target.username)
 
 
 class CandidateSource(Base):

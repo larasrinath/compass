@@ -18,10 +18,7 @@ from linkedin_dashboard.db.models import (
     RoleBrief,
     SearchRun,
 )
-from linkedin_dashboard.db.unicode_identity import (
-    unicode_casefold,
-    unicode_data_version,
-)
+from linkedin_dashboard.db.unicode_identity import unicode_data_version
 
 VERSION = "0017_role_discovery"
 
@@ -41,10 +38,7 @@ TRIGGER_NAMES = (
     "search_run_identity_immutable",
     "search_run_result_immutable",
     "search_run_no_delete",
-    "candidate_dedupe_insert",
-    "candidate_dedupe_duplicate_insert",
-    "candidate_dedupe_derive",
-    "candidate_dedupe_immutable",
+    "candidate_username_duplicate_insert",
     "candidate_identity_metadata_immutable",
     "candidate_identity_metadata_no_delete",
     "candidate_identity_immutable",
@@ -63,7 +57,10 @@ TRIGGER_NAMES = (
     "company_lookup_no_delete",
 )
 
-INDEX_NAMES = ("candidate_session_dedupe_key", "candidate_session_profile_url_key")
+INDEX_NAMES = (
+    "candidate_session_username_casefold",
+    "candidate_session_profile_url_key",
+)
 
 
 def _columns(connection: Connection, table: str) -> set[str]:
@@ -123,25 +120,15 @@ def _preflight(connection: Connection) -> None:
                 f"cannot apply {VERSION}: candidate identity Unicode version mismatch; "
                 "an explicit migration and REINDEX are required"
             )
-    candidate_columns = _columns(connection, "candidate")
-    selected = "session_id, username"
-    if "dedupe_key" in candidate_columns:
-        selected += ", dedupe_key"
-    identities: set[tuple[str, str]] = set()
-    for row in connection.exec_driver_sql(f"SELECT {selected} FROM candidate"):
-        session_id = str(row[0])
-        username = str(row[1])
-        key = unicode_casefold(username)
-        if len(row) == 3 and str(row[2]) != key:
-            raise RuntimeError(
-                f"cannot apply {VERSION}: noncanonical candidate dedupe key"
-            )
-        identity = (session_id, key)
-        if identity in identities:
-            raise RuntimeError(
-                f"cannot apply {VERSION}: duplicate normalized candidate identity"
-            )
-        identities.add(identity)
+    duplicate = connection.exec_driver_sql(
+        "SELECT 1 FROM candidate "
+        "GROUP BY session_id, username COLLATE unicode_casefold "
+        "HAVING count(*) > 1 LIMIT 1"
+    ).first()
+    if duplicate is not None:
+        raise RuntimeError(
+            f"cannot apply {VERSION}: duplicate normalized candidate identity"
+        )
     duplicate_url = connection.exec_driver_sql(
         "SELECT 1 FROM candidate GROUP BY session_id, lower(rtrim(profile_url, '/')) "
         "HAVING count(*) > 1 LIMIT 1"
@@ -221,22 +208,22 @@ def _rebuild_role_brief(connection: Connection) -> None:
 
 
 def _rebuild_candidate(connection: Connection) -> None:
-    if "dedupe_key" in _columns(connection, "candidate"):
+    unique_constraints = any(
+        str(row[3]) == "u"
+        for row in connection.exec_driver_sql("PRAGMA index_list(candidate)").all()
+    )
+    if "dedupe_key" not in _columns(connection, "candidate") and not unique_constraints:
         return
     old = _begin_rebuild(connection, "candidate")
     cast(Table, Candidate.__table__).create(connection)
-    rows = connection.exec_driver_sql(
-        f"SELECT id, session_id, username, profile_url, display_name, profile_urn, "
-        f'first_seen_at, stage, retrieval_status FROM "{old}"'
-    ).all()
-    for row in rows:
-        connection.exec_driver_sql(
-            """INSERT INTO candidate
-              (id, session_id, username, dedupe_key, profile_url, display_name,
-               profile_urn, first_seen_at, stage, retrieval_status)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (*row[:3], unicode_casefold(str(row[2])), *row[3:]),
-        )
+    connection.exec_driver_sql(
+        f"""INSERT INTO candidate
+          (id, session_id, username, profile_url, display_name, profile_urn,
+           first_seen_at, stage, retrieval_status)
+        SELECT id, session_id, username, profile_url, display_name, profile_urn,
+               first_seen_at, stage, retrieval_status FROM "{old}"
+        """
+    )
     _finish_rebuild(connection, old)
 
 
@@ -343,7 +330,7 @@ def _migrate_brief_terms(connection: Connection) -> None:
 
 
 _STATEMENTS = (
-    "CREATE UNIQUE INDEX IF NOT EXISTS candidate_session_dedupe_key ON candidate(session_id, dedupe_key)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS candidate_session_username_casefold ON candidate(session_id, username COLLATE unicode_casefold)",
     "CREATE UNIQUE INDEX IF NOT EXISTS candidate_session_profile_url_key ON candidate(session_id, lower(rtrim(profile_url, '/')))",
     """CREATE TRIGGER IF NOT EXISTS role_brief_append_only BEFORE UPDATE ON role_brief
     FOR EACH ROW WHEN NEW.id IS NOT OLD.id OR NEW.session_id IS NOT OLD.session_id
@@ -418,22 +405,10 @@ _STATEMENTS = (
     FOR EACH ROW WHEN NEW.id IS NOT OLD.id OR NEW.session_id IS NOT OLD.session_id
       OR NEW.username IS NOT OLD.username OR NEW.profile_url IS NOT OLD.profile_url
     BEGIN SELECT RAISE(ABORT, 'purged evidence; recipient identity is immutable; candidate session is immutable; cannot cross a score session; candidate discovery identity is immutable'); END""",
-    """CREATE TRIGGER IF NOT EXISTS candidate_dedupe_insert BEFORE INSERT ON candidate
-    FOR EACH ROW WHEN (NEW.dedupe_key = '' AND NEW.username GLOB '*[^ -~]*')
-      OR (NEW.dedupe_key <> ''
-          AND NOT (NEW.dedupe_key = NEW.username COLLATE unicode_casefold))
-    BEGIN SELECT RAISE(ABORT, 'candidate dedupe key must match username'); END""",
-    """CREATE TRIGGER IF NOT EXISTS candidate_dedupe_duplicate_insert BEFORE INSERT ON candidate
+    """CREATE TRIGGER IF NOT EXISTS candidate_username_duplicate_insert BEFORE INSERT ON candidate
     FOR EACH ROW WHEN EXISTS (SELECT 1 FROM candidate c WHERE c.session_id=NEW.session_id
-      AND c.id<>NEW.id AND c.dedupe_key=NEW.dedupe_key COLLATE unicode_casefold)
+      AND c.id<>NEW.id AND c.username=NEW.username COLLATE unicode_casefold)
     BEGIN SELECT RAISE(ABORT, 'duplicate normalized candidate identity'); END""",
-    """CREATE TRIGGER IF NOT EXISTS candidate_dedupe_derive AFTER INSERT ON candidate
-    FOR EACH ROW WHEN NEW.dedupe_key = ''
-    BEGIN UPDATE candidate SET dedupe_key=lower(NEW.username) WHERE id=NEW.id; END""",
-    """CREATE TRIGGER IF NOT EXISTS candidate_dedupe_immutable BEFORE UPDATE OF dedupe_key ON candidate
-    FOR EACH ROW WHEN OLD.dedupe_key <> ''
-      OR NOT (NEW.dedupe_key = OLD.username COLLATE unicode_casefold)
-    BEGIN SELECT RAISE(ABORT, 'candidate dedupe key is immutable'); END""",
     """CREATE TRIGGER IF NOT EXISTS candidate_identity_metadata_immutable BEFORE UPDATE ON candidate_identity_metadata
     FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'candidate identity Unicode version is immutable; use an explicit migration and REINDEX'); END""",
     """CREATE TRIGGER IF NOT EXISTS candidate_identity_metadata_no_delete BEFORE DELETE ON candidate_identity_metadata

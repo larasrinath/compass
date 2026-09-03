@@ -8,37 +8,71 @@ import sys
 from pathlib import Path
 
 import pytest
-from linkedin_dashboard.db.migrations import v0017_role_discovery
+from linkedin_dashboard.db.migrations import (
+    v0017_role_discovery,
+    v0018_candidate_identity,
+)
 from linkedin_dashboard.db.session import Database
+from linkedin_dashboard.db.unicode_identity import register_sqlite_unicode_casefold
+from sqlalchemy.engine import Connection
 
 M1_HEAD = "320de376f126551391bcfacaa926ad77d4705c47"
+M2_REJECTED_HEAD = "aa8656b952598af10db880e34f5a8dd6445b127a"
 
 
-def _m1_source(tmp_path: Path) -> Path:
+def _source_at_head(tmp_path: Path, head: str, label: str) -> Path:
     project = Path(__file__).resolve().parents[2]
     probe = subprocess.run(
-        ["git", "cat-file", "-e", f"{M1_HEAD}^{{commit}}"],
+        ["git", "cat-file", "-e", f"{head}^{{commit}}"],
         cwd=project,
         capture_output=True,
         check=False,
     )
     if probe.returncode != 0:
-        pytest.skip(f"historical M1 commit {M1_HEAD} is unavailable")
-    archive = tmp_path / "m1.tar"
+        pytest.skip(f"historical {label} commit {head} is unavailable")
+    archive = tmp_path / f"{label}.tar"
     subprocess.run(
-        ["git", "archive", "--format=tar", f"--output={archive}", M1_HEAD],
+        ["git", "archive", "--format=tar", f"--output={archive}", head],
         cwd=project,
         check=True,
     )
-    source = tmp_path / "m1-source"
+    source = tmp_path / f"{label}-source"
     source.mkdir(mode=0o700)
     subprocess.run(["tar", "-xf", archive, "-C", source], check=True)
     return source
 
 
+def _m1_source(tmp_path: Path) -> Path:
+    return _source_at_head(tmp_path, M1_HEAD, "m1")
+
+
 def _create_authentic_m1_database(tmp_path: Path) -> Path:
     source = _m1_source(tmp_path)
     data = tmp_path / "data"
+    data.mkdir(mode=0o700)
+    path = data / "session.db"
+    environment = {**os.environ, "PYTHONPATH": str(source / "backend")}
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pathlib import Path; from linkedin_dashboard.db.session import "
+            "Database; Database(Path(__import__('sys').argv[1])).initialize()",
+            str(path),
+        ],
+        cwd=source,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return path
+
+
+def _create_authentic_m2_database(tmp_path: Path) -> Path:
+    source = _source_at_head(tmp_path, M2_REJECTED_HEAD, "m2-rejected")
+    data = tmp_path / "m2-data"
     data.mkdir(mode=0o700)
     path = data / "session.db"
     environment = {**os.environ, "PYTHONPATH": str(source / "backend")}
@@ -193,7 +227,7 @@ def test_authentic_m1_upgrade_is_atomic_retryable_and_preserves_history(
         candidate = connection.execute("SELECT * FROM candidate").fetchone()
         assert candidate is not None
         assert candidate["username"] == "Alice"
-        assert candidate["dedupe_key"] == "alice"
+        assert "dedupe_key" not in candidate.keys()
         assert (
             connection.execute("SELECT count(*) FROM candidate_source").fetchone()[0]
             == 1
@@ -213,7 +247,7 @@ def test_authentic_m1_upgrade_is_atomic_retryable_and_preserves_history(
             )
         }
         assert "uq_candidate_username" not in objects
-        assert "candidate_session_dedupe_key" in objects
+        assert "candidate_session_username_casefold" in objects
 
 
 def test_authentic_m1_upgrade_preflights_inconsistent_provenance(
@@ -282,3 +316,54 @@ def test_authentic_m1_upgrade_preflights_unicode_casefold_duplicates(
             ).fetchone()
             is None
         )
+
+
+def test_authentic_rejected_m2_upgrade_drops_auxiliary_key_atomically(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _create_authentic_m2_database(tmp_path)
+    with sqlite3.connect(path) as connection:
+        register_sqlite_unicode_casefold(connection)
+        connection.execute(
+            "INSERT INTO session VALUES ('m2-session', 'now', 'M2', 'later', 120, 0, 0)"
+        )
+        connection.execute(
+            "INSERT INTO candidate "
+            "(id, session_id, username, dedupe_key, profile_url, first_seen_at, "
+            "stage, retrieval_status) VALUES "
+            "('m2-candidate', 'm2-session', 'Straße', 'strasse', "
+            "'https://www.linkedin.com/in/Straße', 'now', 'discovered', 'pending')"
+        )
+
+    original = v0018_candidate_identity.apply
+
+    def fail_after_rebuild(connection: Connection) -> None:
+        original(connection)
+        raise RuntimeError("injected v0018 failure")
+
+    monkeypatch.setattr(v0018_candidate_identity, "apply", fail_after_rebuild)
+    database = Database(path)
+    with pytest.raises(RuntimeError, match="injected v0018 failure"):
+        database.initialize()
+
+    with sqlite3.connect(path) as connection:
+        assert "dedupe_key" in {
+            row[1] for row in connection.execute("PRAGMA table_xinfo(candidate)")
+        }
+        assert (
+            connection.execute(
+                "SELECT 1 FROM schema_migration WHERE version=?",
+                (v0018_candidate_identity.VERSION,),
+            ).fetchone()
+            is None
+        )
+
+    monkeypatch.setattr(v0018_candidate_identity, "apply", original)
+    database.initialize()
+    with sqlite3.connect(path) as connection:
+        assert "dedupe_key" not in {
+            row[1] for row in connection.execute("PRAGMA table_xinfo(candidate)")
+        }
+        assert connection.execute(
+            "SELECT username FROM candidate WHERE id='m2-candidate'"
+        ).fetchone() == ("Straße",)

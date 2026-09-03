@@ -84,13 +84,12 @@ def _database(tmp_path: Path) -> Path:
                 ),
             )
             connection.execute(
-                "INSERT INTO candidate (id, session_id, username, dedupe_key, profile_url, display_name, profile_urn, first_seen_at, stage, retrieval_status) "
-                "VALUES (?, ?, ?, ?, ?, ?, NULL, ?, 'discovered', 'pending')",
+                "INSERT INTO candidate (id, session_id, username, profile_url, display_name, profile_urn, first_seen_at, stage, retrieval_status) "
+                "VALUES (?, ?, ?, ?, ?, NULL, ?, 'discovered', 'pending')",
                 (
                     f"candidate-{suffix}",
                     f"session-{suffix}",
                     f"Alice{suffix}",
-                    f"alice{suffix}",
                     f"https://www.linkedin.com/in/Alice{suffix}",
                     f"Alice {suffix}",
                     "2026-01-01T00:00:00+00:00",
@@ -147,44 +146,41 @@ def _database(tmp_path: Path) -> Path:
     return path
 
 
-def test_candidate_keys_are_database_validated_and_url_identity_is_unique(
+def test_candidate_username_and_url_identity_are_unique(
     tmp_path: Path,
 ) -> None:
     path = _database(tmp_path)
     with sqlite3.connect(path) as connection:
         register_sqlite_unicode_casefold(connection)
         connection.execute("PRAGMA foreign_keys=ON")
-        with pytest.raises(sqlite3.IntegrityError, match="dedupe key must match"):
+        with pytest.raises(sqlite3.OperationalError, match="dedupe_key"):
             connection.execute(
                 "INSERT INTO candidate (id, session_id, username, dedupe_key, profile_url, first_seen_at, stage, retrieval_status) "
                 "VALUES ('forged', 'session-1', 'Bob', 'not-bob', 'https://www.linkedin.com/in/Bob', ?, 'discovered', 'pending')",
-                ("2026-01-01T00:00:00+00:00",),
-            )
-        with pytest.raises(sqlite3.IntegrityError, match="dedupe key must match"):
-            connection.execute(
-                "INSERT INTO candidate (id, session_id, username, profile_url, first_seen_at, stage, retrieval_status) "
-                "VALUES ('missing-unicode-key', 'session-1', 'Straße', 'https://www.linkedin.com/in/missing', ?, 'discovered', 'pending')",
                 ("2026-01-01T00:00:00+00:00",),
             )
         with pytest.raises(
             sqlite3.IntegrityError, match="duplicate normalized candidate identity"
         ):
             connection.execute(
-                "INSERT INTO candidate (id, session_id, username, dedupe_key, profile_url, first_seen_at, stage, retrieval_status) "
-                "VALUES ('case-copy', 'session-1', 'alice1', 'alice1', 'https://www.linkedin.com/in/else', ?, 'discovered', 'pending')",
+                "INSERT INTO candidate (id, session_id, username, profile_url, first_seen_at, stage, retrieval_status) "
+                "VALUES ('case-copy', 'session-1', 'alice1', 'https://www.linkedin.com/in/else', ?, 'discovered', 'pending')",
                 ("2026-01-01T00:00:00+00:00",),
             )
         with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"):
             connection.execute(
-                "INSERT INTO candidate (id, session_id, username, dedupe_key, profile_url, first_seen_at, stage, retrieval_status) "
-                "VALUES ('url-copy', 'session-1', 'Different', 'different', 'HTTPS://WWW.LINKEDIN.COM/IN/ALICE1/', ?, 'discovered', 'pending')",
+                "INSERT INTO candidate (id, session_id, username, profile_url, first_seen_at, stage, retrieval_status) "
+                "VALUES ('url-copy', 'session-1', 'Different', 'HTTPS://WWW.LINKEDIN.COM/IN/ALICE1/', ?, 'discovered', 'pending')",
                 ("2026-01-01T00:00:00+00:00",),
             )
 
 
 @pytest.mark.parametrize("recursive", ["OFF", "ON"])
-def test_unicode_candidate_identity_is_casefolded_and_replace_cannot_bypass(
-    tmp_path: Path, recursive: str
+@pytest.mark.parametrize(
+    "operation", ["insert", "replace", "update", "update_replace", "upsert"]
+)
+def test_unicode_candidate_identity_rejects_every_conflict_write(
+    tmp_path: Path, recursive: str, operation: str
 ) -> None:
     path = _database(tmp_path)
     with sqlite3.connect(path) as connection:
@@ -192,24 +188,60 @@ def test_unicode_candidate_identity_is_casefolded_and_replace_cannot_bypass(
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA recursive_triggers={recursive}")
         connection.execute(
-            "INSERT INTO candidate (id, session_id, username, dedupe_key, profile_url, first_seen_at, stage, retrieval_status) "
-            "VALUES ('unicode', 'session-1', 'Straße', 'strasse', 'https://www.linkedin.com/in/Straße', ?, 'discovered', 'pending')",
+            "INSERT INTO candidate (id, session_id, username, profile_url, first_seen_at, stage, retrieval_status) "
+            "VALUES ('unicode', 'session-1', 'Straße', 'https://www.linkedin.com/in/Straße', ?, 'discovered', 'pending')",
             ("2026-01-01T00:00:00+00:00",),
         )
-        with pytest.raises(
-            sqlite3.IntegrityError, match="duplicate normalized candidate identity"
-        ):
-            connection.execute(
-                "INSERT OR REPLACE INTO candidate (id, session_id, username, dedupe_key, profile_url, first_seen_at, stage, retrieval_status) "
-                "VALUES ('unicode-copy', 'session-1', 'STRASSE', 'strasse', 'https://www.linkedin.com/in/other', ?, 'discovered', 'pending')",
-                ("2026-01-01T00:00:00+00:00",),
-            )
-        with pytest.raises(sqlite3.IntegrityError, match="dedupe key must match"):
-            connection.execute(
-                "INSERT INTO candidate (id, session_id, username, dedupe_key, profile_url, first_seen_at, stage, retrieval_status) "
-                "VALUES ('forged-cyrillic', 'session-1', 'ДМИТРИЙ', 'forged', 'https://www.linkedin.com/in/forged', ?, 'discovered', 'pending')",
-                ("2026-01-01T00:00:00+00:00",),
-            )
+        statements = {
+            "insert": (
+                "INSERT INTO candidate (id, session_id, username, profile_url, first_seen_at, stage, retrieval_status) "
+                "VALUES ('unicode-copy', 'session-1', 'STRASSE', 'https://www.linkedin.com/in/other', ?, 'discovered', 'pending')"
+            ),
+            "replace": (
+                "INSERT OR REPLACE INTO candidate (id, session_id, username, profile_url, first_seen_at, stage, retrieval_status) "
+                "VALUES ('unicode-copy', 'session-1', 'STRASSE', 'https://www.linkedin.com/in/other', ?, 'discovered', 'pending')"
+            ),
+            "update": "UPDATE candidate SET username='STRASSE' WHERE id='candidate-1'",
+            "update_replace": (
+                "UPDATE OR REPLACE candidate SET username='STRASSE' "
+                "WHERE id='candidate-1'"
+            ),
+            "upsert": (
+                "INSERT INTO candidate (id, session_id, username, profile_url, first_seen_at, stage, retrieval_status) "
+                "VALUES ('unicode-copy', 'session-1', 'STRASSE', 'https://www.linkedin.com/in/other', ?, 'discovered', 'pending') "
+                "ON CONFLICT(session_id, username COLLATE unicode_casefold) "
+                "DO UPDATE SET display_name='poisoned'"
+            ),
+        }
+        parameters = (
+            ("2026-01-01T00:00:00+00:00",)
+            if operation in {"insert", "replace", "upsert"}
+            else ()
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(statements[operation], parameters)
+        assert connection.execute(
+            "SELECT username, display_name FROM candidate WHERE id='unicode'"
+        ).fetchone() == ("Straße", None)
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "INSERT INTO candidate (id, session_id, username, dedupe_key, profile_url, first_seen_at, stage, retrieval_status) VALUES ('forged', 'session-1', 'Bob', 'poison', 'https://www.linkedin.com/in/bob', 'now', 'discovered', 'pending')",
+        "UPDATE candidate SET dedupe_key='poison' WHERE id='candidate-1'",
+        "INSERT OR REPLACE INTO candidate (id, session_id, username, dedupe_key, profile_url, first_seen_at, stage, retrieval_status) VALUES ('forged', 'session-1', 'Bob', 'poison', 'https://www.linkedin.com/in/bob', 'now', 'discovered', 'pending')",
+        "INSERT INTO candidate (id, session_id, username, dedupe_key, profile_url, first_seen_at, stage, retrieval_status) VALUES ('forged', 'session-1', 'Bob', 'poison', 'https://www.linkedin.com/in/bob', 'now', 'discovered', 'pending') ON CONFLICT(session_id, username COLLATE unicode_casefold) DO UPDATE SET dedupe_key='poison'",
+    ],
+)
+def test_removed_auxiliary_key_cannot_poison_identity(
+    tmp_path: Path, statement: str
+) -> None:
+    path = _database(tmp_path)
+    with sqlite3.connect(path) as connection:
+        register_sqlite_unicode_casefold(connection)
+        with pytest.raises(sqlite3.OperationalError, match="dedupe_key"):
+            connection.execute(statement)
 
 
 def test_unmanaged_candidate_write_without_unicode_collation_fails_closed(
@@ -219,8 +251,8 @@ def test_unmanaged_candidate_write_without_unicode_collation_fails_closed(
     with sqlite3.connect(path) as connection:
         with pytest.raises(sqlite3.OperationalError, match="no such collation"):
             connection.execute(
-                "INSERT INTO candidate (id, session_id, username, dedupe_key, profile_url, first_seen_at, stage, retrieval_status) "
-                "VALUES ('unmanaged', 'session-1', 'БОРИС', 'борис', 'https://www.linkedin.com/in/unmanaged', ?, 'discovered', 'pending')",
+                "INSERT INTO candidate (id, session_id, username, profile_url, first_seen_at, stage, retrieval_status) "
+                "VALUES ('unmanaged', 'session-1', 'БОРИС', 'https://www.linkedin.com/in/unmanaged', ?, 'discovered', 'pending')",
                 ("2026-01-01T00:00:00+00:00",),
             )
 
@@ -255,6 +287,7 @@ def test_processed_company_lookup_delete_and_replace_are_blocked_until_session_p
 ) -> None:
     path = _database(tmp_path)
     with sqlite3.connect(path) as connection:
+        register_sqlite_unicode_casefold(connection)
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA recursive_triggers={recursive}")
         with pytest.raises(sqlite3.IntegrityError, match="append-only"):

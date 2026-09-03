@@ -344,9 +344,7 @@ def test_unicode_username_variants_preserve_first_casing_and_add_two_sources(
                     select(Candidate).where(Candidate.session_id == session_id)
                 )
             )
-            assert [
-                (candidate.username, candidate.dedupe_key) for candidate in candidates
-            ] == [("Straße", "strasse")]
+            assert [candidate.username for candidate in candidates] == ["Straße"]
             assert (
                 db_session.scalar(select(func.count(CandidateSource.candidate_id))) == 2
             )

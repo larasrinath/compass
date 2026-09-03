@@ -36,6 +36,7 @@ from linkedin_dashboard.db.migrations import (
     v0015_approved_evidence_roots,
     v0016_durable_queue,
     v0017_role_discovery,
+    v0018_candidate_identity,
 )
 from linkedin_dashboard.db.models import Base
 from linkedin_dashboard.db.unicode_identity import (
@@ -62,6 +63,7 @@ _MIGRATION_MODULES = (
     v0015_approved_evidence_roots,
     v0016_durable_queue,
     v0017_role_discovery,
+    v0018_candidate_identity,
 )
 
 _SCHEMA_ACTIONS = {
@@ -1000,18 +1002,6 @@ def _verify_schema_and_contents_dbapi(dbapi_connection: Any) -> None:
             raise RuntimeError("SQLite integrity check failed")
         if cursor.execute("PRAGMA foreign_key_check").fetchone() is not None:
             raise RuntimeError("SQLite foreign key check failed")
-        invalid_candidate_key = next(
-            (
-                (username, dedupe_key)
-                for username, dedupe_key in cursor.execute(
-                    "SELECT username, dedupe_key FROM candidate"
-                ).fetchall()
-                if dedupe_key != username.casefold()
-            ),
-            None,
-        )
-        if invalid_candidate_key is not None:
-            raise RuntimeError("candidate dedupe key is not canonical Unicode casefold")
         identity_versions = cursor.execute(
             "SELECT id, unicode_version FROM candidate_identity_metadata"
         ).fetchall()

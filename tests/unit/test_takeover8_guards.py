@@ -16,9 +16,16 @@ from linkedin_dashboard.db.migrations import (
     v0015_approved_evidence_roots,
 )
 from linkedin_dashboard.db.session import Database
+from linkedin_dashboard.db.unicode_identity import register_sqlite_unicode_casefold
 from linkedin_dashboard.main import create_app
 from linkedin_dashboard.settings import Settings
 from sqlalchemy.exc import DBAPIError
+
+
+def _maintenance_connect(path: Path) -> sqlite3.Connection:
+    connection = sqlite3.connect(path)
+    register_sqlite_unicode_casefold(connection)
+    return connection
 
 
 def _settings(path: Path) -> Settings:
@@ -26,7 +33,7 @@ def _settings(path: Path) -> Settings:
 
 
 def _rewrite_schema(path: Path, *, table: str, old: str, new: str) -> None:
-    with sqlite3.connect(path) as connection:
+    with _maintenance_connect(path) as connection:
         row = connection.execute(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
         ).fetchone()
@@ -255,7 +262,7 @@ def test_unexpected_migration_version_is_rejected_on_restart(tmp_path: Path) -> 
     database = Database(path)
     database.initialize()
     database.dispose()
-    with sqlite3.connect(path) as connection:
+    with _maintenance_connect(path) as connection:
         connection.execute("INSERT INTO schema_migration VALUES ('9999_forged', 'now')")
 
     retry = Database(path)
@@ -296,7 +303,7 @@ def test_approved_score_signal_root_survives_every_destructive_write(
     path = database.path
     database.dispose()
 
-    with sqlite3.connect(path) as connection:
+    with _maintenance_connect(path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
         with pytest.raises(
@@ -353,7 +360,7 @@ def test_approved_score_signal_direct_delete_is_blocked(
     )
     path = database.path
     database.dispose()
-    with sqlite3.connect(path) as connection:
+    with _maintenance_connect(path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
         with pytest.raises(sqlite3.IntegrityError, match="only by session purge"):
@@ -438,7 +445,7 @@ def test_attempt_rechecks_claim_candidate_after_draft_root_drift(
         else ""
     )
     attempt_id = f"attempt-{suffix}"
-    with sqlite3.connect(path) as connection:
+    with _maintenance_connect(path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
         connection.execute(
@@ -479,7 +486,7 @@ def test_valid_claim_attempt_allows_full_session_purge(
     )
     path = database.path
     database.dispose()
-    with sqlite3.connect(path) as connection:
+    with _maintenance_connect(path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
         connection.execute(
@@ -513,7 +520,7 @@ def test_approved_evidence_ancestry_allows_full_session_purge(
     )
     path = database.path
     database.dispose()
-    with sqlite3.connect(path) as connection:
+    with _maintenance_connect(path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
         connection.execute("DELETE FROM session WHERE id=?", (ids["session"],))
@@ -523,7 +530,7 @@ def test_approved_evidence_ancestry_allows_full_session_purge(
 
 
 def _schema_objects(path: Path) -> list[tuple[str, str, str]]:
-    with sqlite3.connect(path) as connection:
+    with _maintenance_connect(path) as connection:
         return connection.execute(
             "SELECT type, name, sql FROM sqlite_master "
             "WHERE type IN ('index','trigger') AND sql IS NOT NULL "
@@ -541,7 +548,7 @@ def test_v0015_each_statement_is_atomic_and_retryable(
     database = Database(path)
     database.initialize()
     database.dispose()
-    with sqlite3.connect(path) as connection:
+    with _maintenance_connect(path) as connection:
         connection.execute(
             "DELETE FROM schema_migration WHERE version=?",
             (v0015_approved_evidence_roots.VERSION,),
@@ -581,7 +588,7 @@ def test_v0015_preflight_rejects_existing_cross_candidate_claim(
     database.initialize()
     ids = _seed_approved_evidence_graph(database, "v15-preflight")
     database.dispose()
-    with sqlite3.connect(path) as connection:
+    with _maintenance_connect(path) as connection:
         for name in v0015_approved_evidence_roots.TRIGGER_NAMES:
             connection.execute(f'DROP TRIGGER "{name}"')
         connection.execute(
@@ -611,7 +618,7 @@ def test_v0015_preflight_rejects_existing_moved_draft_attempt(
     database.initialize()
     ids = _seed_approved_evidence_graph(database, "v15-moved-attempt", approve=False)
     database.dispose()
-    with sqlite3.connect(path) as connection:
+    with _maintenance_connect(path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         for name in v0015_approved_evidence_roots.TRIGGER_NAMES:
             connection.execute(f'DROP TRIGGER "{name}"')
