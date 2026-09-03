@@ -489,8 +489,9 @@ class SendAttempt(Base):
             name="ck_send_attempt_resolution_state",
         ),
         CheckConstraint(
-            "state <> 'AMBIGUOUS' OR finished_at IS NOT NULL",
-            name="ck_send_attempt_ambiguous_finished",
+            "(state = 'SENDING' AND finished_at IS NULL) OR "
+            "(state <> 'SENDING' AND finished_at IS NOT NULL)",
+            name="ck_send_attempt_state_timing",
         ),
         CheckConstraint(
             "(resolution = 'unresolved' AND resolved_at IS NULL "

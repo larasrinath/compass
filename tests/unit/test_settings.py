@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import socket
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 from linkedin_dashboard import main as main_module
+from linkedin_dashboard.security import _resolved_addresses
 from linkedin_dashboard.settings import Settings, is_loopback_host
 from pydantic import ValidationError
 
@@ -16,7 +18,9 @@ from pydantic import ValidationError
         ("127.0.0.2", "127.0.0.2"),
         ("::1", "::1"),
         ("[::1]", "::1"),
-        ("LOCALHOST", "localhost"),
+        ("0:0:0:0:0::1", "::1"),
+        ("0:0::0:1", "::1"),
+        ("::0:1", "::1"),
     ],
 )
 def test_loopback_hosts_are_normalized_for_runtime(
@@ -40,6 +44,8 @@ def test_loopback_hosts_are_normalized_for_runtime(
         "0.0.0.0",
         "192.168.1.20",
         "example.com",
+        "localhost",
+        "LOCALHOST",
         "",
         "[127.0.0.1]",
         "[::1",
@@ -57,6 +63,34 @@ def test_non_loopback_mcp_url_is_rejected(tmp_path) -> None:
             mcp_url="https://mcp.example.com/mcp",
             db_path=tmp_path / "dashboard.db",
         )
+
+
+def test_localhost_mcp_url_is_rejected(tmp_path) -> None:
+    with pytest.raises(ValidationError, match="numeric loopback"):
+        Settings(
+            mcp_url="http://localhost:8000/mcp",
+            db_path=tmp_path / "dashboard.db",
+        )
+
+
+def test_literal_loopbacks_never_use_dns(monkeypatch, tmp_path) -> None:
+    def hostile_resolution(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("DNS resolution must not be consulted")
+
+    monkeypatch.setattr(socket, "getaddrinfo", hostile_resolution)
+
+    settings = Settings(
+        host="0:0::0:1",
+        frontend_host="127.0.0.2",
+        mcp_url="http://[::0:1]:8000/mcp",
+        db_path=tmp_path / "dashboard.db",
+    )
+
+    assert settings.host == "::1"
+    assert settings.frontend_host == "127.0.0.2"
+    assert settings.mcp_url == "http://[::1]:8000/mcp"
+    assert _resolved_addresses(settings.host, settings.port) == {"::1"}
 
 
 @pytest.mark.parametrize(

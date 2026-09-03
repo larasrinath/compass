@@ -1,21 +1,22 @@
+import { isIP } from 'node:net'
+
 function normalizeHost(host) {
   if (typeof host !== 'string') return null
 
   let candidate = host.trim().toLowerCase()
-  if (candidate === 'localhost') return candidate
+  let bracketed = false
   if (candidate.startsWith('[') || candidate.endsWith(']')) {
     if (!(candidate.startsWith('[') && candidate.endsWith(']'))) return null
+    bracketed = true
     candidate = candidate.slice(1, -1)
   }
-  if (candidate === '::1' || candidate === '0:0:0:0:0:0:0:1') return '::1'
-
-  const octets = candidate.split('.')
-  if (
-    octets.length === 4 &&
-    octets.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255) &&
-    Number(octets[0]) === 127
-  ) {
-    return octets.map(Number).join('.')
+  const version = isIP(candidate)
+  if (version === 6) {
+    const canonical = new URL(`http://[${candidate}]/`).hostname.slice(1, -1)
+    return canonical === '::1' ? canonical : null
+  }
+  if (version === 4 && !bracketed && candidate.startsWith('127.')) {
+    return candidate
   }
   return null
 }

@@ -52,8 +52,8 @@ def create_app(app_settings: Settings) -> FastAPI:
         OriginGuardMiddleware,
         allowed_origin=app_settings.frontend_origin,
     )
-    app.add_middleware(PrivacyFilterMiddleware)
     app.add_middleware(CorrelationIdMiddleware)
+    app.add_middleware(PrivacyFilterMiddleware)
     app.include_router(health_router, prefix="/api")
     app.include_router(audit_router, prefix="/api")
     return app

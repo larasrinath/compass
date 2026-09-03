@@ -14,8 +14,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 def normalize_loopback_host(value: str) -> str:
     """Return the runtime-safe canonical form of a loopback host."""
     host = value.strip()
-    if host.casefold() == "localhost":
-        return "localhost"
 
     if host.startswith("[") or host.endswith("]"):
         if not (host.startswith("[") and host.endswith("]")):
@@ -104,9 +102,14 @@ class Settings(BaseSettings):
             raise ValueError("MCP_URL must contain a valid port")
         if parsed.username is not None or parsed.password is not None:
             raise ValueError("MCP_URL must not contain userinfo or credentials")
-        if not is_loopback_host(parsed.hostname):
-            raise ValueError("MCP_URL must target a loopback host")
-        return value
+        try:
+            host = normalize_loopback_host(parsed.hostname)
+        except ValueError as error:
+            raise ValueError("MCP_URL must target a numeric loopback host") from error
+        authority = format_url_host(host)
+        if parsed_port is not None:
+            authority = f"{authority}:{parsed_port}"
+        return parsed._replace(netloc=authority).geturl()
 
     @field_validator("db_path")
     @classmethod

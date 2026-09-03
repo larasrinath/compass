@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ipaddress
-import socket
 from http import HTTPStatus
 
 import psutil
@@ -102,16 +101,8 @@ class OriginGuardMiddleware:
 
 
 def _resolved_addresses(host: str, port: int) -> set[str]:
-    if host != "localhost":
-        return {str(ipaddress.ip_address(host))}
-    return {
-        str(ipaddress.ip_address(result[4][0]))
-        for result in socket.getaddrinfo(
-            host,
-            port,
-            type=socket.SOCK_STREAM,
-        )
-    }
+    del port
+    return {str(ipaddress.ip_address(host))}
 
 
 def _listener_matches(scope: Scope, *, host: str, port: int) -> bool:

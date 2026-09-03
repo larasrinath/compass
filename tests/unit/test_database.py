@@ -12,6 +12,7 @@ from linkedin_dashboard.db.migrations import (
     v0003_send_invariants,
     v0004_audit_cascade,
     v0005_send_history,
+    v0006_send_state_timing,
 )
 from linkedin_dashboard.db.models import (
     Candidate,
@@ -336,6 +337,72 @@ def test_connection_inode_check_precedes_every_sqlite_write(
     assert not target.with_name(f"{target.name}-shm").exists()
 
 
+def test_hard_linked_database_is_rejected_without_mutating_original(tmp_path) -> None:
+    parent = tmp_path / "private-hardlink"
+    parent.mkdir(mode=0o700)
+    os.chmod(parent, 0o700)
+    original = parent / "original.db"
+    with sqlite3.connect(original) as connection:
+        connection.execute("CREATE TABLE sentinel (value TEXT NOT NULL)")
+        connection.execute("INSERT INTO sentinel VALUES ('preserve-me')")
+    os.chmod(original, 0o640)
+    original_bytes = original.read_bytes()
+    original_mode = stat.S_IMODE(original.stat().st_mode)
+    with sqlite3.connect(f"file:{original}?mode=ro", uri=True) as connection:
+        original_schema = connection.execute(
+            "SELECT type, name, sql FROM sqlite_master ORDER BY type, name"
+        ).fetchall()
+
+    linked = parent / "dashboard.db"
+    os.link(original, linked)
+    database = Database(linked)
+    try:
+        with pytest.raises(ValueError, match="exactly one hard link"):
+            database.initialize()
+    finally:
+        database.dispose()
+
+    with sqlite3.connect(f"file:{original}?mode=ro", uri=True) as connection:
+        schema_after = connection.execute(
+            "SELECT type, name, sql FROM sqlite_master ORDER BY type, name"
+        ).fetchall()
+    assert original.read_bytes() == original_bytes
+    assert stat.S_IMODE(original.stat().st_mode) == original_mode
+    assert schema_after == original_schema
+    assert not linked.with_name(f"{linked.name}-wal").exists()
+    assert not linked.with_name(f"{linked.name}-shm").exists()
+
+
+@pytest.mark.parametrize("suffix", ["-wal", "-shm"])
+def test_hard_linked_existing_sidecar_is_rejected_before_sqlite(
+    tmp_path, suffix: str
+) -> None:
+    parent = tmp_path / f"private-sidecar{suffix}"
+    parent.mkdir(mode=0o700)
+    os.chmod(parent, 0o700)
+    path = parent / "dashboard.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute("CREATE TABLE sentinel (value TEXT NOT NULL)")
+    os.chmod(path, 0o600)
+    original = parent / f"original{suffix}"
+    original.write_bytes(b"sidecar-sentinel")
+    os.chmod(original, 0o640)
+    sidecar = path.with_name(f"{path.name}{suffix}")
+    os.link(original, sidecar)
+    original_bytes = original.read_bytes()
+    original_mode = stat.S_IMODE(original.stat().st_mode)
+
+    database = Database(path)
+    try:
+        with pytest.raises(ValueError, match="exactly one hard link"):
+            database.initialize()
+    finally:
+        database.dispose()
+
+    assert original.read_bytes() == original_bytes
+    assert stat.S_IMODE(original.stat().st_mode) == original_mode
+
+
 def test_existing_v0001_database_receives_integrity_migration(tmp_path) -> None:
     database = Database(tmp_path / "upgrade.db")
     prepare_v0001_database(database)
@@ -364,6 +431,7 @@ def test_existing_v0001_database_receives_integrity_migration(tmp_path) -> None:
         v0003_send_invariants.VERSION,
         v0004_audit_cascade.VERSION,
         v0005_send_history.VERSION,
+        v0006_send_state_timing.VERSION,
     ]
     assert "NEW.candidate_id IS NOT OLD.candidate_id" in trigger_sql
 
@@ -683,6 +751,7 @@ def test_all_persisted_boolean_columns_reject_non_booleans(database: Database) -
                 draft_id=draft_id,
                 state="DRY_RUN_OK",
                 confirm_send=False,
+                finished_at=NOW,
             )
         )
 
@@ -722,7 +791,7 @@ def test_send_attempt_cannot_be_inserted_pre_resolved(database: Database) -> Non
 def test_ambiguous_attempt_must_be_finished_when_inserted(database: Database) -> None:
     candidate_id, draft_id = seed_candidate(database, "unfinished-ambiguous")
 
-    with pytest.raises(DBAPIError, match="AMBIGUOUS must already be finished"):
+    with pytest.raises(DBAPIError, match="every outcome finished"):
         with database.engine.begin() as connection:
             insert_attempt_sql(
                 connection,
@@ -739,6 +808,7 @@ def test_malformed_legacy_ambiguous_attempt_cannot_be_rewritten(
     candidate_id, draft_id = seed_candidate(database, "malformed-ambiguous")
     with database.engine.begin() as connection:
         connection.exec_driver_sql("DROP TRIGGER send_attempt_insert_is_valid")
+        connection.exec_driver_sql("DROP TRIGGER send_attempt_state_timing_insert")
         connection.exec_driver_sql("PRAGMA ignore_check_constraints=ON")
         insert_attempt_sql(
             connection,
@@ -749,7 +819,7 @@ def test_malformed_legacy_ambiguous_attempt_cannot_be_rewritten(
         )
         connection.exec_driver_sql("PRAGMA ignore_check_constraints=OFF")
 
-    with pytest.raises(DBAPIError, match="identity and provenance are immutable"):
+    with pytest.raises(DBAPIError, match=r"immutable|every outcome finished"):
         with database.engine.begin() as connection:
             connection.execute(
                 text(
@@ -1010,3 +1080,168 @@ def test_send_result_can_complete_without_changing_identity(database: Database) 
         ).one()
 
     assert tuple(row) == (candidate_id, draft_id, "SENT", NOW)
+
+
+@pytest.mark.parametrize(
+    ("state", "finished_at"),
+    [
+        ("SENDING", None),
+        ("SENT", NOW),
+        ("FAILED_CONCLUSIVE", NOW),
+        ("AMBIGUOUS", NOW),
+        ("DRY_RUN_OK", NOW),
+        ("DRY_RUN_FAILED", NOW),
+    ],
+)
+def test_every_send_state_accepts_only_its_valid_timing(
+    database: Database, state: str, finished_at: str | None
+) -> None:
+    candidate_id, draft_id = seed_candidate(database, f"state-{state}")
+    with database.engine.begin() as connection:
+        insert_attempt_sql(
+            connection,
+            attempt_id=f"attempt-valid-{state}",
+            candidate_id=candidate_id,
+            draft_id=draft_id,
+            state=state,
+            confirm_send=0,
+            finished_at=finished_at,
+        )
+
+    invalid_finished_at = NOW if finished_at is None else None
+    with pytest.raises(DBAPIError, match=r"state|finished|CHECK constraint"):
+        with database.engine.begin() as connection:
+            insert_attempt_sql(
+                connection,
+                attempt_id=f"attempt-invalid-{state}",
+                candidate_id=candidate_id,
+                draft_id=draft_id,
+                state=state,
+                confirm_send=0,
+                finished_at=invalid_finished_at,
+            )
+
+
+def test_malformed_sent_cannot_be_rewritten_to_bypass_new_send(
+    database: Database,
+) -> None:
+    candidate_id, draft_id = seed_candidate(database, "sent-null-bypass")
+    with database.engine.begin() as connection:
+        connection.exec_driver_sql("DROP TRIGGER send_attempt_state_timing_insert")
+        connection.exec_driver_sql("PRAGMA ignore_check_constraints=ON")
+        insert_attempt_sql(
+            connection,
+            attempt_id="attempt-sent-null",
+            candidate_id=candidate_id,
+            draft_id=draft_id,
+            state="SENT",
+            confirm_send=1,
+        )
+        connection.exec_driver_sql("PRAGMA ignore_check_constraints=OFF")
+
+    with pytest.raises(DBAPIError, match="every outcome finished"):
+        with database.engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE send_attempt SET state='FAILED_CONCLUSIVE', "
+                    "finished_at=:finished WHERE id='attempt-sent-null'"
+                ),
+                {"finished": NOW},
+            )
+
+    with pytest.raises(IntegrityError):
+        with database.engine.begin() as connection:
+            insert_attempt_sql(
+                connection,
+                attempt_id="attempt-new-after-malformed-sent",
+                candidate_id=candidate_id,
+                draft_id=draft_id,
+                state="SENDING",
+            )
+
+
+@pytest.mark.parametrize(
+    ("state", "finished_at"),
+    [("SENDING", NOW), ("SENT", None)],
+)
+def test_v0006_preflight_rejects_legacy_state_timing(
+    tmp_path, state: str, finished_at: str | None
+) -> None:
+    database = Database(tmp_path / f"legacy-state-timing-{state}.db")
+    database.initialize()
+    candidate_id, draft_id = seed_candidate(database, f"legacy-state-timing-{state}")
+    with database.engine.begin() as connection:
+        connection.execute(
+            text("DELETE FROM schema_migration WHERE version=:version"),
+            {"version": v0006_send_state_timing.VERSION},
+        )
+        for name in (
+            "send_attempt_state_timing_insert",
+            "send_attempt_state_timing_update",
+        ):
+            connection.exec_driver_sql(f'DROP TRIGGER "{name}"')
+        connection.exec_driver_sql("PRAGMA ignore_check_constraints=ON")
+        insert_attempt_sql(
+            connection,
+            attempt_id=f"attempt-legacy-timing-{state}",
+            candidate_id=candidate_id,
+            draft_id=draft_id,
+            state=state,
+            confirm_send=0,
+            finished_at=finished_at,
+        )
+        connection.exec_driver_sql("PRAGMA ignore_check_constraints=OFF")
+
+    database = restart_database(database)
+    try:
+        with pytest.raises(RuntimeError, match="incompatible send state timing"):
+            database.initialize()
+    finally:
+        database.dispose()
+
+    with sqlite3.connect(database.path) as connection:
+        assert (
+            connection.execute(
+                "SELECT 1 FROM schema_migration WHERE version=?",
+                (v0006_send_state_timing.VERSION,),
+            ).fetchone()
+            is None
+        )
+
+
+@pytest.mark.parametrize(
+    "failure_after", range(1, len(v0006_send_state_timing.STATEMENTS) + 1)
+)
+def test_v0006_each_statement_is_atomic_and_retryable(
+    tmp_path, monkeypatch, failure_after: int
+) -> None:
+    database = Database(tmp_path / f"interrupted-v6-{failure_after}.db")
+    database.initialize()
+    with database.engine.begin() as connection:
+        connection.execute(
+            text("DELETE FROM schema_migration WHERE version=:version"),
+            {"version": v0006_send_state_timing.VERSION},
+        )
+        for name in (
+            "send_attempt_state_timing_insert",
+            "send_attempt_state_timing_update",
+        ):
+            connection.exec_driver_sql(f'DROP TRIGGER "{name}"')
+    baseline = migration_schema_objects(database.path)
+    database = restart_database(database)
+    original_apply = v0006_send_state_timing.apply
+
+    def interrupted_apply(connection) -> None:
+        for index, statement in enumerate(v0006_send_state_timing.STATEMENTS, start=1):
+            connection.exec_driver_sql(statement)
+            if index == failure_after:
+                raise RuntimeError(f"interrupted after statement {index}")
+
+    monkeypatch.setattr(v0006_send_state_timing, "apply", interrupted_apply)
+    with pytest.raises(RuntimeError, match=f"statement {failure_after}"):
+        database.initialize()
+
+    assert migration_schema_objects(database.path) == baseline
+    monkeypatch.setattr(v0006_send_state_timing, "apply", original_apply)
+    database.initialize()
+    database.dispose()

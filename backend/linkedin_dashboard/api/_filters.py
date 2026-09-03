@@ -4,6 +4,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -43,16 +44,49 @@ _WINDOWS_PATH = re.compile(
     flags=re.IGNORECASE,
 )
 _FILE_URL = re.compile(r"file:///(?:[^\s\"'<>]+)", flags=re.IGNORECASE)
-_UNIX_PATH = re.compile(r"(?<![a-z0-9:/])/(?!/)[^\s\"'<>]+", re.IGNORECASE)
-_LINKEDIN_PATH_PREFIXES = (
-    "/company/",
-    "/feed/",
-    "/in/",
-    "/jobs/",
-    "/messaging/",
-    "/posts/",
-    "/search/",
+_NETWORK_URL = re.compile(r"(?:(?:https?):)?//[^\s\"'<>]+", re.IGNORECASE)
+_UNIX_PATH = re.compile(r"(?<![a-z0-9/])/(?!/)[^\s\"'<>]+", re.IGNORECASE)
+_LINKEDIN_URL_KEYS = {
+    "profile_url",
+    "relative_url",
+    "result_url",
+    "tool_url",
+    "url",
+}
+_LINKEDIN_RELATIVE_PATH = re.compile(
+    r"^/(?:"
+    r"(?:in|company)/[^/?#]+/?|"
+    r"jobs/view/[0-9]+/?|"
+    r"feed/update/[^/?#]+/?|"
+    r"posts/[^/?#]+/?|"
+    r"messaging/(?:compose/?)?|"
+    r"search/(?:results/[^?#]*)?"
+    r")$",
+    re.IGNORECASE,
 )
+_DROP_HEADER_NAMES = {
+    "authorization",
+    "cookie",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "server",
+    "set-cookie",
+    "www-authenticate",
+    "x-powered-by",
+}
+_SENSITIVE_HEADER_PARTS = {
+    "auth",
+    "authorization",
+    "cookie",
+    "credential",
+    "key",
+    "password",
+    "path",
+    "runtime",
+    "secret",
+    "token",
+}
+_STRUCTURAL_HEADER_NAMES = ("content-length",)
 
 
 def _is_json_media_type(content_type: str) -> bool:
@@ -62,7 +96,25 @@ def _is_json_media_type(content_type: str) -> bool:
     )
 
 
-def _redact_string(value: str) -> str:
+def _is_linkedin_relative_url(value: str, field_name: str | None) -> bool:
+    if field_name not in _LINKEDIN_URL_KEYS or "\\" in value:
+        return False
+    parsed = urlsplit(value)
+    return (
+        not parsed.scheme
+        and not parsed.netloc
+        and bool(_LINKEDIN_RELATIVE_PATH.fullmatch(parsed.path))
+    )
+
+
+def _redact_string(
+    value: str,
+    *,
+    field_name: str | None = None,
+) -> str:
+    if _is_linkedin_relative_url(value, field_name):
+        return value
+
     def redact_authority(match: re.Match[str]) -> str:
         authority = match.group("authority")
         if "@" not in authority:
@@ -70,19 +122,23 @@ def _redact_string(value: str) -> str:
         host = authority.rsplit("@", 1)[1]
         return f"{match.group('prefix')}[redacted]@{host}"
 
-    sanitized = _URL_AUTHORITY.sub(redact_authority, value)
-    sanitized = _FILE_URL.sub("[redacted-path]", sanitized)
+    sanitized = _FILE_URL.sub("[redacted-path]", value)
+    sanitized = _URL_AUTHORITY.sub(redact_authority, sanitized)
     sanitized = sanitized.replace(str(Path.home()), "[redacted-home]")
     sanitized = sanitized.replace(".linkedin-mcp", "[redacted-profile]")
+
+    preserved_urls: list[str] = []
+
+    def preserve_network_url(match: re.Match[str]) -> str:
+        preserved_urls.append(match.group(0))
+        return f"[preserved-url-{len(preserved_urls) - 1}]"
+
+    sanitized = _NETWORK_URL.sub(preserve_network_url, sanitized)
     sanitized = _WINDOWS_PATH.sub("[redacted-path]", sanitized)
-
-    def redact_unix_path(match: re.Match[str]) -> str:
-        candidate = match.group(0)
-        if candidate.casefold().startswith(_LINKEDIN_PATH_PREFIXES):
-            return candidate
-        return "[redacted-path]"
-
-    return _UNIX_PATH.sub(redact_unix_path, sanitized)
+    sanitized = _UNIX_PATH.sub("[redacted-path]", sanitized)
+    for index, url in enumerate(preserved_urls):
+        sanitized = sanitized.replace(f"[preserved-url-{index}]", url)
+    return sanitized
 
 
 def _redact_key(value: Any) -> Any:
@@ -94,21 +150,48 @@ def _drop_key(value: Any) -> bool:
     return normalized in _DROP_KEYS or normalized.endswith(_DROP_KEY_SUFFIXES)
 
 
-def sanitize_for_frontend(value: Any) -> Any:
+def sanitize_for_frontend(value: Any, *, field_name: str | None = None) -> Any:
     """Recursively remove process-local diagnostics and path material."""
     if isinstance(value, dict):
         return {
-            _redact_key(key): sanitize_for_frontend(child)
+            _redact_key(key): sanitize_for_frontend(
+                child,
+                field_name=str(key).casefold(),
+            )
             for key, child in value.items()
             if not _drop_key(key)
         }
     if isinstance(value, list):
-        return [sanitize_for_frontend(child) for child in value]
+        return [sanitize_for_frontend(child, field_name=field_name) for child in value]
     if isinstance(value, tuple):
-        return [sanitize_for_frontend(child) for child in value]
+        return [sanitize_for_frontend(child, field_name=field_name) for child in value]
     if isinstance(value, str):
-        return _redact_string(value)
+        return _redact_string(value, field_name=field_name)
     return value
+
+
+def _sensitive_header_name(name: str) -> bool:
+    normalized = name.casefold()
+    if normalized in _DROP_HEADER_NAMES:
+        return True
+    underscored = normalized.replace("-", "_")
+    if _drop_key(underscored):
+        return True
+    return bool(set(re.split(r"[-_]", normalized)) & _SENSITIVE_HEADER_PARTS)
+
+
+def _sanitize_headers(headers: list[tuple[bytes, bytes]]) -> list[tuple[bytes, bytes]]:
+    sanitized: list[tuple[bytes, bytes]] = []
+    for raw_name, raw_value in headers:
+        name = raw_name.decode("latin-1").casefold()
+        if _sensitive_header_name(name):
+            continue
+        if name in _STRUCTURAL_HEADER_NAMES:
+            value = raw_value
+        else:
+            value = _redact_string(raw_value.decode("latin-1")).encode("latin-1")
+        sanitized.append((raw_name, value))
+    return sanitized
 
 
 def _reject_json_constant(value: str) -> None:
@@ -263,7 +346,8 @@ class PrivacyFilterMiddleware:
             nonlocal response_kind, start
             if message["type"] == "http.response.start":
                 start = message
-                headers = list(message.get("headers", []))
+                headers = _sanitize_headers(list(message.get("headers", [])))
+                message["headers"] = headers
                 content_type = next(
                     (
                         value.decode("latin-1")

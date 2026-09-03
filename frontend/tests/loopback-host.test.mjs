@@ -34,10 +34,21 @@ async function unusedPort(host) {
 test('accepts explicit IPv4 and IPv6 loopback hosts', () => {
   assert.equal(assertLoopbackHost('127.0.0.2', 'test'), '127.0.0.2')
   assert.equal(assertLoopbackHost('[::1]', 'test'), '::1')
+  for (const host of ['0:0:0:0:0::1', '0:0::0:1', '::0:1']) {
+    assert.equal(assertLoopbackHost(host, 'test'), '::1')
+  }
 })
 
 test('rejects wildcard and implicit CLI hosts', () => {
-  for (const host of ['0.0.0.0', '::', true, undefined]) {
+  for (const host of [
+    '0.0.0.0',
+    '::',
+    'localhost',
+    'LOCALHOST',
+    '[127.0.0.1]',
+    true,
+    undefined,
+  ]) {
     assert.throws(() => assertLoopbackHost(host, 'test'), /explicit loopback/)
   }
 })

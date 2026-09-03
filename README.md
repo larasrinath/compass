@@ -40,6 +40,10 @@ through `uv run -m linkedin_dashboard`; there is intentionally no importable
 module-level or zero-argument ASGI application that can be bound with an unsafe
 Uvicorn CLI override. The API also verifies its real listening socket against
 the configured host and port before initializing its database.
+All three network settings (`HOST`, `FRONTEND_HOST`, and the host in `MCP_URL`)
+must use numeric loopback literals. Hostnames such as `localhost` are rejected
+so startup and runtime checks never depend on DNS; equivalent IPv6 loopback
+spellings are canonicalized to `::1`.
 
 ## Verification
 
@@ -58,6 +62,8 @@ parent must already be owned by the current user and grant no group or world
 permissions; startup rejects an unsafe parent instead of changing its mode.
 Initialization holds and verifies the database inode before SQLite performs a
 write-capable operation, and schema migrations plus their version records are
-committed atomically. Send-attempt history can be removed only as part of a
-full-session purge.
+committed atomically. Database and SQLite sidecar files with more than one hard
+link are rejected before permission or SQLite operations. Send-attempt history
+can be removed only as part of a full-session purge. The database also enforces
+that `SENDING` is the only unfinished state and every outcome state is finished.
 Through M5, `LLM_PROVIDER` is locked to the literal value `null`.

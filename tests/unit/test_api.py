@@ -73,10 +73,15 @@ def test_every_json_response_crosses_the_privacy_filter(tmp_path) -> None:
                 },
                 "profile_url": "https://www.linkedin.com/in/safe-person/",
                 "relative_url": "/in/safe-person/",
+                "reference": {"url": "/jobs/view/123456/"},
+                "unsafe_relative_url": "/in/safe-person/cookies.json",
+                "diagnostic": ["/in/safe-person/", "/jobs/view/123456/"],
                 "custom_error": (
                     "failed at /srv/custom-dashboard/session.db and "
                     r"C:\private-dashboard\cookies.json plus "
-                    "file:///custom/private/runtime.json"
+                    "file:///custom/private/runtime.json and "
+                    "label:/opt/private/trace.log and "
+                    "/jobs/runtime/private.db"
                 ),
             },
             "mcp_url": "http://127.0.0.1:8000/mcp",
@@ -101,6 +106,11 @@ def test_every_json_response_crosses_the_privacy_filter(tmp_path) -> None:
     assert "file:///custom/private/runtime.json" not in body
     assert "https://www.linkedin.com/in/safe-person/" in body
     assert '"relative_url":"/in/safe-person/"' in body
+    assert '"reference":{"url":"/jobs/view/123456/"}' in body
+    assert '"unsafe_relative_url":"[redacted-path]"' in body
+    assert '"diagnostic":["[redacted-path]","[redacted-path]"]' in body
+    assert "label:/opt/private/trace.log" not in body
+    assert "/jobs/runtime/private.db" not in body
     assert str(Path.home()) not in body
     assert ".linkedin-mcp" not in body
 
@@ -241,8 +251,10 @@ def test_sse_redacts_custom_diagnostic_paths_byte_by_byte() -> None:
         b'data: {"issue_template_path":"/custom/issues/template.md",'
         b'"runtime_storage_state_path":"C:\\\\Users\\\\operator\\\\state.json",'
         b'"trace_dir":"/srv/private-traces",'
-        b'"message":"failed /opt/private/session.db",'
-        b'"profile":"/in/safe-person/"}\r\n\r\n'
+        b'"message":"failed /opt/private/session.db; label:/opt/private/log; '
+        b'/jobs/runtime/cache.db; C:\\\\private\\\\cookies.json",'
+        b'"relative_url":"/in/safe-person/",'
+        b'"unsafe_relative_url":"/in/safe-person/cookies.json"}\r\n\r\n'
     )
     parser = _SSEParser()
     output: list[bytes] = []
@@ -254,8 +266,105 @@ def test_sse_redacts_custom_diagnostic_paths_byte_by_byte() -> None:
     assert "runtime_storage_state_path" not in text
     assert "trace_dir" not in text
     assert "/opt/private/session.db" not in text
-    assert '"message":"failed [redacted-path]"' in text
-    assert '"profile":"/in/safe-person/"' in text
+    assert '"message":"failed [redacted-path]' in text
+    assert "/jobs/runtime/cache.db" not in text
+    assert "/in/safe-person/cookies.json" not in text
+    assert '"relative_url":"/in/safe-person/"' in text
+
+
+def test_json_response_headers_cross_the_privacy_boundary(tmp_path) -> None:
+    app = create_app(settings_for(tmp_path / "json-header-privacy.db"))
+
+    @app.get("/api/test/json-headers")
+    def json_headers() -> JSONResponse:
+        return JSONResponse(
+            {"status": "ok"},
+            headers={
+                "Cache-Control": "no-store",
+                "Set-Cookie": "session=secret",
+                "X-Api-Key": "plain-secret-value",
+                "X-Runtime-Path": "/opt/private/runtime.json",
+                "X-Diagnostic": (
+                    "label:/opt/private/trace.log; "
+                    "http://operator:secret@127.0.0.1:8000/mcp"
+                ),
+            },
+        )
+
+    with client_for(app) as client:
+        response = client.get(
+            "/api/test/json-headers",
+            headers={"X-Correlation-ID": "header-test"},
+        )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/json"
+    assert response.headers["content-length"] == str(len(response.content))
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-correlation-id"] == "header-test"
+    assert "set-cookie" not in response.headers
+    assert "x-api-key" not in response.headers
+    assert "x-runtime-path" not in response.headers
+    assert response.headers["x-diagnostic"] == (
+        "label:[redacted-path] http://[redacted]@127.0.0.1:8000/mcp"
+    )
+
+
+def test_sse_response_headers_cross_the_privacy_boundary(tmp_path) -> None:
+    app = create_app(settings_for(tmp_path / "sse-header-privacy.db"))
+
+    @app.get("/api/test/sse-headers")
+    def sse_headers() -> StreamingResponse:
+        return StreamingResponse(
+            iter([b"data: ok\n\n"]),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "X-Cookie-Path": "/opt/private/cookies.json",
+                "X-Diagnostic": r"C:\private\stream.log",
+            },
+        )
+
+    with client_for(app) as client:
+        response = client.get("/api/test/sse-headers")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert response.headers["cache-control"] == "no-cache"
+    assert response.headers["x-accel-buffering"] == "no"
+    assert response.headers["x-correlation-id"]
+    assert "content-length" not in response.headers
+    assert "x-cookie-path" not in response.headers
+    assert response.headers["x-diagnostic"] == "[redacted-path]"
+
+
+def test_passthrough_response_headers_cross_the_privacy_boundary(tmp_path) -> None:
+    app = create_app(settings_for(tmp_path / "text-header-privacy.db"))
+
+    @app.get("/api/test/text-headers")
+    def text_headers() -> Response:
+        return Response(
+            "safe",
+            media_type="text/plain",
+            headers={
+                "ETag": '"stable"',
+                "Authorization": "Bearer secret",
+                "X-Diagnostic": "/jobs/runtime/private.db",
+            },
+        )
+
+    with client_for(app) as client:
+        response = client.get("/api/test/text-headers")
+
+    assert response.status_code == 200
+    assert response.text == "safe"
+    assert response.headers["content-type"].startswith("text/plain")
+    assert response.headers["content-length"] == "4"
+    assert response.headers["etag"] == '"stable"'
+    assert response.headers["x-correlation-id"]
+    assert "authorization" not in response.headers
+    assert response.headers["x-diagnostic"] == "[redacted-path]"
 
 
 def test_structured_json_suffix_crosses_privacy_filter(tmp_path) -> None:

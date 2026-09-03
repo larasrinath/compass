@@ -18,6 +18,7 @@ from linkedin_dashboard.db.migrations import (
     v0003_send_invariants,
     v0004_audit_cascade,
     v0005_send_history,
+    v0006_send_state_timing,
 )
 from linkedin_dashboard.db.models import Base
 from linkedin_dashboard.settings import normalize_database_path
@@ -48,6 +49,7 @@ class Database:
             database_fd = _open_owner_only_file(self.path, create=True)
             self._database_fd = database_fd
             try:
+                _secure_existing_sidecars(self.path)
                 with self.engine.connect() as connection:
                     connection.exec_driver_sql("BEGIN IMMEDIATE")
                     try:
@@ -78,6 +80,7 @@ class Database:
             (v0003_send_invariants.VERSION, v0003_send_invariants.apply),
             (v0004_audit_cascade.VERSION, v0004_audit_cascade.apply),
             (v0005_send_history.VERSION, v0005_send_history.apply),
+            (v0006_send_state_timing.VERSION, v0006_send_state_timing.apply),
         ):
             applied = connection.execute(
                 text("SELECT 1 FROM schema_migration WHERE version = :version"),
@@ -156,6 +159,8 @@ def _verify_connection_target(
     try:
         actual_stat = os.fstat(actual_fd)
         expected_stat = os.fstat(expected_fd)
+        _require_single_link(actual_stat, path)
+        _require_single_link(expected_stat, path)
         if (actual_stat.st_dev, actual_stat.st_ino) != (
             expected_stat.st_dev,
             expected_stat.st_ino,
@@ -248,11 +253,18 @@ def _open_existing_file(path: Path, flags: int) -> int:
 def _require_same_file(path: Path, descriptor: int) -> None:
     path_stat = path.lstat()
     file_stat = os.fstat(descriptor)
+    _require_single_link(path_stat, path)
+    _require_single_link(file_stat, path)
     if stat.S_ISLNK(path_stat.st_mode) or (
         path_stat.st_dev,
         path_stat.st_ino,
     ) != (file_stat.st_dev, file_stat.st_ino):
         raise ValueError(f"database path changed while opening it: {path}")
+
+
+def _require_single_link(file_stat: os.stat_result, path: Path) -> None:
+    if file_stat.st_nlink != 1:
+        raise ValueError(f"database file must have exactly one hard link: {path}")
 
 
 def _secure_existing_sidecars(path: Path) -> None:
