@@ -11,6 +11,7 @@ from linkedin_dashboard.db.migrations import (
     v0009_integrity_completion,
     v0010_takeover_guards,
     v0011_purged_evidence_ancestry,
+    v0012_score_session_provenance,
 )
 from linkedin_dashboard.db.models import (
     Candidate,
@@ -1158,6 +1159,12 @@ _V0009_TRIGGER_NAMES = (
 
 def _prepare_pre_v0009_schema(database: Database, *, drop_column: bool) -> None:
     with database.engine.begin() as connection:
+        connection.execute(
+            text("DELETE FROM schema_migration WHERE version=:version"),
+            {"version": v0012_score_session_provenance.VERSION},
+        )
+        for trigger_name in v0012_score_session_provenance.TRIGGER_NAMES:
+            connection.exec_driver_sql(f'DROP TRIGGER "{trigger_name}"')
         connection.execute(
             text("DELETE FROM schema_migration WHERE version=:version"),
             {"version": v0011_purged_evidence_ancestry.VERSION},

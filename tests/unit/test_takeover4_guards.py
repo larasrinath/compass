@@ -7,6 +7,7 @@ import pytest
 from linkedin_dashboard.db.migrations import (
     v0010_takeover_guards,
     v0011_purged_evidence_ancestry,
+    v0012_score_session_provenance,
 )
 from linkedin_dashboard.db.models import Candidate, DashboardSession, MessageDraft
 from linkedin_dashboard.db.session import Database
@@ -424,3 +425,192 @@ def test_v0011_each_statement_is_atomic_and_retryable(
     monkeypatch.setattr(v0011_purged_evidence_ancestry, "apply", original_apply)
     retry.initialize()
     retry.dispose()
+
+
+def _seed_two_score_sessions(database: Database, suffix: str) -> None:
+    _seed_candidate(database, f"{suffix}-a")
+    _seed_candidate(database, f"{suffix}-b")
+    with database.engine.begin() as connection:
+        for side in ("a", "b"):
+            connection.exec_driver_sql(
+                "INSERT INTO role_brief "
+                "(id, session_id, version, created_at, job_description, "
+                "target_titles, location, industries, positive_keywords, "
+                "negative_keywords, message_tone, weights_version) VALUES "
+                f"('brief-{suffix}-{side}', 'session-{suffix}-{side}', 1, "
+                "'now', 'job', '[]', 'anywhere', '[]', '[]', '[]', "
+                "'plain', 'v1')"
+            )
+
+
+def _score_insert_sql(*, replace: bool = False) -> str:
+    operation = "INSERT OR REPLACE" if replace else "INSERT"
+    return (
+        f"{operation} INTO score "
+        "(id, candidate_id, brief_id, weights_version, stage, score, "
+        "score_lower, score_upper, confidence, confidence_band, computed_at, "
+        "is_current) VALUES (?, ?, ?, 'v1', 'provisional', 1, 1, 1, 1, "
+        "'high', 'now', 1)"
+    )
+
+
+@pytest.mark.parametrize("recursive_triggers", ["ON", "OFF"])
+def test_score_pair_must_share_session_for_insert_update_and_upsert(
+    database: Database,
+    recursive_triggers: str,
+) -> None:
+    suffix = f"score-session-{recursive_triggers.lower()}"
+    _seed_two_score_sessions(database, suffix)
+    path = database.path
+    database.dispose()
+
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
+        with pytest.raises(sqlite3.IntegrityError, match="must share a session"):
+            connection.execute(
+                _score_insert_sql(),
+                (
+                    f"score-cross-{suffix}",
+                    f"candidate-{suffix}-a",
+                    f"brief-{suffix}-b",
+                ),
+            )
+
+        valid_id = f"score-valid-{suffix}"
+        connection.execute(
+            _score_insert_sql(),
+            (valid_id, f"candidate-{suffix}-a", f"brief-{suffix}-a"),
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="must share a session"):
+            connection.execute(
+                "UPDATE OR REPLACE score SET brief_id=? WHERE id=?",
+                (f"brief-{suffix}-b", valid_id),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="must share a session"):
+            connection.execute(
+                _score_insert_sql(replace=True),
+                (valid_id, f"candidate-{suffix}-a", f"brief-{suffix}-b"),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="cross a score session"):
+            connection.execute(
+                "UPDATE OR REPLACE candidate SET session_id=? WHERE id=?",
+                (f"session-{suffix}-b", f"candidate-{suffix}-a"),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="cross a score session"):
+            connection.execute(
+                "UPDATE OR REPLACE role_brief SET session_id=? WHERE id=?",
+                (f"session-{suffix}-b", f"brief-{suffix}-a"),
+            )
+        assert connection.execute(
+            "SELECT candidate_id, brief_id FROM score WHERE id=?", (valid_id,)
+        ).fetchone() == (f"candidate-{suffix}-a", f"brief-{suffix}-a")
+
+
+def test_v0012_preflight_rejects_existing_cross_session_scores_atomically(
+    tmp_path: Path,
+) -> None:
+    database = Database(tmp_path / "v12-preflight.db")
+    database.initialize()
+    with database.engine.begin() as connection:
+        connection.execute(
+            text("DELETE FROM schema_migration WHERE version=:version"),
+            {"version": v0012_score_session_provenance.VERSION},
+        )
+        for name in v0012_score_session_provenance.TRIGGER_NAMES:
+            connection.exec_driver_sql(f'DROP TRIGGER "{name}"')
+    _seed_two_score_sessions(database, "preflight")
+    with database.engine.begin() as connection:
+        connection.exec_driver_sql(
+            _score_insert_sql(),
+            (
+                "score-preflight",
+                "candidate-preflight-a",
+                "brief-preflight-b",
+            ),
+        )
+    baseline = _schema_objects(database.path)
+    database.dispose()
+
+    retry = Database(database.path)
+    with pytest.raises(RuntimeError, match="sessions differ"):
+        retry.initialize()
+    assert _schema_objects(retry.path) == baseline
+    with sqlite3.connect(retry.path) as connection:
+        assert connection.execute(
+            "SELECT candidate_id, brief_id FROM score WHERE id='score-preflight'"
+        ).fetchone() == ("candidate-preflight-a", "brief-preflight-b")
+        connection.execute(
+            "UPDATE score SET brief_id='brief-preflight-a' WHERE id='score-preflight'"
+        )
+
+    retry.initialize()
+    retry.dispose()
+
+
+@pytest.mark.parametrize(
+    "failure_after", range(1, len(v0012_score_session_provenance.STATEMENTS) + 1)
+)
+def test_v0012_each_statement_is_atomic_and_retryable(
+    tmp_path: Path, monkeypatch, failure_after: int
+) -> None:
+    database = Database(tmp_path / f"interrupted-v12-{failure_after}.db")
+    database.initialize()
+    with database.engine.begin() as connection:
+        connection.execute(
+            text("DELETE FROM schema_migration WHERE version=:version"),
+            {"version": v0012_score_session_provenance.VERSION},
+        )
+        for name in v0012_score_session_provenance.TRIGGER_NAMES:
+            connection.exec_driver_sql(f'DROP TRIGGER "{name}"')
+    baseline = _schema_objects(database.path)
+    database.dispose()
+    retry = Database(database.path)
+    original_apply = v0012_score_session_provenance.apply
+
+    def interrupted_apply(connection) -> None:
+        v0012_score_session_provenance._preflight(connection)
+        for index, statement in enumerate(
+            v0012_score_session_provenance.STATEMENTS, start=1
+        ):
+            connection.exec_driver_sql(statement)
+            if index == failure_after:
+                raise RuntimeError(f"interrupted after v12 statement {index}")
+
+    monkeypatch.setattr(v0012_score_session_provenance, "apply", interrupted_apply)
+    with pytest.raises(RuntimeError, match=f"v12 statement {failure_after}"):
+        retry.initialize()
+    assert _schema_objects(retry.path) == baseline
+
+    monkeypatch.setattr(v0012_score_session_provenance, "apply", original_apply)
+    retry.initialize()
+    retry.dispose()
+
+
+@pytest.mark.parametrize(
+    "session_root_query",
+    [
+        "SELECT candidate.session_id FROM score "
+        "JOIN candidate ON candidate.id = score.candidate_id WHERE score.id=?",
+        "SELECT role_brief.session_id FROM score "
+        "JOIN role_brief ON role_brief.id = score.brief_id WHERE score.id=?",
+    ],
+)
+def test_full_purge_uses_same_owning_session_from_either_score_root(
+    database: Database,
+    session_root_query: str,
+) -> None:
+    suffix = str(abs(hash(session_root_query)))
+    evidence_id = _seed_evidence(database, f"same-session-purge-{suffix}")
+    score_id = f"score-same-session-purge-{suffix}"
+    path = database.path
+    database.dispose()
+
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        session_id = connection.execute(session_root_query, (score_id,)).fetchone()
+        assert session_id is not None
+        connection.execute("DELETE FROM session WHERE id=?", session_id)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM evidence WHERE id=?", (evidence_id,)
+        ).fetchone() == (0,)

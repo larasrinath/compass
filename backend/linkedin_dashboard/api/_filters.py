@@ -79,7 +79,7 @@ _MATRIX_PARAMETER = re.compile(
 _SECRET_LABEL = (
     r"(?:access[ _-]?(?:credentials?|key|token)|api[ _-]?key|"
     r"auth(?:orization|[ _-]?token)?|client[ _-]?(?:key|secret)|"
-    r"cookie(?:[ _-]?path)?|credentials?|key|li_at|password|"
+    r"cookie(?:[ _-]?path)?|credentials?|key|li_at|pass[ _-]?word|"
     r"proxy[ _-]?(?:password|username)|refresh[ _-]?token|secret|"
     r"session[ _-]?token|token|x[ _-]?api[ _-]?key)"
 )
@@ -97,6 +97,12 @@ _AUTHORIZATION_BEARER = re.compile(
 _BEARER_SECRET = re.compile(
     r"(?P<label>\bbearer\s+)"
     r"(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|.+?(?=[;,&?#\r\n]|$))",
+    re.IGNORECASE,
+)
+_QUOTED_LABELED_VALUE = re.compile(
+    r"(?P<label>(?P<label_quote>[\"'])(?P<label_name>[^\"']+)"
+    r"(?P=label_quote)\s*[:=]\s*)"
+    r"(?P<value>\"[^\"\r\n]*\"|'[^'\r\n]*'|.+?(?=[,;}\r\n]|$))",
     re.IGNORECASE,
 )
 _SENSITIVE_QUERY_KEYS = {
@@ -184,18 +190,23 @@ def _is_json_media_type(content_type: str) -> bool:
     )
 
 
-def _is_linkedin_relative_url(value: str, field_name: str | None) -> bool:
+def _linkedin_relative_url_shadow(value: str, field_name: str | None) -> str | None:
     if field_name not in _LINKEDIN_URL_KEYS or "\\" in value:
-        return False
-    parsed = urlsplit(value)
+        return None
+    decoded, _, complete = _bounded_unquote(value)
+    if not complete or "\\" in decoded:
+        return None
+    parsed = urlsplit(decoded)
     path_without_matrix = "/".join(
         segment.partition(";")[0] for segment in parsed.path.split("/")
     )
-    return (
+    if (
         not parsed.scheme
         and not parsed.netloc
         and bool(_LINKEDIN_RELATIVE_PATH.fullmatch(path_without_matrix))
-    )
+    ):
+        return decoded
+    return None
 
 
 def _compact_identifier(value: str) -> str:
@@ -290,6 +301,25 @@ def _is_sensitive_identifier(value: str) -> bool:
     return any(
         _normalized_identifier_is_sensitive(shadow)
         for shadow in _malformed_decoding_shadows(decoded)
+    )
+
+
+def _quoted_label_is_sensitive(match: re.Match[str]) -> bool:
+    return _is_sensitive_identifier(match.group("label_name"))
+
+
+def _redact_quoted_labeled_value(match: re.Match[str]) -> str:
+    if not _quoted_label_is_sensitive(match):
+        return match.group(0)
+    value = match.group("value")
+    quote = value[0] if value[:1] in {'"', "'"} else ""
+    return f"{match.group('label')}{quote}[redacted]{quote}"
+
+
+def _contains_sensitive_quoted_label(value: str) -> bool:
+    return any(
+        _quoted_label_is_sensitive(match)
+        for match in _QUOTED_LABELED_VALUE.finditer(value)
     )
 
 
@@ -438,6 +468,7 @@ def _decoded_shadow_is_sensitive(value: str, decoded: str) -> str | None:
         _LABELED_SECRET.search(decoded)
         or _AUTHORIZATION_BEARER.search(decoded)
         or _BEARER_SECRET.search(decoded)
+        or _contains_sensitive_quoted_label(decoded)
     ):
         return "[redacted]"
     if (
@@ -453,6 +484,17 @@ def _decoded_shadow_is_sensitive(value: str, decoded: str) -> str | None:
     if _UNIX_PATH.search(decoded):
         return "[redacted-path]"
     return None
+
+
+def _redact_authority(match: re.Match[str]) -> str:
+    authority = match.group("authority")
+    decoded_authority, _, complete = _bounded_unquote(authority)
+    if not complete:
+        return f"{match.group('prefix')}[redacted]"
+    if "@" not in decoded_authority:
+        return match.group(0)
+    host = decoded_authority.rsplit("@", 1)[1]
+    return f"{match.group('prefix')}[redacted]@{host}"
 
 
 def _redact_string(
@@ -474,8 +516,14 @@ def _redact_string(
         trusted_openapi=trusted_openapi,
     ):
         return value
-    if _is_linkedin_relative_url(value, field_name):
-        return _sanitize_url_components(value)
+    linkedin_shadow = _linkedin_relative_url_shadow(value, field_name)
+    if linkedin_shadow is not None:
+        sanitized_shadow = _sanitize_url_components(linkedin_shadow)
+        return (
+            sanitized_shadow
+            if sanitized_shadow != linkedin_shadow
+            else _sanitize_url_components(value)
+        )
 
     # Remove unsafe URL components before judging residual encoding. This lets a
     # malformed query label fail closed without sacrificing the surrounding URL.
@@ -494,15 +542,14 @@ def _redact_string(
                 return "[redacted-encoded]"
         decoded = working
         changed = False
+    if changed and _NETWORK_URL.search(working):
+        sanitized_decoded_url = _URL_AUTHORITY.sub(
+            _redact_authority, _sanitize_url_components(decoded)
+        )
+        if sanitized_decoded_url != decoded:
+            return sanitized_decoded_url
     if changed and (replacement := _decoded_shadow_is_sensitive(working, decoded)):
         return replacement
-
-    def redact_authority(match: re.Match[str]) -> str:
-        authority = match.group("authority")
-        if "@" not in authority:
-            return match.group(0)
-        host = authority.rsplit("@", 1)[1]
-        return f"{match.group('prefix')}[redacted]@{host}"
 
     sanitized = _FILE_URL.sub("[redacted-path]", working)
     sanitized = sanitized.replace(str(Path.home()), "[redacted-home]")
@@ -516,12 +563,13 @@ def _redact_string(
             url, field_name
         ):
             return "[redacted-path]"
-        url = _URL_AUTHORITY.sub(redact_authority, url)
+        url = _URL_AUTHORITY.sub(_redact_authority, url)
         preserved_urls.append(url)
         return f"[preserved-url-{len(preserved_urls) - 1}]"
 
     sanitized = _NETWORK_URL.sub(preserve_network_url, sanitized)
-    sanitized = _URL_AUTHORITY.sub(redact_authority, sanitized)
+    sanitized = _URL_AUTHORITY.sub(_redact_authority, sanitized)
+    sanitized = _QUOTED_LABELED_VALUE.sub(_redact_quoted_labeled_value, sanitized)
     sanitized = _LABELED_SECRET.sub(r"\g<label>[redacted]", sanitized)
     sanitized = _AUTHORIZATION_BEARER.sub(r"\g<label>[redacted]", sanitized)
     sanitized = _BEARER_SECRET.sub(r"\g<label>[redacted]", sanitized)

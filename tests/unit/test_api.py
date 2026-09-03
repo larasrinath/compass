@@ -1286,3 +1286,102 @@ def test_malformed_escape_cannot_split_a_credential_label(
     assert "field-secret" not in serialized
     assert "value-secret" not in serialized
     assert sanitized["safe"] == "visible"
+
+
+def test_quoted_normalized_labels_redact_complete_values_everywhere(tmp_path) -> None:
+    app = create_app(settings_for(tmp_path / "quoted-labels.db"))
+    values = {
+        "embedded_json": 'safe-before {"password":"secret value suffix"} safe-after',
+        "embedded_variant": (
+            "safe-before {'pass-word':'variant secret suffix'} safe-after"
+        ),
+    }
+    payload = ("data: " + _strict_json_dumps(values) + "\n\n").encode()
+
+    @app.get("/api/test/quoted-labels-json")
+    def quoted_labels_json() -> JSONResponse:
+        return JSONResponse(
+            values,
+            headers={
+                "X-Diagnostic": (
+                    'safe-before {"pass-word":"header secret suffix"} safe-after'
+                )
+            },
+        )
+
+    @app.get("/api/test/quoted-labels-sse")
+    def quoted_labels_sse() -> StreamingResponse:
+        return StreamingResponse(
+            (bytes([byte]) for byte in payload),
+            media_type="text/event-stream",
+        )
+
+    with client_for(app) as client:
+        json_response = client.get("/api/test/quoted-labels-json")
+        sse_response = client.get("/api/test/quoted-labels-sse")
+
+    outputs = (
+        json_response.text,
+        sse_response.text,
+        json_response.headers["x-diagnostic"],
+    )
+    for output in outputs:
+        for marker in (
+            "secret value suffix",
+            "variant secret suffix",
+            "header secret suffix",
+        ):
+            assert marker not in output
+        assert "safe-before" in output
+        assert "safe-after" in output
+
+
+def test_encoded_url_authority_and_delimiters_are_inspected_everywhere(
+    tmp_path,
+) -> None:
+    app = create_app(settings_for(tmp_path / "encoded-url-delimiters.db"))
+    values = {
+        "url": ("https://operator%3Aauthority-secret%2Fpart%40example.test/path"),
+        "profile_url": "/in/safe%253Btoken%253Dmatrix-secret/",
+        "safe_url": "https://example.test/path%20name?q=hello%20world",
+        "relative_url": "/in/safe-person/",
+    }
+    payload = ("data: " + _strict_json_dumps(values) + "\n\n").encode()
+
+    @app.get("/api/test/encoded-url-json")
+    def encoded_url_json() -> JSONResponse:
+        return JSONResponse(
+            values,
+            headers={
+                "X-Encoded-Authority": (
+                    "https://operator%253Aheader-secret%2540example.test/path"
+                ),
+                "X-Encoded-Relative": "/in/safe%3Btoken%3Dheader-matrix-secret/",
+                "X-Safe-Url": "https://example.test/path%20name",
+            },
+        )
+
+    @app.get("/api/test/encoded-url-sse")
+    def encoded_url_sse() -> StreamingResponse:
+        return StreamingResponse(
+            (bytes([byte]) for byte in payload),
+            media_type="text/event-stream",
+        )
+
+    with client_for(app) as client:
+        json_response = client.get("/api/test/encoded-url-json")
+        sse_response = client.get("/api/test/encoded-url-sse")
+
+    for output in (json_response.text, sse_response.text):
+        assert "authority-secret" not in output
+        assert "matrix-secret" not in output
+        assert "https://[redacted]@example.test/path" in output
+        assert "/in/safe;token=[redacted]/" in output
+        assert "https://example.test/path%20name?q=hello%20world" in output
+        assert "/in/safe-person/" in output
+    assert "header-secret" not in json_response.headers["x-encoded-authority"]
+    assert "header-matrix-secret" not in json_response.headers["x-encoded-relative"]
+    assert json_response.headers["x-encoded-authority"] == (
+        "https://[redacted]@example.test/path"
+    )
+    assert json_response.headers["x-safe-url"] == ("https://example.test/path%20name")
