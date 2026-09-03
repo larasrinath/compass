@@ -250,7 +250,7 @@ def test_profile_urn_is_write_once_and_conflict_quarantines_routing(tmp_path) ->
     app = create_app(_settings(tmp_path / "urn.db"), queue_executor=executor)
     with TestClient(app, base_url="http://127.0.0.1") as client:
         candidate_id = _seed_candidate(app, client)
-        with pytest.raises(IntegrityError, match="needs observation"):
+        with pytest.raises(IntegrityError, match="needs attested observation"):
             with app.state.database.engine.begin() as connection:
                 connection.exec_driver_sql(
                     "UPDATE candidate SET profile_urn=? WHERE id=?",
@@ -852,6 +852,146 @@ def test_budget_exhaustion_and_cancel_finish_fetch_history_immediately(
             assert fetch.finished_at is not None
 
 
+def test_terminal_null_fetch_cannot_be_forged_into_identity_authority(tmp_path) -> None:
+    good_projection = {
+        "url": "https://www.linkedin.com/in/legit/",
+        "profile_urn": "urn:li:fsd_profile:legit",
+        "sections": {
+            "main_profile": "Legit\nEngineer\nChicago",
+            "experience": "Experience\nEngineer\nAcme",
+        },
+    }
+    malformed_projection = {
+        "url": "https://www.linkedin.com/in/malformed/",
+        "profile_urn": "urn:li:fsd_profile:malformed",
+        "sections": [],
+    }
+    app = create_app(
+        _settings(tmp_path / "terminal-authority.db"),
+        queue_executor=ProfileExecutor([good_projection, malformed_projection]),
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        legit_id = _seed_candidate(app, client, "legit")
+        legit_job = client.post(f"/api/candidates/{legit_id}/enrich", json={}).json()[
+            "job_id"
+        ]
+        assert _wait(app, legit_job).state == "done"
+        legit_detail = client.get(f"/api/candidates/{legit_id}").json()
+        assert legit_detail["profile_urn_routing_allowed"] is True
+        with app.state.database.sessions() as session:
+            legit_fetch = session.scalar(
+                select(ProfileFetch).where(ProfileFetch.job_id == legit_job)
+            )
+            assert legit_fetch is not None
+            assert legit_fetch.raw_response is not None
+            assert legit_fetch.projection_payload == good_projection
+            assert legit_fetch.projection_source == "structured_content"
+
+        malformed_id = _seed_candidate(app, client, "malformed")
+        malformed_job = client.post(
+            f"/api/candidates/{malformed_id}/enrich", json={}
+        ).json()["job_id"]
+        assert _wait(app, malformed_job).state == "done"
+        with app.state.database.sessions() as session:
+            malformed_fetch = session.scalar(
+                select(ProfileFetch).where(ProfileFetch.job_id == malformed_job)
+            )
+            assert malformed_fetch is not None
+            assert malformed_fetch.raw_response is not None
+            assert malformed_fetch.contract_error == "profile_contract_error"
+            malformed_fetch_id = malformed_fetch.id
+        with pytest.raises(IntegrityError, match="requires an attested fetch"):
+            with app.state.database.engine.begin() as connection:
+                connection.exec_driver_sql(
+                    "INSERT INTO profile_identity_observation "
+                    "(id,fetch_id,candidate_id,returned_url,observed_urn,verdict,"
+                    "observed_at) VALUES "
+                    "('forged-malformed-observation',?,?,?,?,'accepted','now')",
+                    (
+                        malformed_fetch_id,
+                        malformed_id,
+                        malformed_projection["url"],
+                        malformed_projection["profile_urn"],
+                    ),
+                )
+        assert (
+            client.get(f"/api/candidates/{malformed_id}").json()[
+                "profile_urn_routing_allowed"
+            ]
+            is False
+        )
+
+        with app.state.database.sessions.begin() as session:
+            control = session.get(QueueControl, 1)
+            assert control is not None
+            control.state = "paused"
+            control.pause_reason = "AUTH_REQUIRED"
+            control.resume_at = None
+            control.operator_resume_required = True
+        pending_id = _seed_candidate(app, client, "pending-forge")
+        pending_job = client.post(
+            f"/api/candidates/{pending_id}/enrich", json={}
+        ).json()["job_id"]
+        with app.state.database.sessions() as session:
+            pending_fetch = session.scalar(
+                select(ProfileFetch).where(ProfileFetch.job_id == pending_job)
+            )
+            assert pending_fetch is not None and pending_fetch.raw_response is None
+            pending_fetch_id = pending_fetch.id
+        forged_projection = {
+            "url": "https://www.linkedin.com/in/pending-forge/",
+            "profile_urn": "urn:li:fsd_profile:forged",
+            "sections": {},
+        }
+        with pytest.raises(IntegrityError, match="projection_requires_raw"):
+            with app.state.database.engine.begin() as connection:
+                connection.exec_driver_sql(
+                    "UPDATE profile_fetch SET projection_payload=?,"
+                    "projection_source='structured_content' WHERE id=?",
+                    (json.dumps(forged_projection), pending_fetch_id),
+                )
+
+        assert client.post(f"/api/jobs/{pending_job}/cancel").status_code == 200
+        with pytest.raises(IntegrityError, match="terminal profile projection"):
+            with app.state.database.engine.begin() as connection:
+                connection.exec_driver_sql(
+                    "UPDATE profile_fetch SET raw_response=?,projection_payload=?,"
+                    "projection_source='structured_content' WHERE id=?",
+                    (
+                        json.dumps({"structuredContent": forged_projection}),
+                        json.dumps(forged_projection),
+                        pending_fetch_id,
+                    ),
+                )
+        with pytest.raises(
+            IntegrityError,
+            match=r"history already exists|requires exact job, candidate, and request",
+        ):
+            with app.state.database.engine.begin() as connection:
+                connection.exec_driver_sql(
+                    "INSERT OR REPLACE INTO profile_fetch "
+                    "SELECT * FROM profile_fetch WHERE id=?",
+                    (pending_fetch_id,),
+                )
+        with pytest.raises(IntegrityError, match="requires an attested fetch"):
+            with app.state.database.engine.begin() as connection:
+                connection.exec_driver_sql(
+                    "INSERT INTO profile_identity_observation "
+                    "(id,fetch_id,candidate_id,returned_url,observed_urn,verdict,"
+                    "observed_at) VALUES "
+                    "('forged-cancelled-observation',?,?,?,?,'accepted','now')",
+                    (
+                        pending_fetch_id,
+                        pending_id,
+                        forged_projection["url"],
+                        forged_projection["profile_urn"],
+                    ),
+                )
+        pending_detail = client.get(f"/api/candidates/{pending_id}").json()
+        assert pending_detail["profile_urn"] is None
+        assert pending_detail["profile_urn_routing_allowed"] is False
+
+
 def test_paused_admission_reserves_budget_and_batch_rolls_back_wholly(tmp_path) -> None:
     app = create_app(
         _settings(tmp_path / "admission.db"), queue_executor=ProfileExecutor([])
@@ -1194,7 +1334,7 @@ def test_m3_history_rejects_update_delete_replace_and_forged_projection(
                     (candidate_id, row_ids["profile_fetch"]),
                 )
 
-        with pytest.raises(IntegrityError, match="projection history is immutable"):
+        with pytest.raises(IntegrityError, match="profile projection is immutable"):
             with app.state.database.engine.begin() as connection:
                 connection.exec_driver_sql(
                     "UPDATE profile_fetch SET contract_error='forged' WHERE id=?",

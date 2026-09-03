@@ -83,14 +83,15 @@ def canonical_sections(sections: list[str] | tuple[str, ...]) -> list[str]:
 def profile_urn_routing_allowed(session: Any, candidate: Candidate) -> bool:
     if candidate.profile_urn is None or candidate.profile_urn_quarantined:
         return False
-    accepted = session.scalar(
-        select(ProfileIdentityObservation.id)
-        .where(
-            ProfileIdentityObservation.candidate_id == candidate.id,
-            ProfileIdentityObservation.verdict == "accepted",
-            ProfileIdentityObservation.observed_urn == candidate.profile_urn,
+    accepted = any(
+        _identity_observation_is_attested(session, observation)
+        for observation in session.scalars(
+            select(ProfileIdentityObservation).where(
+                ProfileIdentityObservation.candidate_id == candidate.id,
+                ProfileIdentityObservation.verdict == "accepted",
+                ProfileIdentityObservation.observed_urn == candidate.profile_urn,
+            )
         )
-        .limit(1)
     )
     divergent = session.scalar(
         select(ProfileIdentityObservation.id)
@@ -106,7 +107,7 @@ def profile_urn_routing_allowed(session: Any, candidate: Candidate) -> bool:
         )
         .limit(1)
     )
-    return accepted is not None and divergent is None
+    return accepted and divergent is None
 
 
 def _attested_payload(raw: dict[str, Any]) -> tuple[dict[str, Any], str]:
@@ -117,6 +118,45 @@ def _attested_payload(raw: dict[str, Any]) -> tuple[dict[str, Any], str]:
     if len(structured) == 1 and isinstance(wrapped, dict):
         return wrapped, "wrapped_result"
     return structured, "structured_content"
+
+
+def _identity_observation_is_attested(
+    session: Any, observation: ProfileIdentityObservation
+) -> bool:
+    fetch = session.get(ProfileFetch, observation.fetch_id)
+    candidate = session.get(Candidate, observation.candidate_id)
+    if (
+        fetch is None
+        or candidate is None
+        or fetch.candidate_id != observation.candidate_id
+        or not isinstance(observation.returned_url, str)
+        or fetch.contract_error is not None
+        or not isinstance(fetch.raw_response, dict)
+        or not isinstance(fetch.projection_payload, dict)
+    ):
+        return False
+    committed_attempt = session.scalar(
+        select(JobAttempt.id)
+        .where(
+            JobAttempt.job_id == fetch.job_id,
+            JobAttempt.raw_response == fetch.raw_response,
+        )
+        .limit(1)
+    )
+    if committed_attempt is None:
+        return False
+    try:
+        payload, source = _attested_payload(fetch.raw_response)
+        returned_username = normalize_person_reference(observation.returned_url)
+    except (ProfileContractError, ValueError):
+        return False
+    return (
+        source == fetch.projection_source
+        and payload == fetch.projection_payload
+        and returned_username.casefold() == candidate.username.casefold()
+        and payload.get("url") == observation.returned_url
+        and payload.get("profile_urn") == observation.observed_urn
+    )
 
 
 def _validate_profile_payload(
@@ -293,7 +333,9 @@ class EnrichmentResultProcessor:
             projection_payload=attested,
             projection_source=source,
             contract_error=(
-                "profile_contract_error" if contract_error is not None else None
+                "profile_contract_error"
+                if contract_error is not None and not url_mismatch
+                else None
             ),
         )
         if contract_error is not None:

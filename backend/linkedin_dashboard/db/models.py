@@ -399,6 +399,11 @@ class ProfileFetch(Base):
             "(request_stage IN ('stage1','stage2') AND parent_fetch_id IS NULL)",
             name="ck_profile_fetch_parent_stage",
         ),
+        CheckConstraint(
+            "(projection_payload IS NULL AND projection_source IS NULL) OR "
+            "(raw_response IS NOT NULL AND raw_response <> 'null')",
+            name="ck_profile_fetch_projection_requires_raw",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
