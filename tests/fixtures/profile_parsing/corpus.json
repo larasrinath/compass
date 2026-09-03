@@ -1,0 +1,13 @@
+{
+  "provenance": "synthetic_representative_not_recorded",
+  "profiles": [
+    {"id": "synthetic-01", "experience": "Experience\nStaff Engineer\nNorthwind Labs\n2022 - Present"},
+    {"id": "synthetic-02", "experience": "Experience\nProduct Manager\nContoso Health\n2020 - Present"},
+    {"id": "synthetic-03", "experience": "Experience\nData Scientist\nFabrikam Research\n2019 - 2024"},
+    {"id": "synthetic-04", "experience": "Experience\nSecurity Architect\nAdventure Works\n2021 - Present"},
+    {"id": "synthetic-05", "experience": "Experience\nEngineering Director\nTailspin Toys\n2018 - Present"},
+    {"id": "synthetic-06", "experience": "Experience\nPrincipal Designer\nWide World Importers\n2023 - Present"},
+    {"id": "synthetic-07", "experience": "Experience\nDeveloper Advocate 🚀\nFourth Coffee\n2022 - Present"},
+    {"id": "synthetic-08", "experience": "Experience\nMachine Learning Engineer\nLucerne Publishing\n2020 - 2025"}
+  ]
+}

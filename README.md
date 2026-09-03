@@ -61,6 +61,17 @@ shows a neutral “Provenance withheld” state. The frontend slices spans with
 `Array.from`, preserving astral-character alignment, and renders source text
 only as React text nodes.
 
+Profile URNs are write-once routing hints, never scoring inputs. The first
+non-null observation is retained; a later conflict or returned-profile URL
+mismatch permanently quarantines routing while preserving an immutable
+observation and audit record. Database attestations bind every projected
+section, error, reference, and parsed span to the exact committed MCP envelope.
+The eight-profile parser corpus under `tests/fixtures/profile_parsing` is
+explicitly synthetic representative data. It provides a 16-field regression
+denominator, not real-profile acceptance evidence; the ≥90% title/company
+metric on a consented non-private recorded corpus remains a manual acceptance
+blocker.
+
 ## Prerequisites
 
 - Python 3.12.4–3.14 and [uv](https://docs.astral.sh/uv/)

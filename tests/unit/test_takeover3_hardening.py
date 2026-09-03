@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import stat
@@ -786,6 +787,15 @@ def test_approved_evidence_supports_only_one_way_raw_purge(
     suffix = f"raw-purge-{approval_record}"
     candidate_id, draft_id = _seed_candidate(database, suffix)
     raw_snippet = f"private profile snippet {approval_record}"
+    profile_payload = {
+        "url": f"https://www.linkedin.com/in/person-{suffix}/",
+        "sections": {"experience": raw_snippet},
+    }
+    raw_envelope = {
+        "content": [{"type": "text", "text": "fixture"}],
+        "structuredContent": profile_payload,
+        "isError": False,
+    }
     with database.engine.begin() as connection:
         connection.exec_driver_sql(
             "INSERT INTO role_brief "
@@ -795,30 +805,73 @@ def test_approved_evidence_supports_only_one_way_raw_purge(
             f"('brief-{suffix}', 'session-{suffix}', 1, 'now', 'job', '[]', "
             "'anywhere', '[]', '[]', '[]', 'plain', 'v1')"
         )
-        connection.exec_driver_sql(
-            "INSERT INTO job "
-            "(id, session_id, kind, payload, state, attempts, max_attempts, queued_at, "
-            "finished_at, correlation_id) VALUES "
-            f"('job-{suffix}', 'session-{suffix}', 'get_person_profile', "
-            f'\'{{"linkedin_username":"user-{suffix}","sections":["experience"]}}\', '
-            "'done', 1, 2, 'now', 'now', 'm3-lineage')"
+        connection.execute(
+            text(
+                "INSERT INTO job "
+                "(id, session_id, kind, payload, state, attempts, max_attempts, "
+                "queued_at, finished_at, correlation_id) VALUES "
+                "(:job, :session, 'get_person_profile', :payload, 'done', 1, 2, "
+                "'now', 'now', 'm3-lineage')"
+            ),
+            {
+                "job": f"job-{suffix}",
+                "session": f"session-{suffix}",
+                "payload": json.dumps(
+                    {
+                        "linkedin_username": f"person-{suffix}",
+                        "sections": ["experience"],
+                    }
+                ),
+            },
         )
-        connection.exec_driver_sql(
-            "INSERT INTO job_attempt "
-            "(id, job_id, attempt_number, worker_token, started_at, "
-            "response_received_at, finished_at, outcome, raw_response) VALUES "
-            f"('job-attempt-{suffix}', 'job-{suffix}', 1, 'm3-lineage', 'now', "
-            "'now', 'now', 'ok', '{}')"
+        connection.execute(
+            text(
+                "INSERT INTO job_attempt "
+                "(id, job_id, attempt_number, worker_token, started_at, "
+                "response_received_at, finished_at, outcome, raw_response) VALUES "
+                "(:attempt, :job, 1, 'm3-lineage', 'now', 'now', 'now', 'ok', :raw)"
+            ),
+            {
+                "attempt": f"job-attempt-{suffix}",
+                "job": f"job-{suffix}",
+                "raw": json.dumps(raw_envelope),
+            },
         )
-        connection.exec_driver_sql(
-            "INSERT INTO profile_fetch "
-            "(id, candidate_id, job_id, tool, requested_sections, args, started_at, "
-            "finished_at, duration_ms, outcome, raw_response, processed_at, "
-            "request_stage, root_fetch_id) VALUES "
-            f"('fetch-{suffix}', 'candidate-{suffix}', 'job-{suffix}', "
-            "'get_person_profile', '[\"main_profile\",\"experience\"]', '{}', "
-            "'now', 'now', 1, "
-            f"'ok', '{{}}', 'now', 'stage1', 'fetch-{suffix}')"
+        connection.execute(
+            text(
+                "INSERT INTO profile_fetch "
+                "(id, candidate_id, job_id, tool, requested_sections, args, "
+                "started_at, outcome, request_stage, root_fetch_id) VALUES "
+                "(:fetch, :candidate, :job, 'get_person_profile', :sections, :args, "
+                "'now', NULL, 'stage1', :fetch)"
+            ),
+            {
+                "fetch": f"fetch-{suffix}",
+                "candidate": f"candidate-{suffix}",
+                "job": f"job-{suffix}",
+                "sections": json.dumps(["main_profile", "experience"]),
+                "args": json.dumps(
+                    {
+                        "linkedin_username": f"person-{suffix}",
+                        "sections": ["experience"],
+                    }
+                ),
+            },
+        )
+        connection.execute(
+            text(
+                "UPDATE profile_fetch SET raw_response=:raw, "
+                "projection_payload=:projection, "
+                "projection_source='structured_content', returned_url=:url, "
+                "finished_at='now', duration_ms=1, outcome='ok', processed_at='now' "
+                "WHERE id=:fetch"
+            ),
+            {
+                "raw": json.dumps(raw_envelope),
+                "projection": json.dumps(profile_payload),
+                "url": profile_payload["url"],
+                "fetch": f"fetch-{suffix}",
+            },
         )
         connection.execute(
             text(
@@ -1238,6 +1291,9 @@ _V0009_TRIGGER_NAMES = (
 
 def _prepare_pre_v0009_schema(database: Database, *, drop_column: bool) -> None:
     with _migration_test_phase(database), database.engine.begin() as connection:
+        # Later M3 delete authorization intentionally references the v0009 purge
+        # marker, so remove that later trigger while reconstructing a pre-v0009 DB.
+        connection.exec_driver_sql('DROP TRIGGER IF EXISTS "parsed_field_no_delete"')
         connection.execute(
             text("DELETE FROM schema_migration WHERE version=:version"),
             {"version": v0012_score_session_provenance.VERSION},

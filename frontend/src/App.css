@@ -698,6 +698,18 @@ footer {
   border-radius: 8px;
   background: rgba(20, 122, 88, 0.09);
 }
+
+.section-selector {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.section-selector button[aria-pressed="true"] {
+  border-color: var(--teal);
+  background: var(--teal-pale);
+  color: var(--ink);
+}
 .raw-placeholder pre {
   max-height: 560px;
   overflow: auto;

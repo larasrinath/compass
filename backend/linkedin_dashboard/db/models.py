@@ -194,6 +194,10 @@ class Candidate(Base):
             "retrieval_status IN ('pending','ok','partial','rate_limited','failed')",
             name="ck_candidate_retrieval_status",
         ),
+        CheckConstraint(
+            "profile_urn_quarantined IN (0, 1)",
+            name="ck_candidate_profile_urn_quarantined",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -204,6 +208,10 @@ class Candidate(Base):
     profile_url: Mapped[str] = mapped_column(Text, nullable=False)
     display_name: Mapped[str | None] = mapped_column(Text)
     profile_urn: Mapped[str | None] = mapped_column(Text)
+    profile_urn_quarantined: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
+    profile_contract_error: Mapped[str | None] = mapped_column(Text)
     first_seen_at: Mapped[str] = mapped_column(String(32), nullable=False)
     stage: Mapped[str] = mapped_column(String(16), nullable=False)
     retrieval_status: Mapped[str] = mapped_column(String(16), nullable=False)
@@ -377,6 +385,9 @@ class ProfileFetch(Base):
     duration_ms: Mapped[int | None] = mapped_column(Integer)
     outcome: Mapped[str | None] = mapped_column(String(16))
     raw_response: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    projection_payload: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    projection_source: Mapped[str | None] = mapped_column(String(32))
+    contract_error: Mapped[str | None] = mapped_column(Text)
     returned_url: Mapped[str | None] = mapped_column(Text)
     processed_at: Mapped[str | None] = mapped_column(String(32))
     request_stage: Mapped[str] = mapped_column(String(16), nullable=False)
@@ -386,6 +397,29 @@ class ProfileFetch(Base):
     root_fetch_id: Mapped[str] = mapped_column(
         ForeignKey("profile_fetch.id", ondelete="CASCADE"), nullable=False
     )
+
+
+class ProfileIdentityObservation(Base):
+    __tablename__ = "profile_identity_observation"
+    __table_args__ = (
+        CheckConstraint(
+            "verdict IN ('accepted','same','missing','conflict','url_mismatch')",
+            name="ck_profile_identity_observation_verdict",
+        ),
+        UniqueConstraint("fetch_id", name="uq_profile_identity_observation_fetch"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("candidate.id", ondelete="CASCADE"), nullable=False
+    )
+    fetch_id: Mapped[str] = mapped_column(
+        ForeignKey("profile_fetch.id", ondelete="CASCADE"), nullable=False
+    )
+    returned_url: Mapped[str | None] = mapped_column(Text)
+    observed_urn: Mapped[str | None] = mapped_column(Text)
+    verdict: Mapped[str] = mapped_column(String(32), nullable=False)
+    observed_at: Mapped[str] = mapped_column(String(32), nullable=False)
 
 
 class ProfileSection(Base):

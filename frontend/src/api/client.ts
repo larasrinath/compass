@@ -205,6 +205,10 @@ export interface CandidateRecord {
   retrieval_status: string
   profile_urn: string | null
   profile_urn_is_scored: false
+  profile_urn_quarantined: boolean
+  profile_urn_routing_allowed: boolean
+  profile_contract_error: string | null
+  active_job_id: string | null
   source_count: number
   sources: CandidateSource[]
 }
@@ -221,13 +225,15 @@ export interface CompanyLookup {
 export interface ParsedFieldRecord {
   id: string
   field_key: string
-  value: string
+  value: string | null
   section_name: string
   profile_section_id: string
-  span_start: number
-  span_end: number
-  snippet: string
+  span_start: number | null
+  span_end: number | null
+  snippet: string | null
   origin: 'deterministic' | 'llm_verified'
+  provenance_available: boolean
+  provenance_label: string
 }
 
 export interface CandidateDetail {
@@ -237,6 +243,9 @@ export interface CandidateDetail {
   display_name: string | null
   profile_urn: string | null
   profile_urn_is_scored: false
+  profile_urn_quarantined: boolean
+  profile_urn_routing_allowed: boolean
+  profile_contract_error: string | null
   stage: CandidateRecord['stage']
   retrieval_status: string
   active_job_id: string | null
@@ -256,7 +265,8 @@ export interface CandidateDetail {
     requested_sections: string[]
     started_at: string
     finished_at: string | null
-    outcome: string
+    outcome: string | null
+    contract_error: string | null
   }>
   errors: Array<{
     section_name: string

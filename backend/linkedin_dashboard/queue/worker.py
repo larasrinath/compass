@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 from linkedin_dashboard.correlation import current_correlation_id
 from linkedin_dashboard.db.models import (
+    Candidate,
     DashboardSession,
     Job,
     JobAttempt,
@@ -441,14 +442,25 @@ class DurableJobQueue:
 
     async def cancel(self, job_id: str) -> bool:
         now = utc_now()
+        kind: JobKind | None = None
         with self.database.sessions.begin() as session:
+            job = session.get(Job, job_id)
+            if job is not None:
+                try:
+                    kind = JobKind(job.kind)
+                except ValueError:
+                    kind = None
             result = session.execute(
                 update(Job)
                 .where(Job.id == job_id, Job.state == "queued")
                 .values(state="cancelled", finished_at=now)
             )
             cancelled = isinstance(result, CursorResult) and result.rowcount == 1
+            if cancelled and job is not None:
+                self._terminalize_unstarted_profile(session, job, now)
         if cancelled:
+            if self.result_processor is not None and kind is not None:
+                self.result_processor.process_failure(job_id, kind, ErrorClass.UNKNOWN)
             self.events.publish(self._job_event(job_id, "cancelled"))
             self._publish_snapshot()
             self._wake.set()
@@ -642,7 +654,10 @@ class DurableJobQueue:
 
     def _claim_next(self) -> tuple[ClaimedJob | None, float | None]:
         try:
-            return self._claim_next_transaction()
+            claimed = self._claim_next_transaction()
+            if claimed[0] is None and self.result_processor is not None:
+                self.result_processor.reconcile()
+            return claimed
         except (IntegrityError, OperationalError):
             # The database-wide partial unique index is the final concurrency
             # guard if two app instances accidentally start workers.
@@ -709,23 +724,29 @@ class DurableJobQueue:
                 try:
                     payload = validate_payload(JobKind(job.kind), job.payload or {})
                 except (ValueError, ValidationError):
+                    terminal_at = utc_now()
                     job.state = "failed"
-                    job.finished_at = utc_now()
+                    job.finished_at = terminal_at
                     job.error = ErrorClass.UNKNOWN.value
+                    self._terminalize_unstarted_profile(session, job, terminal_at)
                     continue
                 if job.attempts == 0:
                     try:
                         cost = self._navigation_cost(session, job, payload)
                     except ValueError:
+                        terminal_at = utc_now()
                         job.state = "failed"
-                        job.finished_at = utc_now()
+                        job.finished_at = terminal_at
                         job.error = ErrorClass.UNKNOWN.value
+                        self._terminalize_unstarted_profile(session, job, terminal_at)
                         continue
                     budget = session.get(DashboardSession, job.session_id)
                     if budget is None or budget.nav_used + cost > budget.nav_budget:
+                        terminal_at = utc_now()
                         job.state = "failed"
-                        job.finished_at = utc_now()
+                        job.finished_at = terminal_at
                         job.error = "BUDGET_EXHAUSTED"
+                        self._terminalize_unstarted_profile(session, job, terminal_at)
                         continue
                 else:
                     cost = 0
@@ -778,6 +799,23 @@ class DurableJobQueue:
                     None,
                 )
             return None, earliest_delay
+
+    @staticmethod
+    def _terminalize_unstarted_profile(session: Any, job: Job, now: str) -> None:
+        if job.kind != JobKind.GET_PERSON_PROFILE.value:
+            return
+        fetch = session.scalar(
+            select(ProfileFetch).where(ProfileFetch.job_id == job.id)
+        )
+        if fetch is None or fetch.processed_at is not None:
+            return
+        fetch.outcome = "error"
+        fetch.finished_at = now
+        fetch.duration_ms = 0
+        fetch.processed_at = now
+        candidate = session.get(Candidate, fetch.candidate_id)
+        if candidate is not None:
+            candidate.retrieval_status = "failed"
 
     def _navigation_cost(self, session: Any, job: Job, payload: JobPayload) -> int:
         if not isinstance(payload, PersonProfilePayload) or not payload.parent_job_id:
@@ -1185,6 +1223,13 @@ class DurableJobQueue:
                 retry_delay is not None and current.attempts < current.max_attempts
             )
             target_state = "queued" if can_retry else "failed"
+            current_attempt = session.get(JobAttempt, job.attempt_id)
+            refund_profile_navigation = (
+                not can_retry
+                and current.kind == JobKind.GET_PERSON_PROFILE.value
+                and current_attempt is not None
+                and current_attempt.response_received_at is None
+            )
             attempt_result = session.execute(
                 update(JobAttempt)
                 .where(
@@ -1221,6 +1266,14 @@ class DurableJobQueue:
                 or job_result.rowcount != 1
             ):
                 raise _StaleClaim("failure transition lost its fence")
+            if refund_profile_navigation:
+                dashboard_session = session.get(DashboardSession, current.session_id)
+                if dashboard_session is not None:
+                    dashboard_session.nav_used = max(
+                        0,
+                        dashboard_session.nav_used - navigation_cost(job.payload),
+                    )
+                self._terminalize_unstarted_profile(session, current, now)
             if error_class in {
                 ErrorClass.AUTH_REQUIRED,
                 ErrorClass.BROWSER_SETUP,

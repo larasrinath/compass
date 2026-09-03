@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   enrichCandidate,
@@ -21,12 +21,16 @@ export function CandidateDetailPage({
   queue: ReturnTypeOfJobEvents
 }) {
   const queryClient = useQueryClient()
+  const enrichmentErrorRef = useRef<HTMLParagraphElement>(null)
   const [selected, setSelected] = useState<string[]>([
     'education',
     'skills',
     'projects',
   ])
   const [selectedFieldId, setSelectedFieldId] = useState<string | null>(null)
+  const [selectedSectionName, setSelectedSectionName] = useState<string | null>(
+    null,
+  )
   const detail = useQuery({
     queryKey: ['candidate', candidateId],
     queryFn: () => getCandidate(candidateId),
@@ -36,13 +40,14 @@ export function CandidateDetailPage({
     queryFn: getProfileSections,
     staleTime: Infinity,
   })
-  const selectedField = detail.data?.fields.find(
-    (field) => field.id === selectedFieldId,
-  )
+  const effectiveSelectedSection =
+    selectedSectionName ??
+    (detail.data ? Object.keys(detail.data.available_sections)[0] : null) ??
+    null
   const rawSection = useQuery({
-    queryKey: ['candidate-section', candidateId, selectedField?.section_name],
-    queryFn: () => getCandidateSection(candidateId, selectedField!.section_name),
-    enabled: Boolean(selectedField),
+    queryKey: ['candidate-section', candidateId, effectiveSelectedSection],
+    queryFn: () => getCandidateSection(candidateId, effectiveSelectedSection!),
+    enabled: Boolean(effectiveSelectedSection),
   })
   const enrich = useMutation({
     mutationFn: (sections: string[]) => enrichCandidate(candidateId, sections),
@@ -51,12 +56,17 @@ export function CandidateDetailPage({
         queryKey: ['candidate', candidateId],
       })
     },
+    onError: () =>
+      requestAnimationFrame(() => enrichmentErrorRef.current?.focus()),
   })
 
   useEffect(() => {
     if (queue.revision > 0) {
       void queryClient.invalidateQueries({
         queryKey: ['candidate', candidateId],
+      })
+      void queryClient.invalidateQueries({
+        queryKey: ['candidate-section', candidateId],
       })
     }
   }, [candidateId, queryClient, queue.revision])
@@ -105,19 +115,43 @@ export function CandidateDetailPage({
           <span>{error.error_message}</span>
         </div>
       ))}
+      {candidate.profile_contract_error ? (
+        <div className="inline-error" role="alert">
+          <strong>Profile contract conflict</strong>
+          <span>
+            Retrieved identity or response data was quarantined and was not trusted.
+          </span>
+        </div>
+      ) : null}
+      {candidate.profile_urn_quarantined ? (
+        <p className="cap-notice" role="status">
+          Profile identifier routing is disabled while this identity conflict remains
+          quarantined.
+        </p>
+      ) : null}
 
       <SectionAvailabilityMap available={candidate.available_sections} />
 
       <section className="panel promotion-panel" aria-labelledby="promotion-title">
         <div>
-          <p className="eyebrow">Stage 2 · explicit action</p>
-          <h2 id="promotion-title">Retrieve up to three more sections</h2>
-          <p>
-            Main profile is implicit, so three promoted sections keep this call to
-            four navigations.
+          <p className="eyebrow">
+            {candidate.stage === 'discovered'
+              ? 'Stage 1 · explicit retry'
+              : 'Stage 2 · explicit action'}
           </p>
+          <h2 id="promotion-title">
+            {candidate.stage === 'discovered'
+              ? 'Retry main profile and experience'
+              : 'Retrieve up to three more sections'}
+          </h2>
+          {candidate.stage !== 'discovered' ? (
+            <p>
+              Main profile is implicit, so three promoted sections keep this call to
+              four navigations.
+            </p>
+          ) : null}
         </div>
-        <fieldset>
+        {candidate.stage !== 'discovered' ? <fieldset>
           <legend>Promoted sections</legend>
           {promotedSections.map((section) => (
             <label key={section}>
@@ -141,24 +175,65 @@ export function CandidateDetailPage({
               Available profile sections could not be loaded.
             </span>
           ) : null}
-        </fieldset>
+        </fieldset> : null}
         <button
           className="primary-action"
           disabled={
-            selected.length === 0 ||
+            (candidate.stage !== 'discovered' && selected.length === 0) ||
             enrich.isPending ||
             Boolean(candidate.active_job_id)
           }
-          onClick={() => enrich.mutate(selected)}
+          onClick={() =>
+            enrich.mutate(
+              candidate.stage === 'discovered' ? ['experience'] : selected,
+            )
+          }
           type="button"
         >
-          {enrich.isPending ? 'Queueing…' : 'Retrieve selected sections'}
+          {enrich.isPending
+            ? 'Queueing…'
+            : candidate.stage === 'discovered'
+              ? 'Retry main profile + experience'
+              : 'Retrieve selected sections'}
         </button>
         {enrich.isError ? (
-          <p className="field-error" role="alert">
+          <p
+            className="field-error"
+            ref={enrichmentErrorRef}
+            role="alert"
+            tabIndex={-1}
+          >
             {enrich.error.message}
           </p>
         ) : null}
+      </section>
+
+      <section className="panel" aria-labelledby="stored-sections-title">
+        <p className="eyebrow">Stored source sections</p>
+        <h2 id="stored-sections-title">Open any retrieved raw section</h2>
+        {Object.keys(candidate.available_sections).length ? (
+          <div
+            aria-label="Stored profile sections"
+            className="section-selector"
+            role="group"
+          >
+            {Object.keys(candidate.available_sections).map((sectionName) => (
+              <button
+                aria-pressed={effectiveSelectedSection === sectionName}
+                key={sectionName}
+                onClick={() => {
+                  setSelectedSectionName(sectionName)
+                  setSelectedFieldId(null)
+                }}
+                type="button"
+              >
+                {sectionName.replaceAll('_', ' ')}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <p>No trusted profile section was stored for this attempt.</p>
+        )}
       </section>
 
       <section aria-labelledby="parsed-title" className="detail-columns">
@@ -172,15 +247,22 @@ export function CandidateDetailPage({
                   <button
                     aria-pressed={selectedFieldId === field.id}
                     className="parsed-field-action"
-                    onClick={() => setSelectedFieldId(field.id)}
+                    onClick={() => {
+                      setSelectedFieldId(field.id)
+                      setSelectedSectionName(field.section_name)
+                    }}
                     type="button"
                   >
                   <small>{field.field_key}</small>
-                  <strong>{field.value}</strong>
-                  <span>
-                    {field.section_name.replaceAll('_', ' ')} · exact stored span{' '}
-                    {field.span_start}:{field.span_end}
-                  </span>
+                  <strong>{field.value ?? field.provenance_label}</strong>
+                  {field.provenance_available ? (
+                    <span>
+                      {field.section_name.replaceAll('_', ' ')} · exact stored span{' '}
+                      {field.span_start}:{field.span_end}
+                    </span>
+                  ) : (
+                    <span>Source offsets withheld</span>
+                  )}
                   </button>
                 </li>
               ))}
@@ -200,7 +282,7 @@ export function CandidateDetailPage({
           ) : rawSection.isError ? (
             <p role="alert">The stored source section could not be opened.</p>
           ) : (
-            <p>Select a parsed field to inspect its exact source span.</p>
+            <p>Select a stored section or parsed field to inspect its source text.</p>
           )}
         </div>
       </section>

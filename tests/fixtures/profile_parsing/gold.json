@@ -1,0 +1,12 @@
+{
+  "profiles": [
+    {"id": "synthetic-01", "titles": ["Staff Engineer"], "companies": ["Northwind Labs"]},
+    {"id": "synthetic-02", "titles": ["Product Manager"], "companies": ["Contoso Health"]},
+    {"id": "synthetic-03", "titles": ["Data Scientist"], "companies": ["Fabrikam Research"]},
+    {"id": "synthetic-04", "titles": ["Security Architect"], "companies": ["Adventure Works"]},
+    {"id": "synthetic-05", "titles": ["Engineering Director"], "companies": ["Tailspin Toys"]},
+    {"id": "synthetic-06", "titles": ["Principal Designer"], "companies": ["Wide World Importers"]},
+    {"id": "synthetic-07", "titles": ["Developer Advocate 🚀"], "companies": ["Fourth Coffee"]},
+    {"id": "synthetic-08", "titles": ["Machine Learning Engineer"], "companies": ["Lucerne Publishing"]}
+  ]
+}

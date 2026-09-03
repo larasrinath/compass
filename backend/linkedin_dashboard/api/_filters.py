@@ -1050,7 +1050,8 @@ def _is_provenance_text_location(location: tuple[str, ...]) -> bool:
         return True
     if container == "evidence" and leaf in _PROVENANCE_TEXT_FIELDS:
         return True
-    return container in {"parsed_field", "parsed_fields"} and leaf in {
+    provenance_containers = {"parsed_field", "parsed_fields", "fields", "spans"}
+    return container in provenance_containers and leaf in {
         "text",
         "value",
         *_PROVENANCE_TEXT_FIELDS,

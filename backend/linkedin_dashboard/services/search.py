@@ -17,6 +17,7 @@ from linkedin_dashboard.db.models import (
     CompanyLookup,
     Job,
     JobAttempt,
+    ProfileFetch,
     RoleBrief,
     SearchRun,
     SectionError,
@@ -787,6 +788,15 @@ class SearchService:
             )
             output: list[dict[str, Any]] = []
             for candidate in candidates:
+                active_job_id = session.scalar(
+                    select(Job.id)
+                    .join(ProfileFetch, ProfileFetch.job_id == Job.id)
+                    .where(
+                        ProfileFetch.candidate_id == candidate.id,
+                        Job.state.in_(("pending", "queued", "running")),
+                    )
+                    .limit(1)
+                )
                 source_rows = session.execute(
                     select(CandidateSource, SearchRun, CandidateReference)
                     .join(SearchRun, SearchRun.id == CandidateSource.search_run_id)
@@ -807,6 +817,13 @@ class SearchService:
                         "retrieval_status": candidate.retrieval_status,
                         "profile_urn": candidate.profile_urn,
                         "profile_urn_is_scored": False,
+                        "profile_urn_quarantined": (candidate.profile_urn_quarantined),
+                        "profile_urn_routing_allowed": bool(
+                            candidate.profile_urn
+                            and not candidate.profile_urn_quarantined
+                        ),
+                        "profile_contract_error": candidate.profile_contract_error,
+                        "active_job_id": active_job_id,
                         "source_count": len(source_rows),
                         "sources": [
                             {

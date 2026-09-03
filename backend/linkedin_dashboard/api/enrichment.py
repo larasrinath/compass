@@ -97,6 +97,7 @@ def profile_sections() -> list[str]:
 
 
 @router.get("/candidates/{candidate_id}", response_model=dict[str, Any])
+@preserve_provenance_text
 def candidate_detail(candidate_id: str, request: Request) -> dict[str, Any]:
     database = request.app.state.database
     with database.sessions() as session:
@@ -152,6 +153,40 @@ def candidate_detail(candidate_id: str, request: Request) -> dict[str, Any]:
             )
             .limit(1)
         )
+        section_by_id = {section.id: section for section in latest_by_name.values()}
+        field_dtos: list[dict[str, Any]] = []
+        for field in fields:
+            section = section_by_id.get(field.profile_section_id or "")
+            valid = (
+                section is not None
+                and field.candidate_id == candidate_id
+                and field.section_name == section.section_name
+                and 0 <= field.span_start < field.span_end <= len(section.raw_text)
+                and section.raw_text[field.span_start : field.span_end] == field.snippet
+            )
+            masked_ranges: tuple[tuple[int, int], ...] = ()
+            if section is not None:
+                _, masked_ranges = redact_provenance_text(section.raw_text)
+            withheld = not valid or _overlaps(
+                field.span_start, field.span_end, masked_ranges
+            )
+            field_dtos.append(
+                {
+                    "id": field.id,
+                    "field_key": field.field_key,
+                    "value": None if withheld else field.snippet,
+                    "section_name": field.section_name,
+                    "profile_section_id": field.profile_section_id,
+                    "span_start": None if withheld else field.span_start,
+                    "span_end": None if withheld else field.span_end,
+                    "snippet": None if withheld else field.snippet,
+                    "origin": field.origin,
+                    "provenance_available": not withheld,
+                    "provenance_label": (
+                        "Provenance withheld" if withheld else "Exact stored text"
+                    ),
+                }
+            )
         return {
             "id": candidate.id,
             "username": candidate.username,
@@ -159,6 +194,11 @@ def candidate_detail(candidate_id: str, request: Request) -> dict[str, Any]:
             "display_name": candidate.display_name,
             "profile_urn": candidate.profile_urn,
             "profile_urn_is_scored": False,
+            "profile_urn_quarantined": candidate.profile_urn_quarantined,
+            "profile_urn_routing_allowed": bool(
+                candidate.profile_urn and not candidate.profile_urn_quarantined
+            ),
+            "profile_contract_error": candidate.profile_contract_error,
             "stage": candidate.stage,
             "retrieval_status": candidate.retrieval_status,
             "active_job_id": active,
@@ -173,20 +213,7 @@ def candidate_detail(candidate_id: str, request: Request) -> dict[str, Any]:
                 }
                 for name, section in latest_by_name.items()
             },
-            "fields": [
-                {
-                    "id": field.id,
-                    "field_key": field.field_key,
-                    "value": field.value,
-                    "section_name": field.section_name,
-                    "profile_section_id": field.profile_section_id,
-                    "span_start": field.span_start,
-                    "span_end": field.span_end,
-                    "snippet": field.snippet,
-                    "origin": field.origin,
-                }
-                for field in fields
-            ],
+            "fields": field_dtos,
             "fetches": [
                 {
                     "id": fetch.id,
@@ -195,6 +222,7 @@ def candidate_detail(candidate_id: str, request: Request) -> dict[str, Any]:
                     "started_at": fetch.started_at,
                     "finished_at": fetch.finished_at,
                     "outcome": fetch.outcome,
+                    "contract_error": fetch.contract_error,
                 }
                 for fetch in fetches
             ],

@@ -32,6 +32,7 @@ export function SearchPage({
 }) {
   const client = useQueryClient()
   const errorRef = useRef<HTMLDivElement>(null)
+  const enrichmentErrorRef = useRef<HTMLDivElement>(null)
   const [keywords, setKeywords] = useState(() =>
     brief
       ? [
@@ -99,6 +100,8 @@ export function SearchPage({
     onSuccess: async () => {
       await client.invalidateQueries({ queryKey: ['candidates', session.id] })
     },
+    onError: () =>
+      requestAnimationFrame(() => enrichmentErrorRef.current?.focus()),
   })
 
   function queuePosition(jobId: string): string | null {
@@ -382,6 +385,17 @@ export function SearchPage({
           </div>
           <span>Neutral first-seen order</span>
         </div>
+        {enrich.isError ? (
+          <div
+            className="form-error"
+            ref={enrichmentErrorRef}
+            role="alert"
+            tabIndex={-1}
+          >
+            <strong>Profile retrieval was not queued.</strong>
+            <span>{enrich.error.message}</span>
+          </div>
+        ) : null}
         {candidates.data?.length ? (
           <div className="candidate-grid">
             {candidates.data.map((candidate) => (
@@ -392,16 +406,34 @@ export function SearchPage({
                   </span>
                   <h3>{candidate.display_name || candidate.username}</h3>
                   <p>
-                    {candidate.stage === 'discovered'
-                      ? 'Profile not retrieved'
+                    {candidate.active_job_id
+                      ? 'Profile retrieval queued'
+                      : candidate.retrieval_status === 'failed'
+                        ? 'Profile retrieval failed'
+                        : candidate.stage === 'discovered'
+                          ? 'Profile not retrieved'
                       : `Profile ${candidate.retrieval_status}`}{' '}
                     · found in {candidate.source_count} searches
                   </p>
                 </div>
-                {candidate.stage === 'discovered' ? (
+                {candidate.active_job_id ? (
+                  <button className="primary-action" disabled type="button">
+                    Retrieval queued
+                  </button>
+                ) : candidate.retrieval_status === 'failed' ? (
+                  <button
+                    className="quiet-action"
+                    onClick={() => onCandidateOpen(candidate.id)}
+                    type="button"
+                  >
+                    Review retrieval failure
+                  </button>
+                ) : candidate.stage === 'discovered' ? (
                   <button
                     className="primary-action"
-                    disabled={enrich.isPending}
+                    disabled={
+                      enrich.isPending && enrich.variables === candidate.id
+                    }
                     onClick={() => enrich.mutate(candidate.id)}
                     type="button"
                   >
