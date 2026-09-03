@@ -214,7 +214,10 @@ def _bounded_unquote(value: str) -> tuple[str, bool, bool]:
 
 
 def _is_sensitive_identifier(value: str) -> bool:
-    compact = _compact_identifier(value)
+    decoded, _, complete = _bounded_unquote(value)
+    if not complete:
+        return True
+    compact = re.sub(r"[^a-z0-9]", "", decoded.casefold())
     sensitive_markers = (
         "accesscredential",
         "accesskey",
@@ -316,12 +319,47 @@ def _is_permitted_linkedin_network_url(value: str, field_name: str | None) -> bo
     return host == "linkedin.com" or host.endswith(".linkedin.com")
 
 
-def _is_openapi_route_key(value: str, container_name: str | None) -> bool:
-    return container_name == "paths" and bool(_OPENAPI_ROUTE_KEY.fullmatch(value))
+def _has_openapi_private_marker(value: str) -> bool:
+    decoded, _, complete = _bounded_unquote(value)
+    if not complete:
+        return True
+    normalized = decoded.casefold()
+    segments = decoded.replace("#", "").split("/")
+    return (
+        any(segment in {".", ".."} for segment in segments)
+        or bool(_FILE_URL.search(decoded))
+        or bool(_WINDOWS_PATH.search(decoded))
+        or ".linkedin-mcp" in normalized
+        or str(Path.home()).casefold() in normalized
+    )
 
 
-def _is_openapi_schema_reference(value: str, field_name: str | None) -> bool:
-    return field_name == "$ref" and bool(_OPENAPI_SCHEMA_REFERENCE.fullmatch(value))
+def _is_openapi_route_key(
+    value: str,
+    *,
+    trusted_openapi: bool,
+    openapi_paths_container: bool,
+) -> bool:
+    return (
+        trusted_openapi
+        and openapi_paths_container
+        and bool(_OPENAPI_ROUTE_KEY.fullmatch(value))
+        and not _has_openapi_private_marker(value)
+    )
+
+
+def _is_openapi_schema_reference(
+    value: str,
+    field_name: str | None,
+    *,
+    trusted_openapi: bool,
+) -> bool:
+    return (
+        trusted_openapi
+        and field_name == "$ref"
+        and bool(_OPENAPI_SCHEMA_REFERENCE.fullmatch(value))
+        and not _has_openapi_private_marker(value)
+    )
 
 
 def _decoded_shadow_is_sensitive(value: str, decoded: str) -> str | None:
@@ -373,11 +411,20 @@ def _redact_string(
     value: str,
     *,
     field_name: str | None = None,
-    container_name: str | None = None,
+    trusted_openapi: bool = False,
+    openapi_paths_container: bool = False,
 ) -> str:
-    if _is_openapi_route_key(value, container_name):
+    if _is_openapi_route_key(
+        value,
+        trusted_openapi=trusted_openapi,
+        openapi_paths_container=openapi_paths_container,
+    ):
         return value
-    if _is_openapi_schema_reference(value, field_name):
+    if _is_openapi_schema_reference(
+        value,
+        field_name,
+        trusted_openapi=trusted_openapi,
+    ):
         return value
     if _is_linkedin_relative_url(value, field_name):
         return _sanitize_url_components(value)
@@ -422,9 +469,18 @@ def _redact_string(
     return sanitized
 
 
-def _redact_key(value: Any, *, container_name: str | None) -> Any:
+def _redact_key(
+    value: Any,
+    *,
+    trusted_openapi: bool,
+    openapi_paths_container: bool,
+) -> Any:
     return (
-        _redact_string(value, container_name=container_name)
+        _redact_string(
+            value,
+            trusted_openapi=trusted_openapi,
+            openapi_paths_container=openapi_paths_container,
+        )
         if isinstance(value, str)
         else value
     )
@@ -432,7 +488,10 @@ def _redact_key(value: Any, *, container_name: str | None) -> Any:
 
 def _drop_key(value: Any) -> bool:
     raw = str(value)
-    normalized = _fully_unquote(raw).casefold()
+    decoded, _, complete = _bounded_unquote(raw)
+    if not complete:
+        return True
+    normalized = decoded.casefold()
     compact = re.sub(r"[^a-z0-9]", "", normalized)
     identifier_like = bool(re.fullmatch(r"[a-z0-9 _-]+", normalized))
     return (
@@ -444,23 +503,55 @@ def _drop_key(value: Any) -> bool:
     )
 
 
-def sanitize_for_frontend(value: Any, *, field_name: str | None = None) -> Any:
+def sanitize_for_frontend(
+    value: Any,
+    *,
+    field_name: str | None = None,
+    _trusted_openapi: bool = False,
+    _location: tuple[str, ...] = (),
+) -> Any:
     """Recursively remove process-local diagnostics and path material."""
     if isinstance(value, dict):
         return {
-            _redact_key(key, container_name=field_name): sanitize_for_frontend(
+            _redact_key(
+                key,
+                trusted_openapi=_trusted_openapi,
+                openapi_paths_container=_location == ("paths",),
+            ): sanitize_for_frontend(
                 child,
                 field_name=str(key).casefold(),
+                _trusted_openapi=_trusted_openapi,
+                _location=(*_location, str(key)),
             )
             for key, child in value.items()
             if not _drop_key(key)
         }
     if isinstance(value, list):
-        return [sanitize_for_frontend(child, field_name=field_name) for child in value]
+        return [
+            sanitize_for_frontend(
+                child,
+                field_name=field_name,
+                _trusted_openapi=_trusted_openapi,
+                _location=_location,
+            )
+            for child in value
+        ]
     if isinstance(value, tuple):
-        return [sanitize_for_frontend(child, field_name=field_name) for child in value]
+        return [
+            sanitize_for_frontend(
+                child,
+                field_name=field_name,
+                _trusted_openapi=_trusted_openapi,
+                _location=_location,
+            )
+            for child in value
+        ]
     if isinstance(value, str):
-        return _redact_string(value, field_name=field_name)
+        return _redact_string(
+            value,
+            field_name=field_name,
+            trusted_openapi=_trusted_openapi,
+        )
     return value
 
 
@@ -642,6 +733,7 @@ class PrivacyFilterMiddleware:
         chunks: list[bytes] = []
         response_kind = "passthrough"
         sse_parser = _SSEParser()
+        trusted_openapi = scope.get("path") == "/api/openapi.json"
 
         async def capture(message: Message) -> None:
             nonlocal response_kind, start
@@ -697,9 +789,12 @@ class PrivacyFilterMiddleware:
             body = b"".join(chunks)
             try:
                 payload = _strict_json_loads(body)
-                body = _strict_json_dumps(sanitize_for_frontend(payload)).encode(
-                    "utf-8"
-                )
+                body = _strict_json_dumps(
+                    sanitize_for_frontend(
+                        payload,
+                        _trusted_openapi=trusted_openapi,
+                    )
+                ).encode("utf-8")
             except (
                 UnicodeDecodeError,
                 UnicodeEncodeError,

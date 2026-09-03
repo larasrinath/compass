@@ -6,10 +6,13 @@ from pathlib import Path
 from urllib.parse import quote
 
 import pytest
-from fastapi import Response
+from fastapi import FastAPI, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.testclient import TestClient
 from linkedin_dashboard.api._filters import (
+    _MAX_PERCENT_DECODE_CHARS,
+    _MAX_PERCENT_DECODE_PASSES,
+    PrivacyFilterMiddleware,
     _SSEParser,
     _strict_json_dumps,
     sanitize_for_frontend,
@@ -71,6 +74,69 @@ def test_real_openapi_preserves_distinct_routes_and_schema_references(tmp_path) 
         reference.startswith("#/components/schemas/") for reference in references
     )
     assert "[redacted" not in response.text
+
+
+def test_openapi_preservation_cannot_be_spoofed_by_json_or_split_sse(tmp_path) -> None:
+    app = create_app(settings_for(tmp_path / "openapi-spoof.db"))
+    json_payload: dict[str, object] = {
+        "paths": {"/api/spoof": {"$ref": "#/components/schemas/Spoof"}},
+        "private": {
+            "paths": {"/api/../Users/operator/.linkedin-mcp/profile": "private-marker"}
+        },
+    }
+    sse_payload = ("data: " + _strict_json_dumps(json_payload) + "\n\n").encode()
+
+    @app.get("/api/test/openapi-spoof")
+    def spoofed_json() -> dict[str, object]:
+        return json_payload
+
+    @app.get("/api/test/openapi-spoof-stream")
+    def spoofed_sse() -> StreamingResponse:
+        return StreamingResponse(
+            (bytes([byte]) for byte in sse_payload),
+            media_type="text/event-stream",
+        )
+
+    with client_for(app) as client:
+        json_response = client.get("/api/test/openapi-spoof")
+        sse_response = client.get("/api/test/openapi-spoof-stream")
+
+    for response in (json_response, sse_response):
+        assert "/api/spoof" not in response.text
+        assert "#/components/schemas/Spoof" not in response.text
+        assert ".linkedin-mcp" not in response.text
+        assert "/Users/operator" not in response.text
+
+
+def test_trusted_openapi_mode_rejects_traversal_and_private_markers() -> None:
+    app = FastAPI(openapi_url=None)
+    app.add_middleware(PrivacyFilterMiddleware)
+
+    @app.get("/api/openapi.json")
+    def crafted_openapi() -> dict[str, object]:
+        return {
+            "openapi": "3.1.0",
+            "paths": {
+                "/api/users": {"$ref": "#/components/schemas/Users"},
+                "/api/safe/{candidate_id}": {
+                    "$ref": "#/components/schemas/SafeCandidate"
+                },
+                "/api/../Users/operator/.linkedin-mcp/profile": {
+                    "$ref": "#/components/schemas/../../Users/operator"
+                },
+            },
+        }
+
+    with TestClient(app) as client:
+        response = client.get("/api/openapi.json")
+
+    assert "/api/safe/{candidate_id}" in response.text
+    assert "#/components/schemas/SafeCandidate" in response.text
+    assert "/api/users" in response.text
+    assert "#/components/schemas/Users" in response.text
+    assert ".." not in response.text
+    assert ".linkedin-mcp" not in response.text
+    assert "/Users/operator" not in response.text
 
 
 def test_every_json_response_crosses_the_privacy_filter(tmp_path) -> None:
@@ -1001,3 +1067,64 @@ def test_encoded_private_material_is_removed_from_split_sse_and_headers(
     assert "Users" not in response.text
     assert response.headers["x-encoded-value"].startswith("[redacted")
     assert response.headers["x-safe-percent"] == "hello%20world"
+
+
+def test_incomplete_identifier_decoding_drops_json_sse_and_headers(tmp_path) -> None:
+    def encode_identifier(value: str, passes: int) -> str:
+        for _ in range(passes):
+            value = quote(value, safe="")
+        return value
+
+    deep_identifier = encode_identifier(
+        "session token",
+        _MAX_PERCENT_DECODE_PASSES + 1,
+    )
+    oversized_identifier = "a" * _MAX_PERCENT_DECODE_CHARS + "%25"
+    secrets = {
+        deep_identifier: "depth-limit-secret",
+        oversized_identifier: "oversize-secret",
+    }
+    app = create_app(settings_for(tmp_path / "incomplete-identifiers.db"))
+    payload = (
+        "data: "
+        + _strict_json_dumps(
+            {"outer": {deep_identifier: "depth-limit-secret", "safe": "visible"}}
+        )
+        + "\n\n"
+    ).encode()
+
+    @app.get("/api/test/incomplete-identifiers")
+    def incomplete_json() -> Response:
+        return Response(
+            content=_strict_json_dumps({"outer": {**secrets, "safe": "visible"}}),
+            media_type="application/json",
+            headers={
+                f"x-{deep_identifier}": "depth-header-secret",
+                f"x-{oversized_identifier}": "oversize-header-secret",
+                "x-safe-identifier": "visible-header",
+            },
+        )
+
+    @app.get("/api/test/incomplete-identifier-stream")
+    def incomplete_sse() -> StreamingResponse:
+        return StreamingResponse(
+            (bytes([byte]) for byte in payload),
+            media_type="text/event-stream",
+        )
+
+    with client_for(app) as client:
+        json_response = client.get("/api/test/incomplete-identifiers")
+        sse_response = client.get("/api/test/incomplete-identifier-stream")
+
+    assert json_response.json() == {"outer": {"safe": "visible"}}
+    assert '"safe":"visible"' in sse_response.text
+    for secret in (
+        "depth-limit-secret",
+        "oversize-secret",
+        "depth-header-secret",
+        "oversize-header-secret",
+    ):
+        assert secret not in json_response.text
+        assert secret not in sse_response.text
+        assert secret not in json_response.headers.values()
+    assert json_response.headers["x-safe-identifier"] == "visible-header"
