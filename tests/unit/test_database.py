@@ -39,6 +39,7 @@ from linkedin_dashboard.db.models import (
     SendConfirmation,
 )
 from linkedin_dashboard.db.session import Database, get_journal_mode
+from linkedin_dashboard.db.unicode_identity import register_sqlite_unicode_casefold
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import URL
 from sqlalchemy.exc import DBAPIError, IntegrityError
@@ -58,6 +59,7 @@ def _migration_test_phase(database: Database) -> Iterator[None]:
     @event.listens_for(migration_engine, "connect")
     def configure(connection, record) -> None:
         del record
+        register_sqlite_unicode_casefold(connection)
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA recursive_triggers=ON")
 

@@ -242,3 +242,43 @@ def test_authentic_m1_upgrade_preflights_inconsistent_provenance(
             ).fetchone()
             is None
         )
+
+
+def test_authentic_m1_upgrade_preflights_unicode_casefold_duplicates(
+    tmp_path: Path,
+) -> None:
+    path = _create_authentic_m1_database(tmp_path)
+    _seed_m1_history(path)
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "UPDATE candidate SET username='Straße', "
+            "profile_url='https://www.linkedin.com/in/Straße' "
+            "WHERE id='candidate-m1'"
+        )
+        connection.execute(
+            "INSERT INTO candidate VALUES "
+            "(?, ?, ?, ?, ?, NULL, ?, 'discovered', 'pending')",
+            (
+                "candidate-m1-duplicate",
+                "session-m1",
+                "STRASSE",
+                "https://www.linkedin.com/in/STRASSE",
+                "Duplicate",
+                "2026-01-01T00:02:00+00:00",
+            ),
+        )
+
+    with pytest.raises(RuntimeError, match="duplicate normalized candidate identity"):
+        Database(path).initialize()
+
+    with sqlite3.connect(path) as connection:
+        assert "dedupe_key" not in {
+            row[1] for row in connection.execute("PRAGMA table_xinfo(candidate)")
+        }
+        assert (
+            connection.execute(
+                "SELECT 1 FROM schema_migration WHERE version=?",
+                (v0017_role_discovery.VERSION,),
+            ).fetchone()
+            is None
+        )

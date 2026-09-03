@@ -22,6 +22,7 @@ from linkedin_dashboard.db.models import (
     SectionError,
 )
 from linkedin_dashboard.db.session import Database
+from linkedin_dashboard.db.unicode_identity import unicode_casefold
 from linkedin_dashboard.mcp.envelope import MCPResponseEnvelope
 from linkedin_dashboard.mcp.errors import ErrorClass
 from linkedin_dashboard.parsing.identity import (
@@ -290,7 +291,7 @@ class DiscoveryResultProcessor:
                 candidate = session.scalar(
                     select(Candidate).where(
                         Candidate.session_id == run.session_id,
-                        Candidate.dedupe_key == func.lower(username),
+                        Candidate.dedupe_key == unicode_casefold(username),
                     )
                 )
                 if candidate is None:
@@ -301,6 +302,7 @@ class DiscoveryResultProcessor:
                         id=str(uuid4()),
                         session_id=run.session_id,
                         username=username,
+                        dedupe_key=unicode_casefold(username),
                         profile_url=canonical_profile_url(username),
                         display_name=(
                             str(item["text"]).strip()

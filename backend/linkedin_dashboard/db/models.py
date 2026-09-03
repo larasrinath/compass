@@ -13,8 +13,11 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+from linkedin_dashboard.db.unicode_identity import unicode_casefold
 
 
 def new_id() -> str:
@@ -40,6 +43,16 @@ class DashboardSession(Base):
     nav_budget: Mapped[int] = mapped_column(Integer, nullable=False, default=120)
     nav_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     send_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class CandidateIdentityMetadata(Base):
+    __tablename__ = "candidate_identity_metadata"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_candidate_identity_metadata_singleton"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    unicode_version: Mapped[str] = mapped_column(String(16), nullable=False)
 
 
 class PhaseGate(Base):
@@ -201,6 +214,15 @@ class Candidate(Base):
     first_seen_at: Mapped[str] = mapped_column(String(32), nullable=False)
     stage: Mapped[str] = mapped_column(String(16), nullable=False)
     retrieval_status: Mapped[str] = mapped_column(String(16), nullable=False)
+
+
+@event.listens_for(Candidate, "before_insert")
+def _set_candidate_dedupe_key(
+    _mapper: Any, _connection: Any, target: Candidate
+) -> None:
+    """Keep trusted ORM fixture/maintenance writes on the canonical identity path."""
+    if not target.dedupe_key:
+        target.dedupe_key = unicode_casefold(target.username)
 
 
 class CandidateSource(Base):

@@ -308,6 +308,50 @@ def test_projection_uses_only_the_committed_raw_attempt(tmp_path) -> None:
             }
 
 
+def test_unicode_username_variants_preserve_first_casing_and_add_two_sources(
+    tmp_path,
+) -> None:
+    def result(username: str) -> dict[str, Any]:
+        return {
+            "url": "https://www.linkedin.com/search/results/people/",
+            "sections": {"search_results": username},
+            "references": {
+                "search_results": [
+                    {"kind": "person", "url": f"/in/{username}/", "text": username}
+                ]
+            },
+        }
+
+    executor = FixtureExecutor([result("Straße"), result("STRASSE")])
+    app = create_app(settings(tmp_path / "unicode-search.db"), queue_executor=executor)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        session_id = start_session(client)
+        brief = client.post("/api/briefs", json=brief_payload(session_id)).json()
+        for keywords in ("platform one", "platform two"):
+            queued = client.post(
+                "/api/searches",
+                json={
+                    "session_id": session_id,
+                    "brief_id": brief["id"],
+                    "keywords": keywords,
+                },
+            ).json()
+            assert wait_for_job(app, queued["job_id"]).state == "done"
+
+        with app.state.database.sessions() as db_session:
+            candidates = list(
+                db_session.scalars(
+                    select(Candidate).where(Candidate.session_id == session_id)
+                )
+            )
+            assert [
+                (candidate.username, candidate.dedupe_key) for candidate in candidates
+            ] == [("Straße", "strasse")]
+            assert (
+                db_session.scalar(select(func.count(CandidateSource.candidate_id))) == 2
+            )
+
+
 def test_raw_cap_dedupe_provenance_and_diagnostic_privacy(tmp_path) -> None:
     refs: list[dict[str, Any]] = [
         {

@@ -25,6 +25,7 @@ from linkedin_dashboard.db.models import (
     SendConfirmation,
 )
 from linkedin_dashboard.db.session import Database
+from linkedin_dashboard.db.unicode_identity import register_sqlite_unicode_casefold
 from sqlalchemy import create_engine, event, insert, text
 from sqlalchemy.engine import URL
 from sqlalchemy.exc import DBAPIError
@@ -45,6 +46,7 @@ def _migration_test_phase(database: Database) -> Iterator[None]:
     @event.listens_for(migration_engine, "connect")
     def configure(connection, record) -> None:
         del record
+        register_sqlite_unicode_casefold(connection)
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA recursive_triggers=ON")
 
@@ -475,6 +477,7 @@ def test_candidate_replace_cannot_retarget_approved_recipient_with_triggers_off(
     database.dispose()
 
     with sqlite3.connect(path) as connection:
+        register_sqlite_unicode_casefold(connection)
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA recursive_triggers=OFF")
         with pytest.raises(sqlite3.IntegrityError, match="recipient identity"):
@@ -533,6 +536,7 @@ def test_candidate_update_replace_cannot_delete_approved_recipient(
         else f"person-candidate-update-{recursive_triggers}-{conflict}"
     )
     with sqlite3.connect(path) as connection:
+        register_sqlite_unicode_casefold(connection)
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
         with pytest.raises(sqlite3.IntegrityError, match="recipient identity"):

@@ -15,6 +15,7 @@ from linkedin_dashboard.db.migrations import (
 )
 from linkedin_dashboard.db.models import Candidate, DashboardSession, MessageDraft
 from linkedin_dashboard.db.session import Database
+from linkedin_dashboard.db.unicode_identity import register_sqlite_unicode_casefold
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import URL
 from sqlalchemy.exc import DBAPIError
@@ -22,6 +23,12 @@ from sqlalchemy.pool import NullPool
 
 NOW = "2026-09-02T12:00:00+00:00"
 LATER = "2026-09-02T12:05:00+00:00"
+
+
+def _maintenance_connect(path: Path) -> sqlite3.Connection:
+    connection = sqlite3.connect(path)
+    register_sqlite_unicode_casefold(connection)
+    return connection
 
 
 @contextmanager
@@ -35,6 +42,7 @@ def _migration_test_phase(database: Database) -> Iterator[None]:
     @event.listens_for(migration_engine, "connect")
     def configure(connection, record) -> None:
         del record
+        register_sqlite_unicode_casefold(connection)
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA recursive_triggers=ON")
 
@@ -147,7 +155,7 @@ def test_unapproved_purged_evidence_rejects_replace_and_delete(
     path = database.path
     database.dispose()
 
-    with sqlite3.connect(path) as connection:
+    with _maintenance_connect(path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
         row = connection.execute(
@@ -177,7 +185,7 @@ def test_update_replace_cannot_overwrite_purged_evidence(
     path = database.path
     database.dispose()
 
-    with sqlite3.connect(path) as connection:
+    with _maintenance_connect(path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
         with pytest.raises(sqlite3.IntegrityError, match="purged evidence"):
@@ -221,7 +229,7 @@ def test_draft_claim_collision_preserves_referenced_claim(
     path = database.path
     database.dispose()
 
-    with sqlite3.connect(path) as connection:
+    with _maintenance_connect(path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
         with pytest.raises(sqlite3.IntegrityError, match="referenced draft_claim"):
@@ -249,7 +257,7 @@ def test_unapproved_purged_evidence_allows_full_session_purge(
 
 
 def _schema_objects(path: Path) -> list[tuple[str, str, str]]:
-    with sqlite3.connect(path) as connection:
+    with _maintenance_connect(path) as connection:
         return connection.execute(
             "SELECT type, name, sql FROM sqlite_master "
             "WHERE type IN ('index', 'trigger') AND sql IS NOT NULL "
@@ -319,7 +327,7 @@ def test_purged_evidence_blocks_every_ancestor_delete(
     path = database.path
     database.dispose()
 
-    with sqlite3.connect(path) as connection:
+    with _maintenance_connect(path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
         with pytest.raises(sqlite3.IntegrityError, match="purged evidence"):
@@ -352,7 +360,7 @@ def test_replace_cannot_remove_purged_evidence_through_ancestor(
     path = database.path
     database.dispose()
 
-    with sqlite3.connect(path) as connection:
+    with _maintenance_connect(path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
         with pytest.raises(
@@ -391,7 +399,7 @@ def test_update_replace_cannot_reuse_purged_ancestor_identity(
     path = database.path
     database.dispose()
 
-    with sqlite3.connect(path) as connection:
+    with _maintenance_connect(path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
         with pytest.raises(
@@ -417,7 +425,7 @@ def test_full_session_purge_can_cross_all_tombstone_guards(
     path = database.path
     database.dispose()
 
-    with sqlite3.connect(path) as connection:
+    with _maintenance_connect(path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
         connection.execute("DELETE FROM session WHERE id=?", (f"session-{suffix}",))
@@ -501,7 +509,7 @@ def test_score_pair_must_share_session_for_insert_update_and_upsert(
     path = database.path
     database.dispose()
 
-    with sqlite3.connect(path) as connection:
+    with _maintenance_connect(path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
         with pytest.raises(
@@ -589,7 +597,7 @@ def test_v0012_preflight_rejects_existing_cross_session_scores_atomically(
     with pytest.raises(RuntimeError, match="sessions differ"):
         retry.initialize()
     assert _schema_objects(retry.path) == baseline
-    with sqlite3.connect(retry.path) as connection:
+    with _maintenance_connect(retry.path) as connection:
         assert connection.execute(
             "SELECT candidate_id, brief_id FROM score WHERE id='score-preflight'"
         ).fetchone() == ("candidate-preflight-a", "brief-preflight-b")
@@ -659,7 +667,7 @@ def test_full_purge_uses_same_owning_session_from_either_score_root(
     path = database.path
     database.dispose()
 
-    with sqlite3.connect(path) as connection:
+    with _maintenance_connect(path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         session_id = connection.execute(session_root_query, (score_id,)).fetchone()
         assert session_id is not None
@@ -721,7 +729,7 @@ def test_candidate_session_freezes_for_approved_or_attempted_message_history(
     path = database.path
     database.dispose()
 
-    with sqlite3.connect(path) as connection:
+    with _maintenance_connect(path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
         with pytest.raises(sqlite3.IntegrityError, match="session is immutable"):
@@ -799,7 +807,7 @@ def test_score_roots_are_immutable_for_updates_and_real_upserts(
         f"candidate-alt-{suffix}" if root == "candidate_id" else f"brief-alt-{suffix}"
     )
 
-    with sqlite3.connect(path) as connection:
+    with _maintenance_connect(path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
         with pytest.raises(
@@ -889,7 +897,7 @@ def test_update_replace_score_id_collision_preserves_both_histories(
     path = database.path
     database.dispose()
 
-    with sqlite3.connect(path) as connection:
+    with _maintenance_connect(path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
         with pytest.raises(sqlite3.IntegrityError, match="score identity is immutable"):

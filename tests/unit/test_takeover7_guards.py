@@ -21,6 +21,7 @@ from linkedin_dashboard.db.session import (
     _expected_schema,
     _normalized_schema_sql,
 )
+from linkedin_dashboard.db.unicode_identity import register_sqlite_unicode_casefold
 from linkedin_dashboard.main import create_app
 from linkedin_dashboard.settings import Settings
 from pydantic import ValidationError
@@ -323,6 +324,7 @@ def test_restart_rejects_rows_that_bypass_check_constraints(tmp_path: Path) -> N
     database.dispose()
 
     with sqlite3.connect(path) as connection:
+        register_sqlite_unicode_casefold(connection)
         connection.execute("PRAGMA ignore_check_constraints=ON")
         connection.execute(
             "INSERT INTO candidate "

@@ -38,6 +38,10 @@ from linkedin_dashboard.db.migrations import (
     v0017_role_discovery,
 )
 from linkedin_dashboard.db.models import Base
+from linkedin_dashboard.db.unicode_identity import (
+    register_unicode_casefold,
+    unicode_data_version,
+)
 from linkedin_dashboard.settings import normalize_database_path
 
 _MIGRATION_MODULES = (
@@ -316,6 +320,7 @@ def _create_runtime_engine(
         if database_fd is None:
             raise RuntimeError("database connections require secure initialization")
         _revalidate_storage(dbapi_connection, path, database_fd)
+        register_unicode_casefold(dbapi_connection)
         dbapi_connection.set_authorizer(
             lambda *arguments: _sqlite_authorizer(
                 *arguments,
@@ -336,6 +341,7 @@ def _create_runtime_engine(
         if database_fd is None:
             raise RuntimeError("database connections require secure initialization")
         _revalidate_storage(dbapi_connection, path, database_fd)
+        register_unicode_casefold(dbapi_connection)
         dbapi_connection.set_authorizer(
             lambda *arguments: _sqlite_authorizer(
                 *arguments,
@@ -386,6 +392,7 @@ def _create_migration_engine(path: Path, expected_fd: int) -> tuple[Engine, None
         dbapi_connection: Any, connection_record: Any
     ) -> None:  # pragma: no cover - SQLAlchemy callback signature
         _revalidate_storage(dbapi_connection, path, expected_fd)
+        register_unicode_casefold(dbapi_connection)
         # A capability is minted for this physical connection only.  A second
         # connection from the same engine gets a different, closed capability.
         authorizer = _MigrationAuthorizer()
@@ -902,6 +909,10 @@ def _expected_schema() -> tuple[
     canonical = create_engine("sqlite://")
     try:
         with canonical.begin() as connection:
+            dbapi_connection = connection.connection.driver_connection
+            if dbapi_connection is None:  # pragma: no cover - SQLite always supplies it
+                raise RuntimeError("canonical SQLite connection is unavailable")
+            register_unicode_casefold(dbapi_connection)
             Base.metadata.create_all(connection)
             connection.exec_driver_sql(
                 "CREATE TABLE schema_migration "
@@ -909,9 +920,6 @@ def _expected_schema() -> tuple[
             )
             for migration in _MIGRATION_MODULES:
                 migration.apply(connection)
-            dbapi_connection = connection.connection.driver_connection
-            if dbapi_connection is None:  # pragma: no cover - SQLite always supplies it
-                raise RuntimeError("canonical SQLite connection is unavailable")
             invariant_ddl = tuple(
                 (kind, name, _normalized_schema_sql(sql))
                 for kind, name, sql in dbapi_connection.execute(
@@ -992,6 +1000,26 @@ def _verify_schema_and_contents_dbapi(dbapi_connection: Any) -> None:
             raise RuntimeError("SQLite integrity check failed")
         if cursor.execute("PRAGMA foreign_key_check").fetchone() is not None:
             raise RuntimeError("SQLite foreign key check failed")
+        invalid_candidate_key = next(
+            (
+                (username, dedupe_key)
+                for username, dedupe_key in cursor.execute(
+                    "SELECT username, dedupe_key FROM candidate"
+                ).fetchall()
+                if dedupe_key != username.casefold()
+            ),
+            None,
+        )
+        if invalid_candidate_key is not None:
+            raise RuntimeError("candidate dedupe key is not canonical Unicode casefold")
+        identity_versions = cursor.execute(
+            "SELECT id, unicode_version FROM candidate_identity_metadata"
+        ).fetchall()
+        if identity_versions != [(1, unicode_data_version())]:
+            raise RuntimeError(
+                "candidate identity Unicode version mismatch; "
+                "an explicit migration and REINDEX are required"
+            )
         expected_versions = _required_migration_versions()
         actual_versions = {
             row[0]
