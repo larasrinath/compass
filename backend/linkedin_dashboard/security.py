@@ -171,9 +171,10 @@ class RuntimeBoundaryMiddleware:
             return
 
         try:
-            self.database.initialize()
             if self.on_ready is not None:
                 await self.on_ready()
+            else:
+                self.database.initialize()
         except Exception:
             if scope["type"] == "websocket":
                 await send({"type": "websocket.close", "code": 1011})

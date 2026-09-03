@@ -26,7 +26,7 @@ from linkedin_dashboard.queue.worker import (
 )
 from linkedin_dashboard.settings import Settings
 from sqlalchemy import select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 NOW = "2026-09-03T12:00:00+00:00"
 
@@ -178,6 +178,7 @@ async def test_startup_marks_orphaned_work_interrupted_without_replay(tmp_path) 
             finished_at=None,
             error=None,
             correlation_id="restart-test",
+            claim_token="dead-worker",
         )
         session.add(job)
         session.add(
@@ -185,6 +186,7 @@ async def test_startup_marks_orphaned_work_interrupted_without_replay(tmp_path) 
                 id="orphan-attempt",
                 job_id=job.id,
                 attempt_number=1,
+                worker_token="dead-worker",
                 started_at=NOW,
                 response_received_at=NOW,
                 finished_at=None,
@@ -293,14 +295,26 @@ async def test_rate_limit_holds_exact_suffix_until_operator_resume(tmp_path) -> 
         snapshot = queue.snapshot()
         assert snapshot["state"] == "paused"
         assert snapshot["pause_reason"] == "RATE_LIMIT"
-        held = [job for job in queue.list_jobs() if job.state == "queued"]
+        held = [job for job in queue.list_jobs() if job.state == "pending"]
         assert len(held) == 1
         assert held[0].payload == {
             "linkedin_username": "person",
             "sections": ["experience", "skills"],
             "parent_job_id": job_id,
         }
-        await queue.resume()
+        async with queue.events.subscribe() as subscriber:
+            await queue.resume()
+            resumed_queue = await asyncio.wait_for(subscriber.get(), timeout=1)
+            resumed_job = await asyncio.wait_for(subscriber.get(), timeout=1)
+        assert resumed_queue.event == "queue"
+        assert resumed_queue.data == {
+            "state": "active",
+            "pause_reason": None,
+            "resume_at": None,
+        }
+        assert resumed_job.event == "job"
+        assert resumed_job.data["id"] == held[0].id
+        assert resumed_job.data["state"] == "queued"
         assert (await queue.wait_for_terminal(held[0].id)).state == "done"
         assert len(executor.calls) == 2
     finally:
@@ -370,32 +384,57 @@ async def test_budget_is_reserved_once_and_exhaustion_makes_no_call(tmp_path) ->
 @pytest.mark.asyncio
 async def test_two_workers_still_cannot_overlap_external_calls(tmp_path) -> None:
     database = new_database(tmp_path / "two-workers.db")
-    executor = RecordingExecutor()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class HeldExecutor(RecordingExecutor):
+        async def execute(self, payload, capture_raw, report_progress):
+            self.calls.append(payload)
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            await capture_raw(
+                {"content": [], "structuredContent": {"url": "durable"}}, None
+            )
+            started.set()
+            try:
+                await release.wait()
+                return {"url": "durable"}
+            finally:
+                self.active -= 1
+
+    executor = HeldExecutor()
     first = DurableJobQueue(database, executor, inter_call_delay_seconds=0)
     second = DurableJobQueue(database, executor, inter_call_delay_seconds=0)
     await first.start()
-    await second.start()
     session_id = add_session(database)
     try:
-        first_ids = [
-            await first.enqueue(
-                session_id, JobKind.SEARCH_PEOPLE, {"keywords": f"a-{index}"}
-            )
-            for index in range(3)
-        ]
-        second_ids = [
-            await second.enqueue(
-                session_id, JobKind.SEARCH_PEOPLE, {"keywords": f"b-{index}"}
-            )
-            for index in range(3)
-        ]
-        await asyncio.gather(
-            *(first.wait_for_terminal(job_id) for job_id in first_ids),
-            *(second.wait_for_terminal(job_id) for job_id in second_ids),
+        job_id = await first.enqueue(
+            session_id, JobKind.SEARCH_PEOPLE, {"keywords": "live-owner"}
         )
+        await started.wait()
+        with database.sessions() as session:
+            control = session.get(QueueControl, 1)
+            assert control is not None
+            first_owner = control.owner_token
+        with pytest.raises(BlockingIOError, match="queue owner"):
+            await second.start()
+        with database.sessions() as session:
+            running = session.get(Job, job_id)
+            attempt = session.scalar(
+                select(JobAttempt).where(JobAttempt.job_id == job_id)
+            )
+            control = session.get(QueueControl, 1)
+            assert running is not None and running.state == "running"
+            assert attempt is not None and attempt.raw_response is not None
+            assert control is not None and control.owner_token == first_owner
+        lock_path = database.path.with_name(f"{database.path.name}.queue.lock")
+        assert lock_path.stat().st_mode & 0o777 == 0o600
+        release.set()
+        assert (await first.wait_for_terminal(job_id)).state == "done"
         assert executor.max_active == 1
-        assert len(executor.calls) == 6
+        assert len(executor.calls) == 1
     finally:
+        release.set()
         await first.stop()
         await second.stop()
         database.dispose()
@@ -438,14 +477,24 @@ def test_database_rejects_send_and_a_second_running_job(database) -> None:
         session.execute(
             update(Job)
             .where(Job.id == "job-one")
-            .values(state="running", attempts=1, started_at=NOW)
+            .values(
+                state="running",
+                attempts=1,
+                started_at=NOW,
+                claim_token="worker-one",
+            )
         )
     with pytest.raises(IntegrityError, match="one_running_job"):
         with database.sessions.begin() as session:
             session.execute(
                 update(Job)
                 .where(Job.id == "job-two")
-                .values(state="running", attempts=1, started_at=NOW)
+                .values(
+                    state="running",
+                    attempts=1,
+                    started_at=NOW,
+                    claim_token="worker-two",
+                )
             )
 
 
@@ -598,3 +647,257 @@ async def test_queue_lifecycle_never_touches_ambiguous_send_attempt(tmp_path) ->
         ).one()
     database.dispose()
     assert after == before
+
+
+def test_finished_attempt_raw_and_terminal_job_cannot_be_rewritten(database) -> None:
+    session_id = add_session(database)
+    with database.sessions.begin() as session:
+        session.add(
+            Job(
+                id="immutable-job",
+                session_id=session_id,
+                kind=JobKind.SEARCH_PEOPLE.value,
+                payload={"keywords": "immutable"},
+                state="done",
+                attempts=1,
+                max_attempts=2,
+                queued_at=NOW,
+                started_at=NOW,
+                finished_at=NOW,
+                error=None,
+                correlation_id="immutable",
+                claim_token=None,
+            )
+        )
+        session.add(
+            JobAttempt(
+                id="immutable-attempt",
+                job_id="captured-job",
+                attempt_number=1,
+                worker_token="active-owner",
+                started_at=NOW,
+                response_received_at=NOW,
+                finished_at=None,
+                outcome="running",
+                raw_response={"content": [], "structuredContent": {"url": "ok"}},
+                raw_error=None,
+                error_class=None,
+                safe_error_message=None,
+                retry_at=None,
+            )
+        )
+        session.add(
+            Job(
+                id="captured-job",
+                session_id=session_id,
+                kind=JobKind.SEARCH_PEOPLE.value,
+                payload={"keywords": "captured"},
+                state="running",
+                attempts=1,
+                max_attempts=2,
+                queued_at=NOW,
+                started_at=NOW,
+                finished_at=None,
+                error=None,
+                correlation_id="captured",
+                claim_token="active-owner",
+            )
+        )
+
+    with pytest.raises(IntegrityError, match="captured job attempt data is immutable"):
+        with database.engine.begin() as connection:
+            connection.exec_driver_sql(
+                "UPDATE job_attempt SET raw_response=NULL WHERE id='immutable-attempt'"
+            )
+    with pytest.raises(IntegrityError, match="terminal job is immutable"):
+        with database.sessions.begin() as session:
+            session.execute(
+                update(Job)
+                .where(Job.id == "immutable-job")
+                .values(state="queued", finished_at=None)
+            )
+
+
+@pytest.mark.asyncio
+async def test_forged_continuation_cannot_bypass_budget(tmp_path) -> None:
+    database = new_database(tmp_path / "continuation-budget.db")
+    first = {
+        "url": "https://www.linkedin.com/in/person/",
+        "sections": {"main_profile": "profile"},
+        "section_errors": {"experience": {"error_type": "rate_limit"}},
+    }
+    executor = RecordingExecutor([first])
+    queue = DurableJobQueue(
+        database,
+        executor,
+        inter_call_delay_seconds=0,
+        rate_limit_cooldowns_seconds=(1,),
+    )
+    await queue.start()
+    session_id = add_session(database)
+    try:
+        with pytest.raises(ValueError, match="generated by the worker"):
+            await queue.enqueue(
+                session_id,
+                JobKind.GET_PERSON_PROFILE,
+                {
+                    "linkedin_username": "person",
+                    "sections": ["experience"],
+                    "parent_job_id": "forged",
+                },
+            )
+        parent_id = await queue.enqueue(
+            session_id,
+            JobKind.GET_PERSON_PROFILE,
+            {
+                "linkedin_username": "person",
+                "sections": ["main_profile", "experience", "skills"],
+            },
+        )
+        await queue.wait_for_terminal(parent_id)
+        child = next(job for job in queue.list_jobs() if job.state == "pending")
+        with database.sessions.begin() as session:
+            session.execute(
+                update(Job)
+                .where(Job.id == child.id)
+                .values(
+                    payload={
+                        "linkedin_username": "person",
+                        "sections": ["skills"],
+                        "parent_job_id": parent_id,
+                    }
+                )
+            )
+        await queue.resume()
+        rejected = await queue.wait_for_terminal(child.id)
+        assert rejected.state == "failed"
+        assert len(executor.calls) == 1
+    finally:
+        await queue.stop()
+        database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_sse_broker_orders_position_progress_and_terminal_events(
+    tmp_path,
+) -> None:
+    database = new_database(tmp_path / "events.db")
+    queue = DurableJobQueue(database, RecordingExecutor(), inter_call_delay_seconds=0)
+    await queue.start()
+    session_id = add_session(database)
+    try:
+        async with queue.events.subscribe() as subscriber:
+            job_id = await queue.enqueue(
+                session_id, JobKind.SEARCH_PEOPLE, {"keywords": "events"}
+            )
+            observed = []
+            while True:
+                event = await asyncio.wait_for(subscriber.get(), timeout=1)
+                if event.data.get("id") != job_id:
+                    continue
+                observed.append(event)
+                if event.data.get("state") == "done":
+                    break
+        assert [event.event for event in observed] == [
+            "job",
+            "job",
+            "progress",
+            "job",
+        ]
+        assert observed[0].data["position"] == 1
+        assert observed[0].data["depth"] == 1
+        assert observed[2].data["percent"] == 50
+    finally:
+        await queue.stop()
+        database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_transient_sqlite_contention_does_not_kill_worker(tmp_path) -> None:
+    database = new_database(tmp_path / "contention.db")
+
+    class OnceContendedQueue(DurableJobQueue):
+        run_count = 0
+        recovery_count = 0
+
+        async def _run_claimed(self, job):
+            self.run_count += 1
+            if self.run_count == 1:
+                raise RuntimeError("injected post-claim failure")
+            await super()._run_claimed(job)
+
+        async def _fail_if_running(self, job, error_class):
+            self.recovery_count += 1
+            if self.recovery_count == 1:
+                raise OperationalError("UPDATE job", {}, Exception("database locked"))
+            await super()._fail_if_running(job, error_class)
+
+    executor = RecordingExecutor()
+    queue = OnceContendedQueue(database, executor, inter_call_delay_seconds=0)
+    await queue.start()
+    session_id = add_session(database)
+    try:
+        first = await queue.enqueue(
+            session_id, JobKind.SEARCH_PEOPLE, {"keywords": "contended"}
+        )
+        second = await queue.enqueue(
+            session_id, JobKind.SEARCH_PEOPLE, {"keywords": "continues"}
+        )
+        assert (await queue.wait_for_terminal(first)).state == "failed"
+        assert (await queue.wait_for_terminal(second)).state == "done"
+        assert queue.recovery_count == 2
+        assert len(executor.calls) == 1
+    finally:
+        await queue.stop()
+        database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_is_bounded_when_executor_suppresses_cancellation(
+    tmp_path,
+) -> None:
+    database = new_database(tmp_path / "bounded-stop.db")
+    started = asyncio.Event()
+    suppressed = asyncio.Event()
+    finish = asyncio.Event()
+
+    class CancellationSuppressor:
+        async def execute(self, payload, capture_raw, report_progress):
+            del payload, capture_raw, report_progress
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                suppressed.set()
+                await finish.wait()
+            return {"url": "too-late"}
+
+    queue = DurableJobQueue(
+        database,
+        CancellationSuppressor(),
+        inter_call_delay_seconds=0,
+        shutdown_grace_seconds=0.01,
+    )
+    await queue.start()
+    session_id = add_session(database)
+    job_id = await queue.enqueue(
+        session_id, JobKind.SEARCH_PEOPLE, {"keywords": "stop"}
+    )
+    await started.wait()
+    detached = queue._worker
+    assert detached is not None
+    started_at = asyncio.get_running_loop().time()
+    await queue.stop()
+    assert asyncio.get_running_loop().time() - started_at < 0.2
+    await suppressed.wait()
+    with database.sessions() as session:
+        job = session.get(Job, job_id)
+        assert job is not None and job.state == "interrupted"
+    standby = DurableJobQueue(database, RecordingExecutor(), inter_call_delay_seconds=0)
+    with pytest.raises(BlockingIOError):
+        await standby.start()
+    finish.set()
+    await detached
+    await standby.start()
+    await standby.stop()
+    database.dispose()

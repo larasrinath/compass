@@ -17,6 +17,9 @@ The dashboard never starts, stops, imports, or authenticates to the sibling
 server. M1's durable queue admits only the three read tools and `tools/list`,
 claims at most one job across the database, writes each received envelope before
 domain parsing, and marks orphaned work `interrupted` rather than replaying it.
+The active worker holds an owner-only `flock` sidecar beside the database for
+its full lifetime and fences every write with its durable claim token, so a
+standby process cannot reclaim a live call as crash residue.
 Timeout and browser-busy read jobs may make one explicit second attempt; no
 message operation is admitted to this queue. Rate-limited profile work is held
 until operator resume and continues only from the first missing section.

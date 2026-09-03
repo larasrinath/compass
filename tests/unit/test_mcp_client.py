@@ -210,6 +210,27 @@ async def test_response_size_is_bounded_without_echoing_the_body(monkeypatch) ->
     assert len(factory.sessions[0].calls) == 1
 
 
+@pytest.mark.asyncio
+async def test_list_tools_size_is_bounded_without_echoing_descriptions(
+    monkeypatch,
+) -> None:
+    factory = RecordingFactory(
+        lambda: FakeSession(
+            tools=[{"name": "search_people", "description": "private large text"}]
+        )
+    )
+    monkeypatch.setattr(client_module, "MAX_MCP_RESPONSE_BYTES", 10)
+    client = MCPClient("http://127.0.0.1:8000/mcp", client_factory=factory)
+
+    with pytest.raises(MCPClientError) as caught:
+        await client.list_tools()
+
+    assert caught.value.details.partial_payload is None
+    assert "private" not in str(caught.value)
+    assert len(factory.sessions) == 1
+    assert factory.sessions[0].entered == factory.sessions[0].exited == 1
+
+
 @pytest.mark.parametrize(
     "url",
     [

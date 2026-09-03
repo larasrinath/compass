@@ -11,7 +11,7 @@ from uuid import uuid4
 from pydantic import ValidationError
 from sqlalchemy import func, select, update
 from sqlalchemy.engine import CursorResult
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from linkedin_dashboard.correlation import current_correlation_id
 from linkedin_dashboard.db.models import (
@@ -148,6 +148,10 @@ class _ResponseError(RuntimeError):
         self.response = response
 
 
+class _StaleClaim(RuntimeError):
+    """A detached or superseded worker no longer owns durable state."""
+
+
 @dataclass(frozen=True, slots=True)
 class ClaimedJob:
     id: str
@@ -187,19 +191,29 @@ class DurableJobQueue:
         self._start_lock = asyncio.Lock()
         self._accepting = False
         self._stopping = False
+        self._owner_token: str | None = None
+        self._worker_lock_fd: int | None = None
 
     async def start(self) -> None:
         async with self._start_lock:
             if self._worker is not None and not self._worker.done():
                 return
-            self.database.initialize()
-            self._prepare_startup()
-            self._stopping = False
-            self._accepting = True
-            self._worker = asyncio.create_task(
-                self._worker_loop(), name="linkedin-dashboard-job-worker"
-            )
-            self._wake.set()
+            descriptor = self.database.acquire_worker_lock()
+            owner_token = str(uuid4())
+            try:
+                self.database.initialize()
+                self._prepare_startup(owner_token)
+                self._worker_lock_fd = descriptor
+                self._owner_token = owner_token
+                self._stopping = False
+                self._accepting = True
+                self._worker = asyncio.create_task(
+                    self._worker_loop(), name="linkedin-dashboard-job-worker"
+                )
+                self._wake.set()
+            except BaseException:
+                self.database.release_worker_lock(descriptor)
+                raise
 
     async def stop(self) -> None:
         async with self._start_lock:
@@ -210,20 +224,25 @@ class DurableJobQueue:
             self._accepting = False
             self._stopping = True
             self._wake.set()
-            try:
-                await asyncio.wait_for(
-                    asyncio.shield(worker), timeout=self.shutdown_grace_seconds
-                )
-            except TimeoutError:
-                worker.cancel()
+            done, _ = await asyncio.wait({worker}, timeout=self.shutdown_grace_seconds)
+            if done:
                 try:
-                    await worker
-                except asyncio.CancelledError:
+                    worker.result()
+                except BaseException:
                     pass
-            finally:
-                self._worker = None
+                self._clear_owner()
+                self._release_worker_lock()
+            else:
+                worker.cancel()
+                self._interrupt_owned()
+                self._clear_owner()
+                # Retain the OS lock until a cancellation-suppressing executor
+                # actually exits. This keeps the hard shutdown bound without
+                # allowing a replacement worker to overlap the detached call.
+                worker.add_done_callback(self._detached_worker_finished)
+            self._worker = None
 
-    def _prepare_startup(self) -> None:
+    def _prepare_startup(self, owner_token: str) -> None:
         now = utc_now()
         with self.database.sessions.begin() as session:
             system = session.get(DashboardSession, SYSTEM_SESSION_ID)
@@ -252,9 +271,12 @@ class DurableJobQueue:
                         rate_limit_count=0,
                         operator_resume_required=False,
                         last_mcp_finished_at=None,
+                        owner_token=owner_token,
                         updated_at=now,
                     )
                 )
+            else:
+                control.owner_token = owner_token
             running_ids = list(
                 session.scalars(select(Job.id).where(Job.state == "running"))
             )
@@ -262,7 +284,7 @@ class DurableJobQueue:
                 session.execute(
                     update(Job)
                     .where(Job.id.in_(running_ids), Job.state == "running")
-                    .values(state="interrupted", finished_at=now)
+                    .values(state="interrupted", finished_at=now, claim_token=None)
                 )
                 session.execute(
                     update(JobAttempt)
@@ -272,6 +294,78 @@ class DurableJobQueue:
                     )
                     .values(outcome="interrupted", finished_at=now)
                 )
+
+    def _clear_owner(self) -> None:
+        owner_token = self._owner_token
+        if owner_token is None:
+            return
+        try:
+            with self.database.sessions.begin() as session:
+                session.execute(
+                    update(QueueControl)
+                    .where(
+                        QueueControl.id == 1,
+                        QueueControl.owner_token == owner_token,
+                    )
+                    .values(owner_token=None, updated_at=utc_now())
+                )
+        except Exception:
+            pass
+
+    def _interrupt_owned(self) -> None:
+        owner_token = self._owner_token
+        if owner_token is None:
+            return
+        now = utc_now()
+        try:
+            with self.database.sessions.begin() as session:
+                owned_jobs = list(
+                    session.scalars(
+                        select(Job.id).where(
+                            Job.state == "running", Job.claim_token == owner_token
+                        )
+                    )
+                )
+                if owned_jobs:
+                    session.execute(
+                        update(Job)
+                        .where(
+                            Job.id.in_(owned_jobs),
+                            Job.state == "running",
+                            Job.claim_token == owner_token,
+                        )
+                        .values(
+                            state="interrupted",
+                            finished_at=now,
+                            claim_token=None,
+                        )
+                    )
+                    session.execute(
+                        update(JobAttempt)
+                        .where(
+                            JobAttempt.job_id.in_(owned_jobs),
+                            JobAttempt.outcome == "running",
+                            JobAttempt.worker_token == owner_token,
+                        )
+                        .values(outcome="interrupted", finished_at=now)
+                    )
+        except Exception:
+            pass
+
+    def _release_worker_lock(self) -> None:
+        descriptor = self._worker_lock_fd
+        self._worker_lock_fd = None
+        self._owner_token = None
+        if descriptor is not None:
+            self.database.release_worker_lock(descriptor)
+
+    def _detached_worker_finished(self, task: asyncio.Task[None]) -> None:
+        if not task.cancelled():
+            try:
+                task.exception()
+            except BaseException:
+                pass
+        self._release_worker_lock()
 
     async def enqueue(
         self,
@@ -284,6 +378,10 @@ class DurableJobQueue:
         if not self._accepting:
             raise RuntimeError("queue is not accepting jobs")
         validated = validate_payload(kind, payload)
+        if isinstance(validated, PersonProfilePayload) and validated.parent_job_id:
+            raise ValueError(
+                "profile continuations can only be generated by the worker"
+            )
         normalized_kind = JobKind(kind)
         job = Job(
             id=str(uuid4()),
@@ -298,12 +396,13 @@ class DurableJobQueue:
             finished_at=None,
             error=None,
             correlation_id=correlation_id or current_correlation_id(),
+            claim_token=None,
         )
         with self.database.sessions.begin() as session:
             if session.get(DashboardSession, session_id) is None:
                 raise LookupError("session does not exist")
             session.add(job)
-        self.events.publish(self._event_for(job, "queued"))
+        self.events.publish(self._job_event(job.id, "queued"))
         self._wake.set()
         await self._notify_changed()
         return job.id
@@ -318,16 +417,35 @@ class DurableJobQueue:
             )
             cancelled = isinstance(result, CursorResult) and result.rowcount == 1
         if cancelled:
-            self.events.publish(QueueEvent("job", {"id": job_id, "state": "cancelled"}))
+            self.events.publish(self._job_event(job_id, "cancelled"))
             self._wake.set()
             await self._notify_changed()
         return cancelled
 
     async def resume(self) -> None:
+        resumed_ids: list[str] = []
         with self.database.sessions.begin() as session:
+            if (
+                session.scalar(
+                    select(QueueControl.owner_token).where(QueueControl.id == 1)
+                )
+                != self._owner_token
+            ):
+                raise RuntimeError("queue is not the active owner")
+            resumed_ids = list(
+                session.scalars(select(Job.id).where(Job.state == "pending"))
+            )
             session.execute(
+                update(Job)
+                .where(Job.id.in_(resumed_ids), Job.state == "pending")
+                .values(state="queued")
+            )
+            control_result = session.execute(
                 update(QueueControl)
-                .where(QueueControl.id == 1)
+                .where(
+                    QueueControl.id == 1,
+                    QueueControl.owner_token == self._owner_token,
+                )
                 .values(
                     state="active",
                     pause_reason=None,
@@ -336,7 +454,19 @@ class DurableJobQueue:
                     updated_at=utc_now(),
                 )
             )
-        self.events.publish(QueueEvent("queue", {"state": "active"}))
+            if (
+                not isinstance(control_result, CursorResult)
+                or control_result.rowcount != 1
+            ):
+                raise RuntimeError("queue resume lost ownership")
+        self.events.publish(
+            QueueEvent(
+                "queue",
+                {"state": "active", "pause_reason": None, "resume_at": None},
+            )
+        )
+        for job_id in resumed_ids:
+            self.events.publish(self._job_event(job_id, "queued"))
         self._wake.set()
         await self._notify_changed()
 
@@ -413,6 +543,14 @@ class DurableJobQueue:
                 "pause_reason": control.pause_reason if control else None,
                 "resume_at": control.resume_at if control else None,
                 "counts": counts,
+                "jobs": [
+                    self._safe_job_data(job)
+                    for job in session.scalars(
+                        select(Job)
+                        .where(Job.state.in_(("pending", "queued", "running")))
+                        .order_by(Job.queued_at, Job.id)
+                    )
+                ],
             }
 
     async def _worker_loop(self) -> None:
@@ -433,37 +571,44 @@ class DurableJobQueue:
                 except TimeoutError:
                     self._wake.set()
                 continue
-            self.events.publish(
-                QueueEvent(
-                    "job",
-                    {
-                        "id": claimed.id,
-                        "kind": claimed.kind.value,
-                        "state": "running",
-                        "correlation_id": claimed.correlation_id,
-                    },
-                )
-            )
+            self.events.publish(self._job_event(claimed.id, "running"))
             try:
                 await self._run_claimed(claimed)
             except asyncio.CancelledError:
                 raise
             except BaseException:
                 # A poison job is terminalized by _run_claimed; never kill the loop.
-                await self._fail_if_running(claimed, ErrorClass.UNKNOWN)
+                await self._recover_failed_claim(claimed)
+
+    async def _recover_failed_claim(self, job: ClaimedJob) -> None:
+        """Keep transient SQLite contention from stranding a claimed job."""
+        while not self._stopping:
+            try:
+                await self._fail_if_running(job, ErrorClass.UNKNOWN)
+                return
+            except _StaleClaim:
+                return
+            except (IntegrityError, OperationalError):
+                # This retries only the local terminal write, never the MCP call.
+                await asyncio.sleep(0.05)
 
     def _claim_next(self) -> tuple[ClaimedJob | None, float | None]:
         try:
             return self._claim_next_transaction()
-        except IntegrityError:
+        except (IntegrityError, OperationalError):
             # The database-wide partial unique index is the final concurrency
             # guard if two app instances accidentally start workers.
             return None, 0.1
 
     def _claim_next_transaction(self) -> tuple[ClaimedJob | None, float | None]:
         now = datetime.now(UTC)
+        owner_token = self._owner_token
+        if owner_token is None:
+            return None, None
         with self.database.sessions.begin() as session:
             control = session.get(QueueControl, 1)
+            if control is None or control.owner_token != owner_token:
+                return None, None
             if (
                 control is not None
                 and control.state == "paused"
@@ -521,7 +666,13 @@ class DurableJobQueue:
                     job.error = ErrorClass.UNKNOWN.value
                     continue
                 if job.attempts == 0:
-                    cost = navigation_cost(payload)
+                    try:
+                        cost = self._navigation_cost(session, job, payload)
+                    except ValueError:
+                        job.state = "failed"
+                        job.finished_at = utc_now()
+                        job.error = ErrorClass.UNKNOWN.value
+                        continue
                     budget = session.get(DashboardSession, job.session_id)
                     if budget is None or budget.nav_used + cost > budget.nav_budget:
                         job.state = "failed"
@@ -540,6 +691,7 @@ class DurableJobQueue:
                         started_at=utc_now(),
                         finished_at=None,
                         error=None,
+                        claim_token=owner_token,
                     )
                 )
                 if not isinstance(result, CursorResult) or result.rowcount != 1:
@@ -552,6 +704,7 @@ class DurableJobQueue:
                     id=str(uuid4()),
                     job_id=job.id,
                     attempt_number=job.attempts,
+                    worker_token=owner_token,
                     started_at=utc_now(),
                     response_received_at=None,
                     finished_at=None,
@@ -578,6 +731,40 @@ class DurableJobQueue:
                 )
             return None, earliest_delay
 
+    def _navigation_cost(self, session: Any, job: Job, payload: JobPayload) -> int:
+        if not isinstance(payload, PersonProfilePayload) or not payload.parent_job_id:
+            return navigation_cost(payload)
+        parent = session.get(Job, payload.parent_job_id)
+        if (
+            parent is None
+            or parent.session_id != job.session_id
+            or parent.kind != JobKind.GET_PERSON_PROFILE.value
+            or parent.state != "done"
+            or parent.error != ErrorClass.RATE_LIMIT.value
+        ):
+            raise ValueError("invalid continuation parent")
+        parent_attempt = session.scalar(
+            select(JobAttempt)
+            .where(JobAttempt.job_id == parent.id, JobAttempt.outcome == "ok")
+            .order_by(JobAttempt.attempt_number.desc())
+            .limit(1)
+        )
+        if parent_attempt is None or not isinstance(parent_attempt.raw_response, dict):
+            raise ValueError("continuation parent has no durable response")
+        try:
+            envelope = MCPResponseEnvelope.model_validate(parent_attempt.raw_response)
+            parent_payload = validate_payload(
+                JobKind.GET_PERSON_PROFILE, parent.payload or {}
+            )
+            expected = missing_profile_sections(
+                parent_payload, envelope.result_payload()
+            )
+        except (ValueError, ValidationError) as error:
+            raise ValueError("continuation parent cannot be verified") from error
+        if payload.sections != expected:
+            raise ValueError("continuation does not match the missing suffix")
+        return 0
+
     async def _run_claimed(self, job: ClaimedJob) -> None:
         try:
             await self._politeness_delay(job)
@@ -586,14 +773,24 @@ class DurableJobQueue:
                 response: dict[str, Any] | None, error: dict[str, Any] | None
             ) -> None:
                 with self.database.sessions.begin() as session:
-                    attempt = session.get(JobAttempt, job.attempt_id)
-                    if attempt is None or attempt.outcome != "running":
-                        raise RuntimeError("job attempt is no longer writable")
+                    self._require_fence(session, job)
+                    values: dict[str, Any] = {}
                     if response is not None:
-                        attempt.raw_response = response
-                        attempt.response_received_at = utc_now()
+                        values["raw_response"] = response
+                        values["response_received_at"] = utc_now()
                     if error is not None:
-                        attempt.raw_error = error
+                        values["raw_error"] = error
+                    result = session.execute(
+                        update(JobAttempt)
+                        .where(
+                            JobAttempt.id == job.attempt_id,
+                            JobAttempt.outcome == "running",
+                            JobAttempt.worker_token == self._owner_token,
+                        )
+                        .values(**values)
+                    )
+                    if not isinstance(result, CursorResult) or result.rowcount != 1:
+                        raise _StaleClaim("job attempt is no longer writable")
 
             async def report_progress(progress: float, total: float | None) -> None:
                 percent = None
@@ -624,6 +821,8 @@ class DurableJobQueue:
         except asyncio.CancelledError:
             await self._interrupt(job)
             raise
+        except _StaleClaim:
+            return
         except BaseException as error:
             await self._record_error_if_missing(job, error)
             error_class = (
@@ -636,6 +835,22 @@ class DurableJobQueue:
                 )
             )
             await self._handle_failure(job, error_class)
+
+    def _require_fence(self, session: Any, job: ClaimedJob) -> None:
+        owner = session.scalar(
+            select(QueueControl.owner_token).where(QueueControl.id == 1)
+        )
+        if owner != self._owner_token:
+            raise _StaleClaim("queue ownership changed")
+        live_claim = session.scalar(
+            select(Job.id).where(
+                Job.id == job.id,
+                Job.state == "running",
+                Job.claim_token == self._owner_token,
+            )
+        )
+        if live_claim is None:
+            raise _StaleClaim("job claim changed")
 
     async def _record_error_if_missing(
         self, job: ClaimedJob, error: BaseException
@@ -652,24 +867,60 @@ class DurableJobQueue:
         ):
             raw_error["partial_payload"] = error.details.partial_payload
         with self.database.sessions.begin() as session:
+            try:
+                self._require_fence(session, job)
+            except _StaleClaim:
+                return
             attempt = session.get(JobAttempt, job.attempt_id)
             if attempt is not None and attempt.raw_error is None:
-                attempt.raw_error = raw_error
+                result = session.execute(
+                    update(JobAttempt)
+                    .where(
+                        JobAttempt.id == job.attempt_id,
+                        JobAttempt.outcome == "running",
+                        JobAttempt.worker_token == self._owner_token,
+                    )
+                    .values(raw_error=raw_error)
+                )
+                if not isinstance(result, CursorResult) or result.rowcount != 1:
+                    raise _StaleClaim("job error capture lost its fence")
 
     async def _complete(self, job: ClaimedJob) -> None:
         now = utc_now()
         with self.database.sessions.begin() as session:
-            attempt = session.get(JobAttempt, job.attempt_id)
-            current = session.get(Job, job.id)
-            if attempt is None or current is None:
-                raise RuntimeError("claimed job disappeared")
-            attempt.outcome = "ok"
-            attempt.finished_at = now
-            current.state = "done"
-            current.finished_at = now
-            current.error = None
+            self._require_fence(session, job)
+            attempt_result = session.execute(
+                update(JobAttempt)
+                .where(
+                    JobAttempt.id == job.attempt_id,
+                    JobAttempt.outcome == "running",
+                    JobAttempt.worker_token == self._owner_token,
+                )
+                .values(outcome="ok", finished_at=now)
+            )
+            job_result = session.execute(
+                update(Job)
+                .where(
+                    Job.id == job.id,
+                    Job.state == "running",
+                    Job.claim_token == self._owner_token,
+                )
+                .values(
+                    state="done",
+                    finished_at=now,
+                    error=None,
+                    claim_token=None,
+                )
+            )
+            if (
+                not isinstance(attempt_result, CursorResult)
+                or attempt_result.rowcount != 1
+                or not isinstance(job_result, CursorResult)
+                or job_result.rowcount != 1
+            ):
+                raise _StaleClaim("job completion lost its fence")
             control = session.get(QueueControl, 1)
-            if control is not None:
+            if control is not None and control.owner_token == self._owner_token:
                 control.last_mcp_finished_at = now
                 if job.kind is JobKind.LIST_TOOLS and control.pause_reason in {
                     ErrorClass.TRANSPORT.value,
@@ -687,18 +938,46 @@ class DurableJobQueue:
     ) -> None:
         now = utc_now()
         missing = missing_profile_sections(job.payload, result)
+        followup_id: str | None = None
         with self.database.sessions.begin() as session:
-            attempt = session.get(JobAttempt, job.attempt_id)
-            current = session.get(Job, job.id)
+            self._require_fence(session, job)
             control = session.get(QueueControl, 1)
-            if attempt is None or current is None or control is None:
-                raise RuntimeError("rate-limited job state disappeared")
-            attempt.outcome = "ok"
-            attempt.error_class = ErrorClass.RATE_LIMIT.value
-            attempt.finished_at = now
-            current.state = "done"
-            current.finished_at = now
-            current.error = ErrorClass.RATE_LIMIT.value
+            if control is None or control.owner_token != self._owner_token:
+                raise _StaleClaim("rate-limited job lost its owner")
+            attempt_result = session.execute(
+                update(JobAttempt)
+                .where(
+                    JobAttempt.id == job.attempt_id,
+                    JobAttempt.outcome == "running",
+                    JobAttempt.worker_token == self._owner_token,
+                )
+                .values(
+                    outcome="ok",
+                    error_class=ErrorClass.RATE_LIMIT.value,
+                    finished_at=now,
+                )
+            )
+            job_result = session.execute(
+                update(Job)
+                .where(
+                    Job.id == job.id,
+                    Job.state == "running",
+                    Job.claim_token == self._owner_token,
+                )
+                .values(
+                    state="done",
+                    finished_at=now,
+                    error=ErrorClass.RATE_LIMIT.value,
+                    claim_token=None,
+                )
+            )
+            if (
+                not isinstance(attempt_result, CursorResult)
+                or attempt_result.rowcount != 1
+                or not isinstance(job_result, CursorResult)
+                or job_result.rowcount != 1
+            ):
+                raise _StaleClaim("rate-limit completion lost its fence")
             next_count = min(control.rate_limit_count + 1, 3)
             cooldown = self.rate_limit_cooldowns_seconds[
                 min(next_count - 1, len(self.rate_limit_cooldowns_seconds) - 1)
@@ -721,17 +1000,18 @@ class DurableJobQueue:
                     select(Job.id).where(
                         Job.kind == JobKind.GET_PERSON_PROFILE.value,
                         Job.payload == persisted_payload(followup_payload),
-                        Job.state.in_(("queued", "running", "done")),
+                        Job.state.in_(("pending", "queued", "running", "done")),
                     )
                 )
                 if duplicate is None:
+                    followup_id = str(uuid4())
                     session.add(
                         Job(
-                            id=str(uuid4()),
+                            id=followup_id,
                             session_id=job.session_id,
                             kind=JobKind.GET_PERSON_PROFILE.value,
                             payload=persisted_payload(followup_payload),
-                            state="queued",
+                            state="pending",
                             attempts=0,
                             max_attempts=2,
                             queued_at=now,
@@ -739,8 +1019,11 @@ class DurableJobQueue:
                             finished_at=None,
                             error=None,
                             correlation_id=job.correlation_id,
+                            claim_token=None,
                         )
                     )
+        if followup_id is not None:
+            self.events.publish(self._job_event(followup_id, "pending"))
         self.events.publish(
             QueueEvent(
                 "queue",
@@ -763,23 +1046,55 @@ class DurableJobQueue:
         now = utc_now()
         target_state = "failed"
         with self.database.sessions.begin() as session:
-            attempt = session.get(JobAttempt, job.attempt_id)
+            self._require_fence(session, job)
             current = session.get(Job, job.id)
             control = session.get(QueueControl, 1)
-            if attempt is None or current is None or control is None:
-                raise RuntimeError("failed job state disappeared")
+            if (
+                current is None
+                or control is None
+                or control.owner_token != self._owner_token
+            ):
+                raise _StaleClaim("failed job lost its fence")
             can_retry = (
                 retry_delay is not None and current.attempts < current.max_attempts
             )
             target_state = "queued" if can_retry else "failed"
-            attempt.outcome = "error"
-            attempt.error_class = error_class.value
-            attempt.safe_error_message = SAFE_ERROR_MESSAGES[error_class]
-            attempt.retry_at = _after(retry_delay) if can_retry else None
-            attempt.finished_at = now
-            current.state = target_state
-            current.finished_at = None if can_retry else now
-            current.error = error_class.value
+            attempt_result = session.execute(
+                update(JobAttempt)
+                .where(
+                    JobAttempt.id == job.attempt_id,
+                    JobAttempt.outcome == "running",
+                    JobAttempt.worker_token == self._owner_token,
+                )
+                .values(
+                    outcome="error",
+                    error_class=error_class.value,
+                    safe_error_message=SAFE_ERROR_MESSAGES[error_class],
+                    retry_at=_after(retry_delay) if can_retry else None,
+                    finished_at=now,
+                )
+            )
+            job_result = session.execute(
+                update(Job)
+                .where(
+                    Job.id == job.id,
+                    Job.state == "running",
+                    Job.claim_token == self._owner_token,
+                )
+                .values(
+                    state=target_state,
+                    finished_at=None if can_retry else now,
+                    error=error_class.value,
+                    claim_token=None,
+                )
+            )
+            if (
+                not isinstance(attempt_result, CursorResult)
+                or attempt_result.rowcount != 1
+                or not isinstance(job_result, CursorResult)
+                or job_result.rowcount != 1
+            ):
+                raise _StaleClaim("failure transition lost its fence")
             if error_class in {
                 ErrorClass.AUTH_REQUIRED,
                 ErrorClass.BROWSER_SETUP,
@@ -797,19 +1112,10 @@ class DurableJobQueue:
             control.last_mcp_finished_at = now
         if target_state == "queued":
             self._wake.set()
-            self.events.publish(
-                QueueEvent(
-                    "job",
-                    {
-                        "id": job.id,
-                        "kind": job.kind.value,
-                        "state": "queued",
-                        "error_class": error_class.value,
-                        "message": SAFE_ERROR_MESSAGES[error_class],
-                        "correlation_id": job.correlation_id,
-                    },
-                )
-            )
+            event = self._job_event(job.id, "queued")
+            event.data["error_class"] = error_class.value
+            event.data["message"] = SAFE_ERROR_MESSAGES[error_class]
+            self.events.publish(event)
             await self._notify_changed()
         else:
             await self._terminal_event(job, "failed", error_class)
@@ -817,34 +1123,64 @@ class DurableJobQueue:
     async def _interrupt(self, job: ClaimedJob) -> None:
         now = utc_now()
         with self.database.sessions.begin() as session:
-            session.execute(
+            try:
+                self._require_fence(session, job)
+            except _StaleClaim:
+                return
+            job_result = session.execute(
                 update(Job)
-                .where(Job.id == job.id, Job.state == "running")
-                .values(state="interrupted", finished_at=now)
+                .where(
+                    Job.id == job.id,
+                    Job.state == "running",
+                    Job.claim_token == self._owner_token,
+                )
+                .values(state="interrupted", finished_at=now, claim_token=None)
             )
-            session.execute(
+            attempt_result = session.execute(
                 update(JobAttempt)
                 .where(
                     JobAttempt.id == job.attempt_id,
                     JobAttempt.outcome == "running",
+                    JobAttempt.worker_token == self._owner_token,
                 )
                 .values(outcome="interrupted", finished_at=now)
             )
+            if (
+                not isinstance(attempt_result, CursorResult)
+                or attempt_result.rowcount != 1
+                or not isinstance(job_result, CursorResult)
+                or job_result.rowcount != 1
+            ):
+                raise _StaleClaim("interrupt transition lost its fence")
         await self._terminal_event(job, "interrupted", None)
 
     async def _fail_if_running(self, job: ClaimedJob, error_class: ErrorClass) -> None:
         now = utc_now()
         with self.database.sessions.begin() as session:
-            session.execute(
+            try:
+                self._require_fence(session, job)
+            except _StaleClaim:
+                return
+            job_result = session.execute(
                 update(Job)
-                .where(Job.id == job.id, Job.state == "running")
-                .values(state="failed", finished_at=now, error=error_class.value)
+                .where(
+                    Job.id == job.id,
+                    Job.state == "running",
+                    Job.claim_token == self._owner_token,
+                )
+                .values(
+                    state="failed",
+                    finished_at=now,
+                    error=error_class.value,
+                    claim_token=None,
+                )
             )
-            session.execute(
+            attempt_result = session.execute(
                 update(JobAttempt)
                 .where(
                     JobAttempt.id == job.attempt_id,
                     JobAttempt.outcome == "running",
+                    JobAttempt.worker_token == self._owner_token,
                 )
                 .values(
                     outcome="error",
@@ -853,6 +1189,13 @@ class DurableJobQueue:
                     safe_error_message=SAFE_ERROR_MESSAGES[error_class],
                 )
             )
+            if (
+                not isinstance(attempt_result, CursorResult)
+                or attempt_result.rowcount != 1
+                or not isinstance(job_result, CursorResult)
+                or job_result.rowcount != 1
+            ):
+                return
         await self._terminal_event(job, "failed", error_class)
 
     async def _politeness_delay(self, job: ClaimedJob) -> None:
@@ -871,30 +1214,60 @@ class DurableJobQueue:
     async def _terminal_event(
         self, job: ClaimedJob, state: str, error_class: ErrorClass | None
     ) -> None:
-        data: dict[str, Any] = {
-            "id": job.id,
-            "kind": job.kind.value,
-            "state": state,
-            "correlation_id": job.correlation_id,
-        }
+        event = self._job_event(job.id, state)
+        data = event.data
         if error_class is not None:
             data["error_class"] = error_class.value
             data["message"] = SAFE_ERROR_MESSAGES[error_class]
-        self.events.publish(QueueEvent("job", data))
+        self.events.publish(event)
         await self._notify_changed()
 
     async def _notify_changed(self) -> None:
         async with self._changed:
             self._changed.notify_all()
 
-    @staticmethod
-    def _event_for(job: Job, state: str) -> QueueEvent:
-        return QueueEvent(
-            "job",
-            {
-                "id": job.id,
-                "kind": job.kind,
-                "state": state,
-                "correlation_id": job.correlation_id,
-            },
-        )
+    def _job_event(self, job_id: str, state: str) -> QueueEvent:
+        with self.database.sessions() as session:
+            job = session.get(Job, job_id)
+            if job is None:
+                return QueueEvent("job", {"id": job_id, "state": state})
+            data = self._safe_job_data(job)
+            data["state"] = state
+            return QueueEvent("job", data)
+
+    def _safe_job_data(self, job: Job) -> dict[str, Any]:
+        position, depth = self.queue_position(job.id)
+        return {
+            "id": job.id,
+            "kind": job.kind,
+            "state": job.state,
+            "position": position,
+            "depth": depth,
+            "error_class": job.error,
+            "correlation_id": job.correlation_id,
+        }
+
+    def queue_position(self, job_id: str) -> tuple[int | None, int]:
+        with self.database.sessions() as session:
+            job = session.get(Job, job_id)
+            depth = int(
+                session.scalar(
+                    select(func.count(Job.id)).where(
+                        Job.state.in_(("pending", "queued", "running"))
+                    )
+                )
+                or 0
+            )
+            if job is None or job.state not in {"pending", "queued"}:
+                return None, depth
+            earlier = int(
+                session.scalar(
+                    select(func.count(Job.id)).where(
+                        Job.state.in_(("pending", "queued")),
+                        (Job.queued_at < job.queued_at)
+                        | ((Job.queued_at == job.queued_at) & (Job.id < job.id)),
+                    )
+                )
+                or 0
+            )
+            return earlier + 1, depth

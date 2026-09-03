@@ -106,10 +106,12 @@ class MCPClient:
             endpoint = self._operation_endpoint()
             async with self._client_factory(endpoint, self.timeout_seconds) as client:
                 tools = await client.list_tools()
-            return tuple(
-                ToolDescription.model_validate(serialize_json_object(tool))
-                for tool in tools
-            )
+            raw_tools = [serialize_json_object(tool) for tool in tools]
+            if _json_size(raw_tools) > MAX_MCP_RESPONSE_BYTES:
+                raise MCPClientError(
+                    error_details(ValueError("MCP response exceeded the size limit"))
+                )
+            return tuple(ToolDescription.model_validate(tool) for tool in raw_tools)
         except asyncio.CancelledError:
             raise
         except MCPClientError:
@@ -133,18 +135,7 @@ class MCPClient:
                     call_options["progress_handler"] = progress_capture
                 raw_result = await client.call_tool_mcp(name, arguments, **call_options)
             raw_snapshot = serialize_json_object(raw_result)
-            if (
-                len(
-                    json.dumps(
-                        raw_snapshot,
-                        ensure_ascii=False,
-                        allow_nan=False,
-                        separators=(",", ":"),
-                        sort_keys=True,
-                    ).encode("utf-8")
-                )
-                > MAX_MCP_RESPONSE_BYTES
-            ):
+            if _json_size(raw_snapshot) > MAX_MCP_RESPONSE_BYTES:
                 raise MCPClientError(
                     error_details(ValueError("MCP response exceeded the size limit"))
                 )
@@ -162,6 +153,18 @@ class MCPClient:
             raise
         except Exception as error:
             raise MCPClientError(error_details(error)) from error
+
+
+def _json_size(value: object) -> int:
+    return len(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    )
 
 
 def _default_client_factory(url: str, timeout_seconds: float) -> ClientSession:

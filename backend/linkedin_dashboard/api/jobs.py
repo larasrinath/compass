@@ -32,9 +32,13 @@ class JobRecord(BaseModel):
     finished_at: str | None
     error_class: str | None
     correlation_id: str
+    position: int | None = None
+    depth: int = 0
 
     @classmethod
-    def safe(cls, job: Job) -> JobRecord:
+    def safe(
+        cls, job: Job, *, position: int | None = None, depth: int = 0
+    ) -> JobRecord:
         return cls(
             id=job.id,
             session_id=job.session_id,
@@ -47,6 +51,8 @@ class JobRecord(BaseModel):
             finished_at=job.finished_at,
             error_class=job.error,
             correlation_id=job.correlation_id,
+            position=position,
+            depth=depth,
         )
 
 
@@ -55,6 +61,7 @@ class QueueStatus(BaseModel):
     pause_reason: str | None
     resume_at: str | None
     counts: dict[str, int]
+    jobs: list[dict[str, Any]]
 
 
 class MCPStatus(BaseModel):
@@ -69,7 +76,11 @@ def list_jobs(
     queue: Annotated[DurableJobQueue, Depends(get_queue)],
     limit: Annotated[int, Query(ge=1, le=200)] = 100,
 ) -> list[JobRecord]:
-    return [JobRecord.safe(job) for job in queue.list_jobs(limit=limit)]
+    records: list[JobRecord] = []
+    for job in queue.list_jobs(limit=limit):
+        position, depth = queue.queue_position(job.id)
+        records.append(JobRecord.safe(job, position=position, depth=depth))
+    return records
 
 
 @router.post("/jobs/{job_id}/cancel", response_model=JobRecord)
@@ -82,7 +93,8 @@ async def cancel_job(
     job = next((row for row in queue.list_jobs(limit=200) if row.id == job_id), None)
     if job is None:  # pragma: no cover - guarded by successful CAS
         raise HTTPException(404, "Job not found")
-    return JobRecord.safe(job)
+    position, depth = queue.queue_position(job.id)
+    return JobRecord.safe(job, position=position, depth=depth)
 
 
 @router.get("/queue/status", response_model=QueueStatus)

@@ -185,7 +185,8 @@ class Job(Base):
     __tablename__ = "job"
     __table_args__ = (
         CheckConstraint(
-            "state IN ('queued','running','done','failed','interrupted','cancelled')",
+            "state IN "
+            "('pending','queued','running','done','failed','interrupted','cancelled')",
             name="ck_job_state",
         ),
     )
@@ -204,6 +205,7 @@ class Job(Base):
     finished_at: Mapped[str | None] = mapped_column(String(32))
     error: Mapped[str | None] = mapped_column(Text)
     correlation_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    claim_token: Mapped[str | None] = mapped_column(String(36))
 
 
 class JobAttempt(Base):
@@ -232,6 +234,7 @@ class JobAttempt(Base):
         ForeignKey("job.id", ondelete="CASCADE"), nullable=False
     )
     attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    worker_token: Mapped[str] = mapped_column(String(36), nullable=False)
     started_at: Mapped[str] = mapped_column(String(32), nullable=False)
     response_received_at: Mapped[str | None] = mapped_column(String(32))
     finished_at: Mapped[str | None] = mapped_column(String(32))
@@ -269,6 +272,7 @@ class QueueControl(Base):
         Boolean, nullable=False, default=False
     )
     last_mcp_finished_at: Mapped[str | None] = mapped_column(String(32))
+    owner_token: Mapped[str | None] = mapped_column(String(36))
     updated_at: Mapped[str] = mapped_column(String(32), nullable=False)
 
 
