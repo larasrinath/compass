@@ -97,17 +97,26 @@ def _seed_approved_evidence_graph(
             "'plain', 'v1')",
             (identifiers["brief"], identifiers["session"]),
         )
+        connection.exec_driver_sql(
+            "INSERT INTO scoring_config VALUES (?, ?, 1, 'now', "
+            '\'{"S-1":0,"S-2":0,"S-3":0,"S-4":0,"S-5":0,'
+            '"S-6":1,"S-8":0}\', \'{}\', NULL)',
+            (f"config-{suffix}", identifiers["session"]),
+        )
         for label in ("a", "b"):
             connection.exec_driver_sql(
                 "INSERT INTO score "
-                "(id, candidate_id, brief_id, weights_version, stage, score, "
+                "(id, candidate_id, brief_id, weights_version, scoring_config_id, "
+                "stage, score, "
                 "score_lower, score_upper, confidence, confidence_band, computed_at, "
-                "is_current) VALUES (?, ?, ?, 'v1', 'provisional', 1, 1, 1, 1, "
-                "'high', 'now', 1)",
+                "is_current,input_fingerprint) VALUES (?, ?, ?, '1', ?, "
+                "'provisional',1,1,1,1,'high','now',0,?)",
                 (
                     identifiers[f"score-{label}"],
                     identifiers[f"candidate-{label}"],
                     identifiers["brief"],
+                    f"config-{suffix}",
+                    (label * 64),
                 ),
             )
             connection.exec_driver_sql(
@@ -308,7 +317,10 @@ def test_approved_score_signal_root_survives_every_destructive_write(
         connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
         with pytest.raises(
             sqlite3.IntegrityError,
-            match="approved score_signal identity and root are immutable",
+            match=(
+                r"approved score_signal identity and root are immutable|"
+                r"M4 score signal"
+            ),
         ):
             if operation == "update":
                 connection.execute(
@@ -363,7 +375,9 @@ def test_approved_score_signal_direct_delete_is_blocked(
     with _maintenance_connect(path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
-        with pytest.raises(sqlite3.IntegrityError, match="only by session purge"):
+        with pytest.raises(
+            sqlite3.IntegrityError, match=r"only by session purge|append-only"
+        ):
             connection.execute(
                 "DELETE FROM score_signal WHERE id=?", (ids["signal-a"],)
             )

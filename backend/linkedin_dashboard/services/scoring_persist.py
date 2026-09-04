@@ -11,6 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from linkedin_dashboard.db.models import (
@@ -24,6 +25,7 @@ from linkedin_dashboard.db.models import (
     EvidenceSetRecord,
     MissingSetRecord,
     ParsedField,
+    ProfileFetch,
     RoleBrief,
     ScoreInputSection,
     ScorePenalty,
@@ -199,22 +201,42 @@ def _latest_sections(
 def _missing_reason(
     session: Session, candidate_id: str, section_name: str
 ) -> tuple[MissingReason, str | None]:
-    error = session.scalar(
-        select(SectionError)
+    rows = session.execute(
+        select(SectionError, ProfileFetch)
+        .join(
+            ProfileFetch,
+            (ProfileFetch.id == SectionError.fetch_id)
+            & (ProfileFetch.candidate_id == SectionError.candidate_id),
+        )
         .where(
             SectionError.candidate_id == candidate_id,
             SectionError.section_name == section_name,
+            SectionError.search_run_id.is_(None),
+            SectionError.source_item.is_not(None),
+            ProfileFetch.contract_error.is_(None),
+            ProfileFetch.raw_response.is_not(None),
         )
-        .order_by(SectionError.id.desc())
-        .limit(1)
-    )
-    if error is None:
-        return MissingReason.NOT_REQUESTED, None
-    if error.error_type.casefold() == "rate_limit":
-        return MissingReason.RATE_LIMIT, error.id
-    if error.error_type.casefold() in {"parse_error", "unparseable"}:
-        return MissingReason.UNPARSEABLE, error.id
-    return MissingReason.FETCH_ERROR, error.id
+        .order_by(
+            ProfileFetch.finished_at.desc().nullslast(),
+            ProfileFetch.started_at.desc(),
+            ProfileFetch.id.desc(),
+            SectionError.id.desc(),
+        )
+    ).all()
+    for error, fetch in rows:
+        payload = fetch.projection_payload
+        errors = payload.get("section_errors") if isinstance(payload, dict) else None
+        source = errors.get(section_name) if isinstance(errors, dict) else None
+        if (
+            isinstance(source, dict)
+            and source == error.source_item
+            and source.get("error_type") == error.error_type
+            and source.get("error_message") == error.error_message
+        ):
+            if error.error_type.casefold() == "rate_limit":
+                return MissingReason.RATE_LIMIT, error.id
+            return MissingReason.FETCH_ERROR, error.id
+    return MissingReason.NOT_REQUESTED, None
 
 
 def _sourced(field: ParsedField, section: ProfileSectionRow) -> SourcedText | None:
@@ -465,8 +487,15 @@ def input_fingerprint(
             "input_sha256": _sha256(brief_canonical),
         },
         "penalty_inputs": {
-            "positive_keywords": brief_inputs["positive_keywords"],
-            "negative_keywords": brief_inputs["negative_keywords"],
+            "version": "sha256-normalized-v1",
+            "positive": {
+                "count": len(brief_inputs["positive_keywords"]),
+                "sha256": [_sha256(item) for item in brief_inputs["positive_keywords"]],
+            },
+            "negative": {
+                "count": len(brief_inputs["negative_keywords"]),
+                "sha256": [_sha256(item) for item in brief_inputs["negative_keywords"]],
+            },
         },
         "config": {
             "id": config.id,
@@ -775,21 +804,39 @@ def calculate_and_persist(
         snapshot=snapshot,
         sections=sections,
     )
-    current = session.scalar(
+    existing = session.scalar(
         select(CandidateScore).where(
             CandidateScore.candidate_id == candidate.id,
-            CandidateScore.is_current.is_(True),
+            CandidateScore.input_fingerprint == fingerprint,
         )
     )
-    if current is not None and current.input_fingerprint == fingerprint:
-        return current
-    return persist_calculation(
-        session,
-        candidate=candidate,
-        brief=brief,
-        config=config,
-        calculation=calculation,
-        fingerprint=fingerprint,
-        fingerprint_payload=payload,
-        source_sections=sections,
-    )
+    if existing is not None:
+        if not existing.is_current:
+            raise RuntimeError("identical score exists but is not current")
+        return existing
+    try:
+        with session.begin_nested():
+            return persist_calculation(
+                session,
+                candidate=candidate,
+                brief=brief,
+                config=config,
+                calculation=calculation,
+                fingerprint=fingerprint,
+                fingerprint_payload=payload,
+                source_sections=sections,
+            )
+    except IntegrityError:
+        # A second process may have committed this exact immutable score after
+        # our initial read. The unique candidate/fingerprint key is the durable
+        # arbitration boundary; reread only that exact winner.
+        winner = session.scalar(
+            select(CandidateScore).where(
+                CandidateScore.candidate_id == candidate.id,
+                CandidateScore.input_fingerprint == fingerprint,
+                CandidateScore.is_current.is_(True),
+            )
+        )
+        if winner is None:
+            raise
+        return winner

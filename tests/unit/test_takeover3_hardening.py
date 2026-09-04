@@ -723,11 +723,18 @@ def test_linked_evidence_is_immutable_after_approval(database: Database) -> None
             "'anywhere', '[]', '[]', '[]', 'plain', 'v1')"
         )
         connection.exec_driver_sql(
-            "INSERT INTO score "
-            "(id, candidate_id, brief_id, weights_version, stage, score, score_lower, "
-            "score_upper, confidence, confidence_band, computed_at, is_current) VALUES "
-            "('score-evidence', 'candidate-evidence-freeze', 'brief-evidence', 'v1', "
-            "'provisional', 1, 1, 1, 1, 'high', 'now', 1)"
+            "INSERT INTO scoring_config VALUES ('config-evidence',"
+            "'session-evidence-freeze',1,'now','{\"S-1\":0,\"S-2\":0,"
+            '"S-3":0,"S-4":0,"S-5":0,"S-6":1,"S-8":0}\','
+            "'{}',NULL)"
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO score (id,candidate_id,brief_id,weights_version,"
+            "scoring_config_id,stage,score,score_lower,score_upper,confidence,"
+            "confidence_band,computed_at,is_current,input_fingerprint) VALUES "
+            "('score-evidence','candidate-evidence-freeze','brief-evidence','1',"
+            "'config-evidence','provisional',1,1,1,1,'high','now',0,"
+            "'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')"
         )
         connection.exec_driver_sql(
             "INSERT INTO score_signal "
@@ -897,11 +904,18 @@ def test_approved_evidence_supports_only_one_way_raw_purge(
             f"'deterministic', 'v1', 'now', 'section-{suffix}')"
         )
         connection.exec_driver_sql(
-            "INSERT INTO score "
-            "(id, candidate_id, brief_id, weights_version, stage, score, score_lower, "
-            "score_upper, confidence, confidence_band, computed_at, is_current) VALUES "
-            f"('score-{suffix}', 'candidate-{suffix}', 'brief-{suffix}', 'v1', "
-            "'provisional', 1, 1, 1, 1, 'high', 'now', 1)"
+            "INSERT INTO scoring_config VALUES "
+            f"('config-{suffix}','session-{suffix}',1,'now',"
+            '\'{"S-1":0,"S-2":0,"S-3":0,"S-4":0,"S-5":0,'
+            '"S-6":1,"S-8":0}\',\'{}\',NULL)'
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO score (id,candidate_id,brief_id,weights_version,"
+            "scoring_config_id,stage,score,score_lower,score_upper,confidence,"
+            "confidence_band,computed_at,is_current,input_fingerprint) VALUES "
+            f"('score-{suffix}','candidate-{suffix}','brief-{suffix}','1',"
+            f"'config-{suffix}','provisional',1,1,1,1,'high','now',0,"
+            "'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')"
         )
         connection.exec_driver_sql(
             "INSERT INTO score_signal "

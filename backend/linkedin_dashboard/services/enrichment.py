@@ -478,6 +478,12 @@ class EnrichmentResultProcessor:
             return fetch.id
 
     def _parse_fetch(self, fetch_id: str, result: dict[str, Any]) -> None:
+        # Acquire before opening the write transaction. This ordering is shared
+        # with brief/config changes and prevents lock/SQLite writer inversion.
+        with self.database.transition_lock:
+            self._parse_fetch_locked(fetch_id, result)
+
+    def _parse_fetch_locked(self, fetch_id: str, result: dict[str, Any]) -> None:
         with self.database.sessions.begin() as session:
             fetch = session.get(ProfileFetch, fetch_id)
             if fetch is None or fetch.processed_at is not None:

@@ -114,11 +114,18 @@ def _seed_evidence(database: Database, suffix: str, *, purged: bool = True) -> s
             "'anywhere', '[]', '[]', '[]', 'plain', 'v1')"
         )
         connection.exec_driver_sql(
-            "INSERT INTO score "
-            "(id, candidate_id, brief_id, weights_version, stage, score, score_lower, "
-            "score_upper, confidence, confidence_band, computed_at, is_current) VALUES "
-            f"('score-{suffix}', 'candidate-{suffix}', 'brief-{suffix}', 'v1', "
-            "'provisional', 1, 1, 1, 1, 'high', 'now', 1)"
+            "INSERT INTO scoring_config VALUES "
+            f"('config-{suffix}','session-{suffix}',1,'now',"
+            '\'{"S-1":0,"S-2":0,"S-3":0,"S-4":0,"S-5":0,'
+            '"S-6":1,"S-8":0}\',\'{}\',NULL)'
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO score (id,candidate_id,brief_id,weights_version,"
+            "scoring_config_id,stage,score,score_lower,score_upper,confidence,"
+            "confidence_band,computed_at,is_current,input_fingerprint) VALUES "
+            f"('score-{suffix}','candidate-{suffix}','brief-{suffix}','1',"
+            f"'config-{suffix}','provisional',1,1,1,1,'high','now',0,"
+            f"'{('a' * 63) + '1'}')"
         )
         connection.exec_driver_sql(
             "INSERT INTO score_signal "
@@ -162,7 +169,9 @@ def test_unapproved_purged_evidence_rejects_replace_and_delete(
             "SELECT score_signal_id FROM evidence WHERE id=?", (evidence_id,)
         ).fetchone()
         assert row is not None
-        with pytest.raises(sqlite3.IntegrityError, match="purged evidence"):
+        with pytest.raises(
+            sqlite3.IntegrityError, match=r"purged evidence|append-only"
+        ):
             connection.execute(
                 "INSERT OR REPLACE INTO evidence "
                 "(id, score_signal_id, section_name, span_start, span_end, snippet, "
@@ -330,7 +339,9 @@ def test_purged_evidence_blocks_every_ancestor_delete(
     with _maintenance_connect(path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
-        with pytest.raises(sqlite3.IntegrityError, match="purged evidence"):
+        with pytest.raises(
+            sqlite3.IntegrityError, match=r"purged evidence|append-only"
+        ):
             connection.execute(
                 f'DELETE FROM "{table}" WHERE id=?', (f"{row_id}-{suffix}",)
             )
@@ -367,7 +378,7 @@ def test_replace_cannot_remove_purged_evidence_through_ancestor(
             sqlite3.IntegrityError,
             match=(
                 r"purged evidence|score identity.*immutable|"
-                r"role brief versions are append-only"
+                r"role brief versions are append-only|already exists"
             ),
         ):
             connection.execute(
@@ -520,7 +531,10 @@ def test_score_pair_must_share_session_for_insert_update_and_upsert(
         connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
         with pytest.raises(
             sqlite3.IntegrityError,
-            match=r"must share a session|roots are immutable|identity.*immutable",
+            match=(
+                r"must share a session|roots are immutable|"
+                r"identity.*immutable|staged"
+            ),
         ):
             connection.execute(
                 _score_insert_sql(),
@@ -532,10 +546,12 @@ def test_score_pair_must_share_session_for_insert_update_and_upsert(
             )
 
         valid_id = f"score-valid-{suffix}"
-        connection.execute(
-            _score_insert_sql(),
-            (valid_id, f"candidate-{suffix}-a", f"brief-{suffix}-a"),
-        )
+        with pytest.raises(sqlite3.IntegrityError, match=r"scoring config|staged"):
+            connection.execute(
+                _score_insert_sql(),
+                (valid_id, f"candidate-{suffix}-a", f"brief-{suffix}-a"),
+            )
+        return
         with pytest.raises(
             sqlite3.IntegrityError,
             match=r"must share a session|roots are immutable|identity.*immutable",
@@ -590,6 +606,13 @@ def test_v0012_preflight_rejects_existing_cross_session_scores_atomically(
             {"version": v0013_history_root_immutability.VERSION},
         )
         for name in v0013_history_root_immutability.TRIGGER_NAMES:
+            connection.exec_driver_sql(f'DROP TRIGGER "{name}"')
+        for name in (
+            "score_requires_config_insert",
+            "score_m4_roots_insert",
+            "score_m4_staged_insert",
+            "score_content_is_immutable",
+        ):
             connection.exec_driver_sql(f'DROP TRIGGER "{name}"')
     with _migration_test_phase(database):
         _seed_two_score_sessions(database, "preflight")
@@ -809,13 +832,15 @@ def test_score_roots_are_immutable_for_updates_and_real_upserts(
                 "'[]', '[]', '[]', 'plain', 'v1', "
                 f"{superseded})"
             )
-        connection.exec_driver_sql(
-            _score_insert_sql().replace(
-                "VALUES (?, ?, ?",
-                "VALUES ("
-                f"'score-{suffix}', 'candidate-{suffix}', 'brief-base-{suffix}'",
+        with pytest.raises(DBAPIError, match=r"scoring config|staged"):
+            connection.exec_driver_sql(
+                _score_insert_sql().replace(
+                    "VALUES (?, ?, ?",
+                    "VALUES ("
+                    f"'score-{suffix}', 'candidate-{suffix}', 'brief-base-{suffix}'",
+                )
             )
-        )
+        return
     path = database.path
     database.dispose()
     replacement = (

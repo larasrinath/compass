@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import sqlite3
 import time
@@ -175,6 +176,20 @@ def test_raw_current_insert_and_sealed_brief_mutations_fail(tmp_path: Path) -> N
                     ),
                     {"score": score_id},
                 )
+        with pytest.raises(IntegrityError, match=r"scoring config|score roots"):
+            with app.state.database.sessions.begin() as session:
+                session.execute(
+                    text(
+                        "INSERT INTO score "
+                        "SELECT 'forged-null-config','forged-candidate',brief_id,"
+                        "weights_version,NULL,stage,score,score_lower,score_upper,"
+                        "confidence,confidence_band,calculation_status,"
+                        "active_signal_count,all_inert_attested,"
+                        "'d' || substr(input_fingerprint,2),source_snapshot,"
+                        "computed_at,NULL,0 FROM score WHERE id=:score"
+                    ),
+                    {"score": score_id},
+                )
         with pytest.raises(IntegrityError, match="incomplete or inconsistent"):
             with app.state.database.sessions.begin() as session:
                 session.execute(
@@ -260,6 +275,30 @@ def test_or_replace_cannot_rewrite_config_or_credential(
                     "('replacement',?,?, 'now',?,'{}',NULL)",
                     (session_id, config_version + 1, config_weights),
                 )
+            with pytest.raises(sqlite3.IntegrityError, match="version already exists"):
+                connection.execute(
+                    "INSERT OR REPLACE INTO role_brief SELECT * FROM role_brief "
+                    "WHERE id=?",
+                    (brief_id,),
+                )
+            with pytest.raises(sqlite3.IntegrityError, match="version already exists"):
+                connection.execute(
+                    "INSERT OR REPLACE INTO role_brief "
+                    "(id,session_id,version,created_at,sealed_at,superseded_at,"
+                    "job_description,target_titles,location,industries,"
+                    "positive_keywords,negative_keywords,message_tone,"
+                    "required_experience_months,weights_version) "
+                    "SELECT 'replacement-brief',session_id,version+1,'now',"
+                    "'now',NULL,job_description,target_titles,location,industries,"
+                    "positive_keywords,negative_keywords,message_tone,"
+                    "required_experience_months,weights_version FROM role_brief "
+                    "WHERE id=?",
+                    (brief_id,),
+                )
+            assert connection.execute(
+                "SELECT count(*) FROM brief_credential WHERE brief_id=?",
+                (brief_id,),
+            ).fetchone() == (1,)
 
 
 def test_validation_is_strict_bounded_and_never_echoes_input(tmp_path: Path) -> None:
@@ -486,17 +525,42 @@ def test_source_snapshot_contains_no_profile_text_and_keywords_are_canonical(
         _settings(tmp_path / "snapshot.db"), queue_executor=PoisonExecutor()
     )
     with TestClient(app, base_url="http://127.0.0.1") as client:
-        _, _, score_id = _seed_current_score(app, client)
+        session_id, _, _ = _seed_current_score(app, client)
+        positive = "UNIQUEPOSMARKER"
+        negative = "ULTRARAREPENALTYMARKER"
+        response = client.put(
+            "/api/briefs/current",
+            json=_brief(
+                session_id,
+                positive_keywords=[positive],
+                negative_keywords=[negative],
+            ),
+        )
+        assert response.status_code == 200, response.text
         with app.state.database.sessions() as session:
-            score = session.get(CandidateScore, score_id)
+            score = session.scalar(
+                select(CandidateScore).where(
+                    CandidateScore.is_current.is_(True),
+                )
+            )
             assert score is not None
             serialized = json.dumps(score.source_snapshot, sort_keys=True)
         assert '"text"' not in serialized
         assert '"snippet"' not in serialized
         assert "python" not in serialized.casefold()
         assert "aws professional" not in serialized.casefold()
-        assert "positive_keywords" in score.source_snapshot["penalty_inputs"]
-        assert "negative_keywords" in score.source_snapshot["penalty_inputs"]
+        assert positive.casefold() not in serialized.casefold()
+        assert negative.casefold() not in serialized.casefold()
+        penalty_inputs = score.source_snapshot["penalty_inputs"]
+        assert penalty_inputs["version"] == "sha256-normalized-v1"
+        assert penalty_inputs["positive"]["count"] == 1
+        assert penalty_inputs["negative"]["count"] == 1
+        assert penalty_inputs["positive"]["sha256"] == [
+            hashlib.sha256(positive.casefold().encode()).hexdigest()
+        ]
+        assert penalty_inputs["negative"]["sha256"] == [
+            hashlib.sha256(negative.casefold().encode()).hexdigest()
+        ]
 
 
 def test_one_current_brief_and_config_are_enforced(tmp_path: Path) -> None:
@@ -686,3 +750,68 @@ def test_unparseable_round_trip_requires_consumed_exact_section(tmp_path: Path) 
                     section_error_id=None,
                 )
             )
+
+
+@pytest.mark.parametrize("error_type", ("parse_error", "unparseable"))
+def test_error_only_parse_failure_is_rooted_fetch_error(
+    tmp_path: Path, error_type: str
+) -> None:
+    error = {
+        "error_type": error_type,
+        "error_message": "parser could not consume the returned section",
+    }
+    executor = SequenceExecutor(
+        [
+            {
+                "url": "https://www.linkedin.com/search/results/people/",
+                "sections": {"search_results": "Ada"},
+                "references": {
+                    "search_results": [
+                        {"kind": "person", "url": "/in/ada/", "text": "Ada"}
+                    ]
+                },
+            },
+            {
+                "url": "https://www.linkedin.com/in/ada/",
+                "sections": {"main_profile": "Ada\nPlatform Engineer"},
+                "section_errors": {"experience": error},
+            },
+        ]
+    )
+    app = create_app(
+        _settings(tmp_path / f"error-{error_type}.db"), queue_executor=executor
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        session_id = client.post("/api/session", json={"label": "parse error"}).json()[
+            "id"
+        ]
+        brief = client.post(
+            "/api/briefs",
+            json=_brief(session_id, required_experience_months=60),
+        ).json()
+        search = client.post(
+            "/api/searches",
+            json={
+                "session_id": session_id,
+                "brief_id": brief["id"],
+                "keywords": "platform",
+            },
+        ).json()
+        assert _wait(app, search["job_id"]).state == "done"
+        candidate_id = client.get(
+            "/api/candidate-pool", params={"session_id": session_id}
+        ).json()[0]["id"]
+        gate = client.post("/api/session/gates/A", json={"note": "reviewed"})
+        assert gate.status_code == 201
+        enrichment = client.post(
+            f"/api/candidates/{candidate_id}/enrich",
+            json={"sections": ["experience"]},
+        ).json()
+        assert _wait(app, enrichment["job_id"]).state == "done"
+        detail = client.get(f"/api/candidates/{candidate_id}").json()
+        experience = next(
+            signal for signal in detail["signals"] if signal["signal_id"] == "S-3"
+        )
+        assert experience["claims"][0]["missing_sections"] == [
+            {"section_name": "experience", "reason": "fetch_error"}
+        ]

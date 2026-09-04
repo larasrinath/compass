@@ -123,21 +123,27 @@ class ScoringService:
         return current
 
     def current_config(self, session_id: str | None = None) -> ScoringConfig:
-        with self.database.sessions.begin() as session:
-            if session_id is None:
-                dashboard_session = session.scalar(
-                    select(DashboardSession)
-                    .order_by(
-                        DashboardSession.created_at.desc(), DashboardSession.id.desc()
+        with self._transition_lock:
+            with self.database.sessions.begin() as session:
+                if session_id is None:
+                    dashboard_session = session.scalar(
+                        select(DashboardSession)
+                        .where(
+                            DashboardSession.id
+                            != "00000000-0000-0000-0000-000000000000"
+                        )
+                        .order_by(
+                            DashboardSession.created_at.desc(),
+                            DashboardSession.id.desc(),
+                        )
+                        .limit(1)
                     )
-                    .limit(1)
-                )
-                if dashboard_session is None:
-                    raise LookupError("session does not exist")
-                session_id = dashboard_session.id
-            config = self.ensure_default_config(session, session_id)
-            session.expunge(config)
-            return config
+                    if dashboard_session is None:
+                        raise LookupError("session does not exist")
+                    session_id = dashboard_session.id
+                config = self.ensure_default_config(session, session_id)
+                session.expunge(config)
+                return config
 
     def config_record(self, session_id: str | None = None) -> dict[str, Any]:
         config = self.current_config(session_id)
@@ -373,29 +379,31 @@ class ScoringService:
         ]
 
     def rescore_candidate(self, candidate_id: str) -> CandidateScore:
-        with self.database.sessions.begin() as session:
-            row = self.rescore_candidate_in_session(session, candidate_id)
-            session.expunge(row)
-            return row
+        with self._transition_lock:
+            with self.database.sessions.begin() as session:
+                row = self.rescore_candidate_in_session(session, candidate_id)
+                session.expunge(row)
+                return row
 
     def rescore_candidate_in_session(
         self, session: Session, candidate_id: str
     ) -> CandidateScore:
-        candidate = session.get(Candidate, candidate_id)
-        if candidate is None:
-            raise LookupError("candidate does not exist")
-        brief = session.scalar(
-            select(RoleBrief)
-            .where(
-                RoleBrief.session_id == candidate.session_id,
-                RoleBrief.superseded_at.is_(None),
+        with self._transition_lock:
+            candidate = session.get(Candidate, candidate_id)
+            if candidate is None:
+                raise LookupError("candidate does not exist")
+            brief = session.scalar(
+                select(RoleBrief)
+                .where(
+                    RoleBrief.session_id == candidate.session_id,
+                    RoleBrief.superseded_at.is_(None),
+                )
+                .order_by(RoleBrief.version.desc())
+                .limit(1)
             )
-            .order_by(RoleBrief.version.desc())
-            .limit(1)
-        )
-        if brief is None:
-            raise LookupError("candidate session has no brief")
-        config = self.ensure_default_config(session, candidate.session_id)
-        return calculate_and_persist(
-            session, candidate=candidate, brief=brief, config=config
-        )
+            if brief is None:
+                raise LookupError("candidate session has no brief")
+            config = self.ensure_default_config(session, candidate.session_id)
+            return calculate_and_persist(
+                session, candidate=candidate, brief=brief, config=config
+            )

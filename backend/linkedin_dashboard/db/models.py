@@ -626,6 +626,9 @@ class CandidateScore(Base):
             "all_inert_attested IN (0, 1)", name="ck_score_all_inert_boolean"
         ),
         CheckConstraint("is_current IN (0, 1)", name="ck_score_is_current_boolean"),
+        UniqueConstraint(
+            "candidate_id", "input_fingerprint", name="uq_score_candidate_input"
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)

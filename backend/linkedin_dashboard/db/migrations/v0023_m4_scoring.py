@@ -189,6 +189,13 @@ LIMIT 1
 
 STATEMENTS = (
     "DROP TRIGGER IF EXISTS role_brief_append_only",
+    """CREATE TRIGGER role_brief_insert_collision BEFORE INSERT ON role_brief
+       FOR EACH ROW WHEN EXISTS (
+         SELECT 1 FROM role_brief old WHERE old.id=NEW.id
+           OR (old.session_id=NEW.session_id AND old.version=NEW.version)
+           OR (old.session_id=NEW.session_id AND old.superseded_at IS NULL
+               AND NEW.superseded_at IS NULL))
+       BEGIN SELECT RAISE(ABORT, 'role brief version already exists'); END""",
     """CREATE TRIGGER role_brief_append_only BEFORE UPDATE ON role_brief
        FOR EACH ROW WHEN NEW.id IS NOT OLD.id OR NEW.session_id IS NOT OLD.session_id
          OR NEW.version IS NOT OLD.version OR NEW.created_at IS NOT OLD.created_at
@@ -245,8 +252,11 @@ STATEMENTS = (
        ON score(candidate_id) WHERE is_current=1""",
     """CREATE UNIQUE INDEX IF NOT EXISTS one_current_scoring_config_per_session
        ON scoring_config(session_id) WHERE superseded_at IS NULL""",
+    """CREATE TRIGGER score_requires_config_insert BEFORE INSERT ON score
+       FOR EACH ROW WHEN NEW.scoring_config_id IS NULL
+       BEGIN SELECT RAISE(ABORT, 'new scores require a scoring config'); END""",
     """CREATE TRIGGER score_m4_roots_insert BEFORE INSERT ON score
-       FOR EACH ROW WHEN NEW.scoring_config_id IS NOT NULL AND NOT EXISTS (
+       FOR EACH ROW WHEN NOT EXISTS (
          SELECT 1 FROM candidate c JOIN role_brief rb
            ON rb.id=NEW.brief_id AND rb.session_id=c.session_id
          JOIN scoring_config sc ON sc.id=NEW.scoring_config_id
@@ -256,7 +266,7 @@ STATEMENTS = (
            AND length(NEW.input_fingerprint)=64)
        BEGIN SELECT RAISE(ABORT, 'score roots must share a session'); END""",
     """CREATE TRIGGER score_m4_staged_insert BEFORE INSERT ON score
-       FOR EACH ROW WHEN NEW.scoring_config_id IS NOT NULL AND NEW.is_current<>0
+       FOR EACH ROW WHEN NEW.is_current<>0
        BEGIN SELECT RAISE(ABORT, 'M4 score must be inserted as staged'); END""",
     """CREATE TRIGGER scoring_config_shape_insert BEFORE INSERT ON scoring_config
        FOR EACH ROW WHEN json_type(NEW.weights)<>'object'
@@ -317,6 +327,15 @@ STATEMENTS = (
        BEFORE UPDATE OF raw_text,content_sha256 ON profile_section FOR EACH ROW
        WHEN NEW.raw_text IS NOT OLD.raw_text OR NEW.content_sha256 IS NOT OLD.content_sha256
        BEGIN SELECT RAISE(ABORT, 'profile section history is immutable'); END""",
+    """CREATE TRIGGER section_error_exact_root_insert BEFORE INSERT ON section_error
+       FOR EACH ROW WHEN
+         (NEW.candidate_id IS NOT NULL AND (
+           NEW.search_run_id IS NOT NULL OR NEW.fetch_id IS NULL OR NOT EXISTS (
+             SELECT 1 FROM profile_fetch pf
+             WHERE pf.id=NEW.fetch_id AND pf.candidate_id=NEW.candidate_id)))
+         OR (NEW.candidate_id IS NULL AND (
+           NEW.search_run_id IS NULL OR NEW.fetch_id IS NOT NULL))
+       BEGIN SELECT RAISE(ABORT, 'section error requires exactly one source root'); END""",
     """CREATE TRIGGER score_input_section_exact_insert
        BEFORE INSERT ON score_input_section FOR EACH ROW WHEN NOT EXISTS (
          SELECT 1 FROM score s JOIN profile_section ps
@@ -403,14 +422,34 @@ STATEMENTS = (
              AND EXISTS (
                SELECT 1 FROM missing_set ms JOIN section_error se
                  ON se.id=NEW.section_error_id AND se.candidate_id=ms.candidate_id
+               JOIN profile_fetch pf ON pf.id=se.fetch_id
+                 AND pf.candidate_id=ms.candidate_id
+               JOIN json_each(json_extract(
+                 pf.projection_payload,'$.section_errors')) item
                WHERE ms.id=NEW.missing_set_id AND se.section_name=NEW.section_name
+                 AND se.search_run_id IS NULL AND pf.contract_error IS NULL
+                 AND pf.raw_response IS NOT NULL AND pf.raw_response<>'null'
+                 AND item.key=se.section_name
+                 AND json(item.value)=json(se.source_item)
+                 AND json_extract(item.value,'$.error_type')=se.error_type
+                 AND json_extract(item.value,'$.error_message')=se.error_message
                  AND lower(se.error_type)='rate_limit'))
            OR (NEW.reason='fetch_error' AND NEW.section_error_id IS NOT NULL
              AND EXISTS (
                SELECT 1 FROM missing_set ms JOIN section_error se
                  ON se.id=NEW.section_error_id AND se.candidate_id=ms.candidate_id
+               JOIN profile_fetch pf ON pf.id=se.fetch_id
+                 AND pf.candidate_id=ms.candidate_id
+               JOIN json_each(json_extract(
+                 pf.projection_payload,'$.section_errors')) item
                WHERE ms.id=NEW.missing_set_id AND se.section_name=NEW.section_name
-                 AND lower(se.error_type) NOT IN ('rate_limit','unparseable','parse_error')))
+                 AND se.search_run_id IS NULL AND pf.contract_error IS NULL
+                 AND pf.raw_response IS NOT NULL AND pf.raw_response<>'null'
+                 AND item.key=se.section_name
+                 AND json(item.value)=json(se.source_item)
+                 AND json_extract(item.value,'$.error_type')=se.error_type
+                 AND json_extract(item.value,'$.error_message')=se.error_message
+                 AND lower(se.error_type)<>'rate_limit'))
            OR (NEW.reason='unparseable' AND NEW.section_error_id IS NULL
              AND EXISTS (
                SELECT 1 FROM missing_set ms JOIN score_signal ss
@@ -686,7 +725,7 @@ STATEMENTS = (
                  AND NEW.confidence_band IN ('low','medium','high'))))))
        BEGIN SELECT RAISE(ABORT, 'current score is incomplete or inconsistent'); END""",
     """CREATE TRIGGER score_content_is_immutable BEFORE UPDATE ON score
-       FOR EACH ROW WHEN OLD.scoring_config_id IS NOT NULL AND (
+       FOR EACH ROW WHEN (
          NEW.id IS NOT OLD.id OR NEW.candidate_id IS NOT OLD.candidate_id
          OR NEW.brief_id IS NOT OLD.brief_id
          OR NEW.scoring_config_id IS NOT OLD.scoring_config_id
@@ -703,19 +742,21 @@ STATEMENTS = (
          OR NOT ((OLD.is_current=1 AND NEW.is_current=0
                   AND OLD.superseded_at IS NULL AND NEW.superseded_at IS NOT NULL)
               OR (OLD.is_current=0 AND NEW.is_current=1
+                  AND OLD.scoring_config_id IS NOT NULL
                   AND OLD.superseded_at IS NEW.superseded_at)
               OR (OLD.is_current IS NEW.is_current
                   AND OLD.superseded_at IS NEW.superseded_at)))
        BEGIN SELECT RAISE(ABORT, 'score identity is immutable'); END""",
     """CREATE TRIGGER score_m4_insert_collision BEFORE INSERT ON score
        FOR EACH ROW WHEN EXISTS (
-         SELECT 1 FROM score old WHERE old.scoring_config_id IS NOT NULL
-           AND (old.id=NEW.id
+         SELECT 1 FROM score old WHERE (old.id=NEW.id
+             OR (old.candidate_id=NEW.candidate_id
+                 AND old.input_fingerprint=NEW.input_fingerprint)
              OR (NEW.is_current=1 AND old.is_current=1
                  AND old.candidate_id=NEW.candidate_id)))
        BEGIN SELECT RAISE(ABORT, 'M4 score identity already exists'); END""",
     """CREATE TRIGGER score_m4_no_delete BEFORE DELETE ON score
-       FOR EACH ROW WHEN OLD.scoring_config_id IS NOT NULL AND EXISTS (
+       FOR EACH ROW WHEN EXISTS (
          SELECT 1 FROM candidate c JOIN session s ON s.id=c.session_id
          WHERE c.id=OLD.candidate_id)
        BEGIN SELECT RAISE(ABORT, 'M4 score is append-only'); END""",
@@ -881,6 +922,16 @@ def apply(connection: Connection) -> None:
     ).first()
     if duplicate is not None:
         raise RuntimeError(f"cannot apply {VERSION}: multiple current scores")
+    if "input_fingerprint" in _columns(connection, "score"):
+        duplicate_input = connection.exec_driver_sql(
+            "SELECT candidate_id,input_fingerprint FROM score "
+            "GROUP BY candidate_id,input_fingerprint HAVING count(*)>1 LIMIT 1"
+        ).first()
+        if duplicate_input is not None:
+            raise RuntimeError(
+                f"cannot apply {VERSION}: candidate {duplicate_input[0]} has "
+                "duplicate score input history"
+            )
     _create_new_tables(connection)
     _canonical_rebuilds(connection)
     for statement in STATEMENTS:

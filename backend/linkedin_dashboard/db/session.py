@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from errno import ELOOP
 from functools import lru_cache
 from pathlib import Path
-from threading import Lock
+from threading import Lock, RLock
 from typing import Any
 
 from sqlalchemy import Engine, create_engine, event, text
@@ -115,7 +115,7 @@ class Database:
         self._initialize_lock = Lock()
         # Brief and scoring-config version transitions share one process-local
         # serialization boundary so their cross-rescoring cannot interleave.
-        self.transition_lock = Lock()
+        self.transition_lock = RLock()
         self._initialized = False
         self._initializing = False
         self.engine = _create_runtime_engine(

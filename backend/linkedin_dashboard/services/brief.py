@@ -195,6 +195,12 @@ class BriefService:
         self._transition_lock = database.transition_lock
 
     def create_session(self, label: str, nav_budget: int = 120) -> DashboardSession:
+        with self._transition_lock:
+            return self._create_session_locked(label, nav_budget)
+
+    def _create_session_locked(
+        self, label: str, nav_budget: int = 120
+    ) -> DashboardSession:
         cleaned = label.strip()
         if not cleaned:
             raise ValueError("session label is required")
@@ -313,6 +319,9 @@ class BriefService:
                         )
                         .values(is_current=False, superseded_at=now)
                     )
+                # The BEFORE INSERT collision guard must observe the prior
+                # version's explicit lifecycle transition before the new row.
+                session.flush()
             brief = RoleBrief(
                 id=str(uuid4()),
                 session_id=session_id,

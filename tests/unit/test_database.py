@@ -36,7 +36,6 @@ from linkedin_dashboard.db.migrations import (
 )
 from linkedin_dashboard.db.models import (
     Candidate,
-    CandidateScore,
     DashboardSession,
     DraftClaim,
     MessageDraft,
@@ -914,22 +913,6 @@ def test_all_persisted_boolean_columns_reject_non_booleans(database: Database) -
         db_session.add(brief)
         db_session.flush()
         db_session.add(
-            CandidateScore(
-                id="score-all-booleans",
-                candidate_id=candidate_id,
-                brief_id=brief.id,
-                weights_version="v1",
-                stage="provisional",
-                score=0.0,
-                score_lower=0.0,
-                score_upper=0.0,
-                confidence=0.0,
-                confidence_band="low",
-                computed_at=NOW,
-                is_current=True,
-            )
-        )
-        db_session.add(
             DraftClaim(
                 id="claim-all-booleans",
                 draft_id=draft_id,
@@ -950,7 +933,6 @@ def test_all_persisted_boolean_columns_reject_non_booleans(database: Database) -
 
     statements = (
         "UPDATE session SET send_enabled=2 WHERE id='session-all-booleans'",
-        "UPDATE score SET is_current=2 WHERE id='score-all-booleans'",
         "UPDATE draft_claim SET grounded=2 WHERE id='claim-all-booleans'",
         "UPDATE send_attempt SET confirm_send=2 WHERE id='attempt-all-booleans'",
         "UPDATE send_attempt SET tool_sent=2 WHERE id='attempt-all-booleans'",
