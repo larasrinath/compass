@@ -76,11 +76,13 @@ observation and audit record. Database attestations bind every projected
 section, error, reference, and parsed span to the exact committed MCP envelope.
 The eight-profile parser corpus under `tests/fixtures/profile_parsing` is
 explicitly synthetic representative data. It provides a 16-field regression
-denominator, not real-profile acceptance evidence; the ≥90% title/company
-metric on manually annotated experience blocks from at least two consented,
-non-private real profiles remains the sole M3 acceptance blocker. The operator
-approved reducing that real-profile minimum from eight to two on 2026-09-03
-for this one-time local activity; the ≥90% quality threshold did not change.
+denominator, not real-profile acceptance evidence. The operator's 2026-09-03
+decision to reduce the live minimum from eight to two profiles while retaining
+a ≥90% manually annotated threshold is preserved as history but is superseded.
+For this one-time local activity, the final M3 gate now requires all three
+authorized real profiles and passes only when strictly >85% of manually
+annotated experience blocks have both title and company correct. Exactly 85%
+does not pass. The eight-profile synthetic corpus is unchanged.
 
 Sanitized live QA on build
 `e3240dc42f0158b6f5a7dfb9cbe0cb2eaf42eaf3` passed 2/2 Stage-1 queue jobs,
@@ -89,9 +91,14 @@ recorded zero forbidden send, search, or draft operations. The evidence
 artifact SHA-256 is
 `284ee3635b3c2c28a67fe77350ab9c3e6dc9ed92f6ee76f7d0db925e5add5b61`;
 profile names and raw data are intentionally omitted. M3 is not yet accepted:
-the reported 89.81% was parser-output completeness, not manually annotated
-accuracy, so the revised ≥90%-across-≥2-profiles gate still requires manual
-annotation.
+the manually annotated both-correct results of 70.5882% on exact build
+`e3240dc42f0158b6f5a7dfb9cbe0cb2eaf42eaf3` and 88.2353% on build `944cd55`
+were historical failures under the then-current ≥90% threshold. The separately
+reported 89.81% was parser-output completeness, not manually annotated
+accuracy. A sanitized final run of exact parser replacement build
+`d751b79022ef433e18747cd6335c526d6480733f` across all three authorized real
+profiles, manually annotated at strictly >85% both-correct title-and-company
+accuracy, remains the sole M3 acceptance gate.
 
 ## Prerequisites
 
