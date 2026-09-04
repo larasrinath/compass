@@ -129,9 +129,11 @@ export interface BriefInput {
   job_description: string
   required_skills: BriefTerm[]
   optional_skills: BriefTerm[]
+  required_experience_months: number | null
   target_titles: BriefTerm[]
   location: string
   industries: BriefTerm[]
+  required_credentials: BriefTerm[]
   positive_keywords: string[]
   negative_keywords: string[]
   message_tone: string

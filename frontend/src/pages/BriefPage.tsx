@@ -14,9 +14,11 @@ const EMPTY_FORM: Omit<BriefInput, 'session_id'> = {
   job_description: '',
   required_skills: [],
   optional_skills: [],
+  required_experience_months: null,
   target_titles: [],
   location: '',
   industries: [],
+  required_credentials: [],
   positive_keywords: [],
   negative_keywords: [],
   message_tone: 'Professional and concise',
@@ -65,9 +67,12 @@ export function BriefPage({
             job_description: current.job_description,
             required_skills: current.required_skills,
             optional_skills: current.optional_skills,
+            required_experience_months:
+              current.required_experience_months ?? null,
             target_titles: current.target_titles,
             location: current.location,
             industries: current.industries,
+            required_credentials: current.required_credentials ?? [],
             positive_keywords: current.positive_keywords,
             negative_keywords: current.negative_keywords,
             message_tone: current.message_tone,
@@ -78,9 +83,15 @@ export function BriefPage({
   const [description, setDescription] = useState(initial.job_description)
   const [required, setRequired] = useState<BriefTerm[]>(initial.required_skills)
   const [optional, setOptional] = useState<BriefTerm[]>(initial.optional_skills)
+  const [requiredExperienceMonths, setRequiredExperienceMonths] = useState<
+    number | null
+  >(initial.required_experience_months)
   const [titles, setTitles] = useState<BriefTerm[]>(initial.target_titles)
   const [location, setLocation] = useState(initial.location)
   const [industries, setIndustries] = useState<BriefTerm[]>(initial.industries)
+  const [credentials, setCredentials] = useState<BriefTerm[]>(
+    initial.required_credentials,
+  )
   const [positive, setPositive] = useState(initial.positive_keywords.join('\n'))
   const [negative, setNegative] = useState(initial.negative_keywords.join('\n'))
   const [tone, setTone] = useState(initial.message_tone)
@@ -155,9 +166,11 @@ export function BriefPage({
             job_description: description,
             required_skills: required,
             optional_skills: optional,
+            required_experience_months: requiredExperienceMonths,
             target_titles: titles,
             location,
             industries,
+            required_credentials: credentials,
             positive_keywords: parseKeywords(positive),
             negative_keywords: parseKeywords(negative),
             message_tone: tone,
@@ -222,6 +235,28 @@ export function BriefPage({
             }}
             values={optional}
           />
+          <label
+            className="field"
+            data-field-prefix="required_experience_months"
+          >
+            <span>Required experience in months</span>
+            <input
+              aria-describedby="required-experience-help"
+              aria-label="Required experience in months"
+              min="0"
+              onChange={(event) =>
+                setRequiredExperienceMonths(
+                  event.target.value === '' ? null : Number(event.target.value),
+                )
+              }
+              step="1"
+              type="number"
+              value={requiredExperienceMonths ?? ''}
+            />
+            <small className="field-help" id="required-experience-help">
+              Leave blank or enter 0 to disable experience-depth scoring.
+            </small>
+          </label>
           <TermEditor
             errors={fieldErrors.industries}
             field="industries"
@@ -231,6 +266,16 @@ export function BriefPage({
               markDirty()
             }}
             values={industries}
+          />
+          <TermEditor
+            errors={fieldErrors.required_credentials}
+            field="required_credentials"
+            label="Required credentials"
+            onChange={(values) => {
+              setCredentials(values)
+              markDirty()
+            }}
+            values={credentials}
           />
           <label className="field" data-field-prefix="positive_keywords">
             <span>Positive keywords</span>

@@ -102,8 +102,9 @@ const sessionBase = {
 const brief = {
   id: 'brief-1', session_id: 'session-1', version: 1, created_at: 'now', superseded_at: null,
   job_description: 'Platform engineer', required_skills: [{ term: 'Alpha', aliases: [] }],
-  optional_skills: [], target_titles: [], location: '', industries: [], positive_keywords: [],
-  negative_keywords: [], message_tone: 'Professional', weights_version: 'v1', stale_scores: 0,
+  optional_skills: [], required_experience_months: null, target_titles: [], location: '',
+  industries: [], required_credentials: [], positive_keywords: [], negative_keywords: [],
+  message_tone: 'Professional', weights_version: 'v1', stale_scores: 0,
 }
 const weights = {
   version: 'v1',
@@ -273,4 +274,124 @@ test('hostile unbroken API strings never widen the 390px candidate views', async
   await expect(page.locator('.evidence-link')).toBeVisible()
   await expect(page.locator('.context-panel')).toBeVisible()
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy()
+})
+
+test('brief preserves experience and credential aliases through create and edit', async ({ page }) => {
+  let currentBrief: Record<string, unknown> | null = null
+  const writes: Array<Record<string, unknown>> = []
+  let rejectProtected = false
+  await page.route('**/api/**', async (route) => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    if (!path.startsWith('/api/')) {
+      await route.continue()
+      return
+    }
+    if (path === '/api/events') {
+      await route.abort()
+      return
+    }
+    let body: unknown
+    let status = 200
+    if (path === '/api/health') {
+      body = { status: 'ok', database: 'ok', send_enabled: false, llm_provider: 'null' }
+    } else if (path === '/api/mcp/status') {
+      body = { reachable: true, tools: [], last_error_class: null, correlation_id: 'test' }
+    } else if (path === '/api/session') {
+      body = { ...sessionBase, phase_gates: {} }
+    } else if (path === '/api/briefs/current' && request.method() === 'GET') {
+      body = currentBrief
+    } else if (
+      (path === '/api/briefs' && request.method() === 'POST') ||
+      (path === '/api/briefs/current' && request.method() === 'PUT')
+    ) {
+      const payload = request.postDataJSON() as Record<string, unknown>
+      writes.push(payload)
+      if (rejectProtected) {
+        status = 422
+        body = {
+          detail: {
+            message: 'Protected criteria are not permitted.',
+            offending_terms: [{
+              field: 'required_credentials.0.aliases.0',
+              term: 'gender',
+            }],
+          },
+        }
+      } else {
+        const version = writes.length
+        currentBrief = {
+          ...payload,
+          id: `brief-${version}`,
+          version,
+          created_at: '2026-01-01T00:00:00Z',
+          superseded_at: null,
+          weights_version: `weights-${version}`,
+          stale_scores: 0,
+        }
+        body = currentBrief
+        status = request.method() === 'POST' ? 201 : 200
+      }
+    } else {
+      throw new Error(`Unhandled API route ${request.method()} ${path}`)
+    }
+    await route.fulfill({
+      status,
+      contentType: 'application/json',
+      body: JSON.stringify(body),
+    })
+  })
+
+  await page.goto('/brief')
+  await page.getByLabel('Job description').fill('Platform engineer')
+  const experience = page.getByLabel('Required experience in months')
+  await expect(experience).toHaveValue('')
+  await experience.fill('0')
+  let credentials = page.getByRole('group', { name: 'Required credentials' })
+  await credentials.getByLabel('New required credentials term').fill('AWS Architect')
+  await credentials.getByRole('button', { name: 'Add term' }).click()
+  await credentials.getByLabel('Aliases for AWS Architect').fill(
+    'SAA, Solutions Architect Associate',
+  )
+  await page.getByRole('button', { name: 'Save brief' }).click()
+  await expect(page.getByRole('button', { name: 'Save new version' })).toBeVisible()
+  expect(writes[0].required_experience_months).toBe(0)
+  expect(writes[0].required_credentials).toEqual([{
+    term: 'AWS Architect',
+    aliases: ['SAA', 'Solutions Architect Associate'],
+  }])
+
+  await page.reload()
+  await expect(experience).toHaveValue('0')
+  credentials = page.getByRole('group', { name: 'Required credentials' })
+  await expect(credentials.getByLabel('Required credentials term 1')).toHaveValue('AWS Architect')
+  await expect(credentials.getByLabel('Aliases for AWS Architect')).toHaveValue(
+    'SAA, Solutions Architect Associate',
+  )
+
+  await experience.fill('-1')
+  expect(await experience.evaluate((element: HTMLInputElement) => element.validity.rangeUnderflow)).toBe(true)
+  await page.getByRole('button', { name: 'Save new version' }).click()
+  expect(writes).toHaveLength(1)
+  await experience.fill('1.5')
+  expect(await experience.evaluate((element: HTMLInputElement) => element.validity.stepMismatch)).toBe(true)
+  await page.getByRole('button', { name: 'Save new version' }).click()
+  expect(writes).toHaveLength(1)
+
+  await experience.fill('')
+  await credentials.getByRole('button', { name: 'Remove AWS Architect' }).click()
+  await page.getByRole('button', { name: 'Save new version' }).click()
+  await expect.poll(() => writes.length).toBe(2)
+  expect(writes[1].required_experience_months).toBeNull()
+  expect(writes[1].required_credentials).toEqual([])
+  await expect(page.getByText('Saved version 2')).toBeVisible()
+
+  credentials = page.getByRole('group', { name: 'Required credentials' })
+  await credentials.getByLabel('New required credentials term').fill('Safe credential')
+  await credentials.getByRole('button', { name: 'Add term' }).click()
+  await credentials.getByLabel('Aliases for Safe credential').fill('gender')
+  rejectProtected = true
+  await page.getByRole('button', { name: 'Save new version' }).click()
+  await expect(page.getByText('Remove protected criterion “gender”.')).toBeVisible()
+  await expect(credentials.getByLabel('Required credentials term 1')).toBeFocused()
 })
