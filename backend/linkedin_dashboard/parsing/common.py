@@ -7,7 +7,7 @@ from typing import Literal
 from linkedin_dashboard.parsing.spans import VerifiedSpan
 from linkedin_dashboard.parsing.verify import verify_substring
 
-PARSER_VERSION = "m3-v1"
+PARSER_VERSION = "m3-v3"
 
 
 @dataclass(frozen=True, slots=True)

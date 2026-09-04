@@ -54,6 +54,57 @@ saying why; §29's checklist is run against this table at every milestone accept
 | **D-08** | MCP server run mode | **Direct streamable HTTP on `127.0.0.1`.** No daemon owner, no bearer token, no lifecycle management of the server by the dashboard. Consistent with A-03 (`server.py:177-184`: only an owner authenticates). Guard: `mcp/client.py` constructs no auth header; a test asserts it. |
 | **D-02** | LLM provider and data egress | **Local-first. `NullProvider` is the default and the only provider through M5.** Search, enrichment, deterministic scoring, evidence and shortlisting complete with **no profile text leaving the machine**. The provider interface is preserved so the hosting decision for message generation is made at M6, on its own merits. Guard: LD-08. |
 
+### M3 acceptance decision and evidence
+
+**Historical decision, approved by the operator 2026-09-03 and superseded
+below:** for this one-time local activity, the minimum real-profile corpus for
+T-3.3 was reduced from **≥8 profiles to ≥2 profiles** while retaining a
+**≥90%** manually annotated both-correct title-and-company threshold. This
+record is retained to explain the acceptance criteria used for the historical
+results below; it is no longer the active M3 gate.
+
+**Superseding decision, approved by the operator 2026-09-03:** the final M3
+live parser gate must use **all three authorized real profiles** and pass only
+if the manually annotated share of experience blocks with **both title and
+company correct is strictly >85%**. Exactly 85% does not pass. The operator
+approved this denominator and threshold for a one-time local activity. The
+eight-profile synthetic regression corpus remains unchanged and does not count
+toward the live denominator.
+
+Sanitized live QA on exact build
+`e3240dc42f0158b6f5a7dfb9cbe0cb2eaf42eaf3` established that 2/2 Stage-1
+queue jobs passed, 4/4 required sections were stored verbatim, URN-if-present
+handling passed 2/2, and forbidden send, search, and draft counts were all
+zero. The evidence artifact SHA-256 is
+`284ee3635b3c2c28a67fe77350ab9c3e6dc9ed92f6ee76f7d0db925e5add5b61`;
+profile names and raw profile data are intentionally omitted here.
+
+The manually annotated both-correct result was **70.5882%** on exact build
+`e3240dc42f0158b6f5a7dfb9cbe0cb2eaf42eaf3` and **88.2353%** on build
+`944cd55`; both are retained as historical failed gates because each was below
+the then-current ≥90% threshold. These sanitized records disclose neither
+profile identities nor raw profile text. The separately reported 89.81% was
+parser-output completeness, not manually annotated accuracy.
+
+**M3 accepted by the operator 2026-09-03.** Sanitized live acceptance on exact
+tested build `28c2b8af922a74ffd53eccc6336a999103dfaa6a` covered all three
+authorized real profiles. Manual annotation found **19/21 experience blocks
+both-correct for title and company: 90.4762%**, which passes the strictly >85%
+gate. Exactly one Stage-1 queue job ran for each profile (3/3); verbatim
+`main_profile` plus `experience` storage passed for each profile (3/3); and
+raw-before-parse ordering, provenance, URN-if-present handling, and exact-span
+checks passed. Forbidden operation counts were: search=0, connection=0,
+Stage 2=0, draft=0, dry-run=0, message=0, and send=0.
+The raw acceptance database and artifacts were purged after recording the
+sanitized result and evidence digest. The evidence artifact SHA-256 is
+`12c0a5f0ed92fa7e8ad71c7ce21aa25b15b095336f00f15a46a6a1c084b9e6ce`.
+Profile identities and raw profile text are intentionally omitted.
+
+The two non-both-correct blocks were grouped-parent layouts. They remain a
+known, non-blocking parser limitation and are included in the 21-block
+denominator. M3 acceptance satisfies the M4 entry gate, so **M4 is unblocked
+but has not started**.
+
 ### Invariants locked
 
 | ID | Invariant | Implemented by | Guard test |
@@ -1702,6 +1753,13 @@ operator acceptance of this milestone.
 
 ### M3 — Retrieval and parsing
 
+**Acceptance status (2026-09-03): ACCEPTED.** Exact tested build
+`28c2b8af922a74ffd53eccc6336a999103dfaa6a` passed the authorized three-profile
+live gate with 19/21 manually annotated experience blocks both-correct for
+title and company (90.4762%, strictly >85%). The two grouped-parent misses are
+a recorded non-blocking limitation. M4 is unblocked but has not started (see
+§1a).
+
 **T-3.1 · Stage-1 enrichment**
 - *Purpose:* FR-020, FR-022, FR-023, FR-025, FR-027.
 - *Files:* `services/enrichment.py`, `api/enrichment.py`
@@ -1725,7 +1783,7 @@ operator acceptance of this milestone.
 - *Files:* `parsing/*.py`
 - *Depends on:* T-3.1
 - *Output:* six parsers emitting fields with spans; totality guaranteed.
-- *Acceptance:* against ≥ 8 real recorded profiles, ≥ 90 % of experience blocks parse title+company, and no parser raises on any fixture.
+- *Acceptance:* across all 3 authorized real profiles, strictly > 85 % of manually annotated experience blocks must have both title and company correct, and no parser raises on any fixture. Exactly 85 % fails.
 - *Tests:* per-parser fixture tests; a fuzz test feeding random text to every parser.
 - *Scope:* **[D]**
 
@@ -2003,7 +2061,7 @@ T-4.1 → T-4.2 → T-4.3 → T-5.1 → [Gate B] → T-6.2 → T-6.3 → [Gate C
 | **M0** | Backend and frontend start on loopback only; DB migrates on a clean machine; `one_live_send_per_candidate` rejects a second live row; the audit log refuses UPDATE/DELETE; a crafted `runtime` block never reaches an API response. |
 | **M1** | `GET /api/mcp/status` lists the live server's tools; ten queued jobs execute strictly one at a time; a killed backend leaves `interrupted` rows and no lost work; every §18 error class is produced by a fixture; SSE shows queue position and per-section progress. |
 | **M2** | A real `search_people` stores raw text and references verbatim; `network` and `current_company` validation matches the server's rules **before** any call; the same person from two searches is one candidate with two sources; the identifier parity test passes; the UI makes "N of 15 references were people" legible. |
-| **M3** | Stage-1 fetches store both sections verbatim with `profile_urn` when present; a rate-limited fetch stores what returned and queues exactly the missing sections; parsers never raise on any fixture and ≥90 % of experience blocks yield title+company across ≥8 real profiles; a fabricated LLM span cannot become evidence; clicking a parsed field highlights its span. |
+| **M3** | Stage-1 fetches store both sections verbatim with `profile_urn` when present; a rate-limited fetch stores what returned and queues exactly the missing sections; parsers never raise on any fixture and strictly >85 % of manually annotated experience blocks have both title and company correct across all 3 authorized real profiles; a fabricated LLM span cannot become evidence; clicking a parsed field highlights its span. |
 | **M4** | Every scored candidate's evidence spans resolve to the exact substring in stored raw text (integrity test, 100 %); `lower ≤ score ≤ upper` on every candidate; a candidate with no sections has confidence 0 and no zero-score penalty; every `unknown` renders the FR-042 string; the protected-attribute test fails when a protected term is introduced; **Gates A and B recorded.** |
 | **M5** | Decisions are append-only with history; navigating and scoring write no decision rows; auto-promotion is off by default and, when on, enqueues fetches only. |
 | **M6** | Drafts generate only for shortlisted candidates with a `main_profile`; the prompt contains only that candidate's evidence; a planted false claim is flagged; editing versions the draft and re-runs grounding; the whole flow works with `NullProvider`; **Gate C recorded.** |
@@ -2180,7 +2238,7 @@ its own. M6 (drafting) and M7
 | 2 | **A-11 — `confirm_send=false` never sends.** The whole dry-run design assumes the early return at `extractor.py:5010-5017` precedes the `keyboard.type` at `:5033`. | If wrong, our "safe validation" step is a send. | Verified by reading the source; confirm once against a live server with a consenting recipient **before** T-7.1 ships. |
 | 3 | **The `send_unavailable` → `AMBIGUOUS` classification.** Returned after typing and clicking (`extractor.py:5074-5080`). | Classifying it as a failure would let the operator re-send a message that already went out — the one unrecoverable bug (R-06). | Pinned by a mutation-checked test in T-7.3 and by reading the same source lines at review time. |
 | 4 | **R-02 — enough candidates are messageable.** `send_message` needs the profile to be directly messageable (`tools/messaging.py:232`). | If most shortlisted candidates come back `message_unavailable`, M7 delivers little and the fallback becomes the primary path. | **Cheap test during M4:** run `send_message(confirm_send=false)` against 3–5 already-scored candidates and count `confirmation_required` vs. `message_unavailable`. Do this *before* building M7. |
-| 5 | **R-04 — innerText parsing is good enough to score on.** Everything downstream of `sections` is our inference over free text. | If experience blocks parse poorly, S-3/S-4/S-5 (45 of 100 weight) degrade to `unknown` and confidence collapses. | **T-3.3 acceptance:** ≥90 % of experience blocks yield title+company across ≥8 real profiles. If missed, the LLM proposal path (T-3.4) moves from optional to required, which re-opens D-02 earlier. |
+| 5 | **R-04 — innerText parsing is good enough to score on.** Everything downstream of `sections` is our inference over free text. | If experience blocks parse poorly, S-3/S-4/S-5 (45 of 100 weight) degrade to `unknown` and confidence collapses. | **T-3.3 acceptance:** strictly >85 % of manually annotated experience blocks have both title and company correct across all 3 authorized real profiles. If missed, the LLM proposal path (T-3.4) moves from optional to required, which re-opens D-02 earlier. |
 
 ---
 

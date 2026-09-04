@@ -76,9 +76,44 @@ observation and audit record. Database attestations bind every projected
 section, error, reference, and parsed span to the exact committed MCP envelope.
 The eight-profile parser corpus under `tests/fixtures/profile_parsing` is
 explicitly synthetic representative data. It provides a 16-field regression
-denominator, not real-profile acceptance evidence; the ≥90% title/company
-metric on a consented non-private recorded corpus remains a manual acceptance
-blocker.
+denominator, not real-profile acceptance evidence. The operator's 2026-09-03
+decision to reduce the live minimum from eight to two profiles while retaining
+a ≥90% manually annotated threshold is preserved as history but is superseded.
+For this one-time local activity, the final M3 gate now requires all three
+authorized real profiles and passes only when strictly >85% of manually
+annotated experience blocks have both title and company correct. Exactly 85%
+does not pass. The eight-profile synthetic corpus is unchanged.
+
+Sanitized live QA on build
+`e3240dc42f0158b6f5a7dfb9cbe0cb2eaf42eaf3` passed 2/2 Stage-1 queue jobs,
+stored 4/4 required sections verbatim, passed URN-if-present handling 2/2, and
+recorded zero forbidden send, search, or draft operations. The evidence
+artifact SHA-256 is
+`284ee3635b3c2c28a67fe77350ab9c3e6dc9ed92f6ee76f7d0db925e5add5b61`;
+profile names and raw data are intentionally omitted. The manually annotated
+both-correct results of 70.5882% on exact build
+`e3240dc42f0158b6f5a7dfb9cbe0cb2eaf42eaf3` and 88.2353% on build `944cd55`
+were historical failures under the then-current ≥90% threshold. The separately
+reported 89.81% was parser-output completeness, not manually annotated
+accuracy.
+
+**M3 was accepted by the operator on 2026-09-03.** Sanitized live acceptance on
+exact tested build `28c2b8af922a74ffd53eccc6336a999103dfaa6a` covered all three
+authorized real profiles. Manual annotation found 19/21 experience blocks
+both-correct for title and company (90.4762%), passing the strictly >85% gate.
+Exactly one Stage-1 queue job ran per profile (3/3), verbatim `main_profile`
+plus `experience` storage passed 3/3, and raw-before-parse ordering,
+provenance, URN-if-present handling, and exact-span checks passed. Forbidden
+operation counts were: search=0, connection=0, Stage 2=0, draft=0, dry-run=0,
+message=0, and send=0. The raw acceptance database
+and artifacts were purged after recording the sanitized result and evidence
+digest. The evidence artifact SHA-256 is
+`12c0a5f0ed92fa7e8ad71c7ce21aa25b15b095336f00f15a46a6a1c084b9e6ce`;
+profile identities and raw data remain omitted.
+
+The two non-both-correct blocks were grouped-parent layouts and remain a known,
+non-blocking parser limitation included in the 21-block denominator. M3
+acceptance unblocks M4; no M4 work has started.
 
 ## Prerequisites
 
