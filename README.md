@@ -77,8 +77,21 @@ section, error, reference, and parsed span to the exact committed MCP envelope.
 The eight-profile parser corpus under `tests/fixtures/profile_parsing` is
 explicitly synthetic representative data. It provides a 16-field regression
 denominator, not real-profile acceptance evidence; the ≥90% title/company
-metric on a consented non-private recorded corpus remains a manual acceptance
-blocker.
+metric on manually annotated experience blocks from at least two consented,
+non-private real profiles remains the sole M3 acceptance blocker. The operator
+approved reducing that real-profile minimum from eight to two on 2026-09-03
+for this one-time local activity; the ≥90% quality threshold did not change.
+
+Sanitized live QA on build
+`e3240dc42f0158b6f5a7dfb9cbe0cb2eaf42eaf3` passed 2/2 Stage-1 queue jobs,
+stored 4/4 required sections verbatim, passed URN-if-present handling 2/2, and
+recorded zero forbidden send, search, or draft operations. The evidence
+artifact SHA-256 is
+`284ee3635b3c2c28a67fe77350ab9c3e6dc9ed92f6ee76f7d0db925e5add5b61`;
+profile names and raw data are intentionally omitted. M3 is not yet accepted:
+the reported 89.81% was parser-output completeness, not manually annotated
+accuracy, so the revised ≥90%-across-≥2-profiles gate still requires manual
+annotation.
 
 ## Prerequisites
 
