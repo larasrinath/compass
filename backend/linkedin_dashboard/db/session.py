@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from errno import ELOOP
 from functools import lru_cache
 from pathlib import Path
-from threading import Lock
+from threading import Lock, RLock
 from typing import Any
 
 from sqlalchemy import Engine, create_engine, event, text
@@ -41,6 +41,12 @@ from linkedin_dashboard.db.migrations import (
     v0020_m3_integrity_corrections,
     v0021_m3_final_integrity,
     v0022_terminal_projection_authority,
+    v0023_m4_scoring,
+    v0024_m4_integrity_upgrade,
+    v0025_m4_semantic_integrity,
+    v0026_m4_manifest_convergence,
+    v0027_m4_bounded_manifests,
+    v0028_m4_text_storage,
 )
 from linkedin_dashboard.db.models import Base
 from linkedin_dashboard.db.unicode_identity import (
@@ -72,6 +78,12 @@ _MIGRATION_MODULES = (
     v0020_m3_integrity_corrections,
     v0021_m3_final_integrity,
     v0022_terminal_projection_authority,
+    v0023_m4_scoring,
+    v0024_m4_integrity_upgrade,
+    v0025_m4_semantic_integrity,
+    v0026_m4_manifest_convergence,
+    v0027_m4_bounded_manifests,
+    v0028_m4_text_storage,
 )
 
 _SCHEMA_ACTIONS = {
@@ -111,6 +123,9 @@ class Database:
         self.path = normalize_database_path(path)
         self._database_fd: int | None = None
         self._initialize_lock = Lock()
+        # Brief and scoring-config version transitions share one process-local
+        # serialization boundary so their cross-rescoring cannot interleave.
+        self.transition_lock = RLock()
         self._initialized = False
         self._initializing = False
         self.engine = _create_runtime_engine(
@@ -202,11 +217,16 @@ class Database:
                 _require_same_file(self.path, database_fd)
                 _secure_existing_sidecars(self.path)
                 self._initialized = True
-            except BaseException:
+            except BaseException as error:
                 self.engine.dispose()
                 if database_fd is not None:
                     os.close(database_fd)
                 self._database_fd = None
+                if _is_malformed_schema_error(error):
+                    raise RuntimeError(
+                        "SQLite schema does not match the required manifest "
+                        "(malformed schema)"
+                    ) from error
                 raise
             finally:
                 self._initializing = False
@@ -464,6 +484,18 @@ def _configure_required_pragmas(dbapi_connection: Any) -> None:
 
     finally:
         cursor.close()
+
+
+def _is_malformed_schema_error(error: BaseException) -> bool:
+    """Recognize SQLite rejecting a tampered schema before it can be inspected."""
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if "malformed database schema" in str(current).casefold():
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def _revalidate_storage(dbapi_connection: Any, path: Path, expected_fd: int) -> None:

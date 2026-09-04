@@ -32,7 +32,7 @@ Three properties define the design:
 The scoring model is deterministic and evidence-linked. An LLM is used for *proposals*
 (candidate field spans, prose explanation, message drafting) and never for verdicts: a
 proposed span becomes evidence only if it is found by exact substring match in the raw
-retrieved text. "Not found" always renders as *"not found in the retrieved data"*.
+retrieved text. `unknown` always renders as *"not found in the retrieved data"*.
 
 Estimated effort: **8 milestones, ~5–7 working days** for one engineer to the smallest usable
 MVP (M0–M5), with messaging (M6) gated behind explicit acceptance of M3/M4.
@@ -41,7 +41,7 @@ MVP (M0–M5), with messaging (M6) gated behind explicit acceptance of M3/M4.
 
 ## 1a. Decision record — LOCKED
 
-Approved 2026-09-02. These are settled, not open questions. Each carries a **guard** — an
+Approved on the dates recorded below. These are settled, not open questions. Each carries a **guard** — an
 automated check that fails the build if the invariant is violated — so a locked decision cannot
 be quietly undone by a later change. Reversing one requires editing this section first and
 saying why; §29's checklist is run against this table at every milestone acceptance.
@@ -53,6 +53,10 @@ saying why; §29's checklist is run against this table at every milestone accept
 | **D-01** | Where the companion app lives | **Sibling repository `linkedin-dashboard/`**, created beside `linkedin-mcp-server`. The MCP server is an upstream dependency and the integration boundary; it is not vendored, forked, or modified. Guard: NFR-013 (`git diff --stat linkedin_mcp_server/` empty at every acceptance). |
 | **D-08** | MCP server run mode | **Direct streamable HTTP on `127.0.0.1`.** No daemon owner, no bearer token, no lifecycle management of the server by the dashboard. Consistent with A-03 (`server.py:177-184`: only an owner authenticates). Guard: `mcp/client.py` constructs no auth header; a test asserts it. |
 | **D-02** | LLM provider and data egress | **Local-first. `NullProvider` is the default and the only provider through M5.** Search, enrichment, deterministic scoring, evidence and shortlisting complete with **no profile text leaving the machine**. The provider interface is preserved so the hosting decision for message generation is made at M6, on its own merits. Guard: LD-08. |
+| **D-03** | Whether any MCP server change is permitted | **None.** The existing read-only tools are sufficient; search pagination remains out of scope and in PL-1. Approved 2026-09-03. Guard: NFR-013 and §29 item 2. |
+| **D-04** | Default network filter | **`["F","S"]`.** The search UI warns that only `F` reliably yields messageable candidates; network selection is search context only and never affects scoring. Approved 2026-09-03. Guard: the default-value UI test plus the S-7 zero-weight guard. |
+| **D-05** | Retention window | **30 days**, with a visible countdown and manual purge. Approved 2026-09-03; implementation remains deliberately assigned to M8/T-8.1. Guard: the T-8.1 retention and purge tests. |
+| **D-06** | Automatic Stage-2 promotion | **An operator-configured threshold is supported but defaults off.** Implementation remains deliberately assigned to M5/T-5.3. Approved 2026-09-03. Guard: no-implicit-promotion and explicit-threshold tests. |
 
 ### M3 acceptance decision and evidence
 
@@ -114,11 +118,11 @@ but has not started**.
 | **LD-03** | After a partial or rate-limited profile response, only the **missing** sections are re-requested — never the whole set. | FR-024, A-09 (`extractor.py:2081-2087, 2134-2135`) | T-3.2: simulate the abort; assert exactly one follow-up job containing exactly the missing section names |
 | **LD-04** | Candidate volume comes from **several narrow searches**, never from added pagination. The 15-reference cap (`link_metadata.py:93,108`) is surfaced to the operator, not worked around. | NG-9, FR-015, R-01 | §29 item 1; T-2.7 asserts the person-vs-total reference count is displayed |
 | **LD-05** | `section_errors[*].runtime` and every other internal diagnostic (profile dirs, cookie paths, hostname, gist commands — `error_diagnostics.py:60`) are stripped before any frontend response. | NFR-002, T-0.5 | Global test: no API response body contains `.linkedin-mcp`, the operator's home path, or a `runtime` key |
-| **LD-06** | `profile_urn` and any inferred messageability are **never scored**. They are displayed as a hint and carry zero weight. | FR-047, §14.2 S-7 | T-4.7 extension: assert no signal definition references `profile_urn`, messageability, or compose-anchor presence |
+| **LD-06** | `profile_urn` and any inferred messageability are **never scored**. They are displayed as a hint and carry zero weight. | FR-047, FR-048, §14.2 S-7 | T-4.7a/T-4.7b: assert no kernel or persistence definition references `profile_urn`, messageability, or compose-anchor presence as scoring input |
 | **LD-07** | Every displayed match claim — score signal, evidence row, parsed field, and draft claim — resolves to an exact substring of stored raw text. No inferred, paraphrased, or model-generated claim is ever displayed as a match. | NFR-015, FR-031, FR-033, FR-041, FR-062 | T-4.3 integrity test re-reads every evidence span and compares byte-for-byte; T-6.3 for draft claims |
 | **LD-08** | Through M5, no profile text leaves the machine. `NullProvider` is the default; the pipeline is complete and useful without any LLM. | D-02, T-3.4, T-6.1 | Test: the full M0–M5 integration suite passes with `LLM_PROVIDER=null`; a test asserts no module outside `llm/` imports a provider SDK |
 
-**Still open** (none blocks M0–M5): D-03, D-04, D-05, D-06, D-07, D-09, D-10 — see §27.
+**Still open** (none blocks M4–M5): D-07, D-09, D-10 — see §27.
 
 ---
 
@@ -152,12 +156,12 @@ but has not started**.
 | A-07 | `get_person_profile` sections are a **comma-separated string**, and unknown names are reported, not fatal | `parse_person_sections` `scraping/fields.py:29`; `result["unknown_sections"]` `tools/person.py:96` | N/A — verified |
 | A-08 | Sections are visited in `PERSON_SECTIONS` declaration order with a 2.0 s delay between them | `scrape_person` `extractor.py:2038-2040`; `_NAV_DELAY = 2.0` `extractor.py:71` | Timing estimates shift; behavior unchanged |
 | A-09 | A rate limit **aborts the remaining sections** of that call and returns what was gathered | `extractor.py:2081-2087, 2134-2135` (`rate_limited = True; break`) | N/A — verified; drives our resume logic (FR-024) |
-| A-10 | `profile_urn` is present only when a compose anchor exists in `<main>` | `_extract_profile_urn` `extractor.py:2587-2608` and its docstring | Messageability precheck falls back to the `confirm_send=false` dry run (FR-041) |
+| A-10 | `profile_urn` is present only when a compose anchor exists in `<main>` | `_extract_profile_urn` `extractor.py:2587-2608` and its docstring | Messageability precheck falls back to the `confirm_send=false` dry run (FR-070); neither hint is scored (FR-047) |
 | A-11 | `send_message(confirm_send=false)` navigates but never types or clicks send | `extractor.py:5010-5017` — the `if not confirm_send:` return precedes the `keyboard.type` at `extractor.py:5049` | The dry run would become a write; the whole validation step would have to be removed |
 | A-12 | Default tool timeout is 180 s | `DEFAULT_TOOL_TIMEOUT_SECONDS` `config/schema.py:18` | Our client timeout must exceed it; see NFR-006 |
 | A-13 | Tool errors reach the client as `ToolError` strings with `mask_error_details=True` | `server.py:215`; `error_handler.raise_tool_error` | Error classification is string/structure-based, not type-based; see §18 |
 | A-14 | LinkedIn's per-message character limit **[requires verification]** | Not encoded anywhere in the repo | UI shows a live character count (required by the brief) and a soft warning at a configurable threshold; no hard client-side cap is invented |
-| A-15 | Connection degree is **not** exposed by any read-only tool | No read-only tool returns `ConnectionState`; `detect_connection_state` (`scraping/connection.py:94`) is reached only from `connect_with_person` (`extractor.py:2384`) | Degree evidence comes from the search's own `network` filter (§14 S-7); we never call `connect_with_person` (NG-6) |
+| A-15 | Connection degree is **not** exposed by any read-only tool | No read-only tool returns `ConnectionState`; `detect_connection_state` (`scraping/connection.py:94`) is reached only from `connect_with_person` (`extractor.py:2384`) | The search's `network` filter is retained only as typed search context (§14 S-7), never profile evidence or a scoring input; we never call `connect_with_person` (NG-6) |
 
 ---
 
@@ -167,21 +171,22 @@ but has not started**.
 
 | ID | Requirement |
 |----|-------------|
-| FR-001 | Operator creates a **role brief**: job description (free text), required skills, optional skills, target titles, location, industries, positive keywords, negative keywords, message tone. |
-| FR-002 | A brief is versioned; editing a brief after scoring creates a new version and marks existing scores `stale`. |
-| FR-003 | Skills/titles/industries accept per-term **aliases** (e.g. `k8s` ≡ `kubernetes`) stored with the brief. |
+| FR-001 | Operator creates a **role brief**: job description (free text), required skills, optional skills, target titles, location, industries, positive keywords, negative keywords, message tone, and optional `required_experience_months` (an integer ≥ 0). Empty scoring inputs are valid: no required skills disables S-1; no optional skills disables S-2; `required_experience_months` `null`/`0` disables S-3; no target titles disables S-4; no industries disables S-5; a blank/absent target location disables S-6; and no required credentials disables S-8. A positive-keyword-only brief is therefore valid and follows the all-inert no-score contract in FR-040. |
+| FR-002 | A brief is versioned; editing any scoring input after scoring — including `required_experience_months`, required credentials or their aliases — creates a new version and marks existing scores `stale`. Removing the final credential also atomically creates the next scoring-config version with S-8 forced to 0 before one rescore per candidate. |
+| FR-003 | Skills, titles, industries, and structured `required_credentials` accept per-term **aliases** (e.g. `k8s` ≡ `kubernetes`) stored with the brief. Activity is derived after trim, normalization and empty-term removal; an alias without a non-empty primary term cannot activate a signal. An empty credential list makes S-8 inert and forces its current weight to 0. |
 | FR-004 | The brief editor refuses to save terms drawn from a protected-attribute blocklist (§14.6) and explains why. |
+| FR-005 | Metro/region equivalences used by S-6 are an operator-editable, versioned scoring input stored alongside weights. An empty table means exact location matching only. Editing the table creates a new scoring-config version and marks prior scores `stale`. |
 
 ### Search & candidate collection
 
 | ID | Requirement |
 |----|-------------|
 | FR-010 | Operator runs a search mapping 1:1 onto `search_people(keywords, location, network, current_company)`. |
-| FR-011 | `network` is offered as a multi-select of exactly `F`/`S`/`O` with their meanings (`tools/person.py:126-130`). |
+| FR-011 | `network` is offered as a multi-select of exactly `F`/`S`/`O` with their meanings (`tools/person.py:126-130`) and defaults to `["F","S"]` (D-04). The UI warns that only `F` reliably yields messageable candidates. |
 | FR-012 | `current_company` is entered as a **numeric URN id** only; the UI provides a lookup that calls `get_company_profile` and reads `references["about"]` entries with `kind: "company_urn"` (`tools/company.py:68-74`). Free-text company names are refused client-side with the server's own explanation (`extractor.py:4440-4446`). |
 | FR-013 | The raw `sections["search_results"]` text and the full `references` payload are persisted verbatim before any parsing. |
 | FR-014 | Candidate references are extracted from `references["search_results"]` where `kind == "person"`, normalized to a canonical `/in/<username>` username, and deduplicated across searches within the session. |
-| FR-015 | Multiple searches accumulate into one candidate pool; each candidate records every search that produced it (for provenance and for degree evidence). |
+| FR-015 | Multiple searches accumulate into one candidate pool; each candidate records every search that produced it. The selected network tokens are typed, non-scoring search context only (§14.2 S-7). |
 | FR-016 | `section_errors["search_results"]` is surfaced verbatim in the UI, distinguishing `rate_limit` (`extractor.py:204`) from a diagnostics payload. |
 
 ### Staged profile enrichment
@@ -211,14 +216,16 @@ but has not started**.
 
 | ID | Requirement |
 |----|-------------|
-| FR-040 | A deterministic scoring function produces `score`, `score_lower`, `score_upper`, `confidence`, and a list of per-signal results (§14). |
-| FR-041 | Each signal result has a verdict of `matched` \| `not_matched` \| `unknown` \| `contradicted`, and every non-`unknown` verdict carries at least one evidence span. |
+| FR-040 | A deterministic scoring function produces `score`, `score_lower`, `score_upper`, `confidence`, `confidence_band`, `calculation_status`, `active_signal_count`, and aggregate per-signal results with typed per-term/claim children (§14). S-1/S-2 may contain matched, not-matched and unknown children concurrently; scalar signals use one child. An all-inert brief is valid and persists a no-score result: nullable score/lower/upper are all `null`, confidence is `0`, band is `low`, status is `unknown`, active count is `0`, and no signal, claim, evidence, coverage or missing rows exist. |
+| FR-041 | Each profile-derived claim has a verdict of `matched` \| `not_matched` \| `unknown` \| `contradicted` and exactly one mutually exclusive provenance kind. `matched`/`contradicted` require a non-empty set of exact `VerifiedSpan` evidence rows. `not_matched` requires audited deterministic coverage over every required section after all completed successfully (`profile_section_id`, immutable raw-content hash, searched normalized terms/aliases, matcher version), never a fabricated/empty span and never a match snippet. `unknown` requires typed missing-section metadata and no evidence span. DB constraints/triggers reject missing, mixed or verdict-incompatible provenance. |
 | FR-042 | `unknown` renders as **"not found in the retrieved data"** and is visually distinct from `not_matched`. |
 | FR-043 | Scores are marked `provisional` (Stage 1 only) or `enriched` (Stage 2 complete), and the badge is visible on every ranked row. |
 | FR-044 | Re-scoring after enrichment preserves the previous score for comparison ("was 61 provisional → now 74 enriched"). |
 | FR-045 | Scoring uses no protected or inferred sensitive characteristic (§14.6), enforced by an automated blocklist test. |
-| FR-046 | The weights table is visible and editable in the UI; changing weights re-scores all candidates and stamps a new `weights_version`. |
+| FR-046 | The weights table and S-6 metro/region equivalence table are visible and editable as one immutable, versioned scoring configuration. An update requires the expected current version. When at least one input-active scoring signal exists, at least one such signal must have positive effective weight; otherwise `422` occurs before any version, staleness or rescore write. When every scoring signal is input-inert, weight/equivalence edits remain valid configuration versions and atomically stale/rescore each candidate once into the all-inert no-score form; no division or `0/0` is evaluated. S-7 and structurally invalid S-8 edits remain rejected. |
 | FR-047 | **[LD-06]** `profile_urn` presence and any derived messageability signal carry zero weight and appear in no signal definition. They are displayed as a non-scoring hint, labelled as such. |
+| FR-048 | S-7 network/connection information is typed **search context**, not profile evidence or a scoring signal. It has permanent weight 0 and is excluded from score, bounds, penalties, and confidence; configuration and persistence reject any non-zero S-7 weight. |
+| FR-049 | A positive S-8 weight is rejected while required credentials are empty. Removing the final credential atomically writes the next brief and scoring-config versions with S-8=0, then stales/rescores once; re-adding credentials does not resurrect the old weight. If another input-active signal remains but the prospective positive effective weight sum is zero, the whole transition returns `422` with no writes. If removing S-8 makes the entire brief all-inert, the transition is valid and persists the FR-040 no-score form. |
 
 ### Review & shortlist
 
@@ -278,7 +285,7 @@ but has not started**.
 | NFR-005 | **Budget ceiling.** A hard per-session navigation budget (default 120) after which the queue refuses new work until the operator raises it explicitly. |
 | NFR-006 | **Timeouts.** The MCP client per-call timeout is 240 s, above the server's 180 s tool timeout (`config/schema.py:18`), so the server's own error surfaces rather than our transport's. |
 | NFR-007 | **Durability.** SQLite in WAL mode; every MCP response is written to disk before it is parsed. A crash mid-session loses no retrieved text. |
-| NFR-008 | **Reproducibility.** Given the same stored raw text, brief version and weights version, scoring is byte-identical. Scoring imports no clock, no RNG, no network. |
+| NFR-008 | **Reproducibility.** Given the same immutable profile snapshot, brief version and scoring-config version, scoring is byte-identical. Scoring imports no clock, no RNG, no network. |
 | NFR-009 | **File permissions and path safety.** The DB, live `-wal`/`-shm` sidecars, and exports are `0600`; the DB lives under `~/.linkedin-dashboard/` by default, never inside the repo, and its final path may not be a symlink. Existing custom parent-directory permissions are not changed. |
 | NFR-010 | **Observability.** Structured JSON logs with a correlation id per MCP call, viewable in-app. |
 | NFR-011 | **Accessibility.** The confirmation modal is keyboard-operable, focus-trapped, and the "Send now" button is never the default-focused or Enter-activated element. |
@@ -351,6 +358,15 @@ but has not started**.
 - **`llm/` returns proposals, never verdicts.** Its return types are `Proposal[T]`, and
   `scoring/` accepts only `VerifiedSpan`, which can only be constructed by the substring
   verifier in `parsing/verify.py`.
+- **The M4 scoring kernel is pure.** `services/scoring/{types,matching,aggregate,signals/**}`
+  accepts immutable brief, scoring-config and profile-snapshot values and returns an immutable,
+  stably ordered calculation. It imports no DB, API, UI, MCP, network, clock or RNG code. All
+  arithmetic is explicitly clamped and quantized; penalties are separate named outputs.
+- **Profile evidence, absence coverage and search context are disjoint types.** Only a
+  `VerifiedSpan` can construct profile evidence. Deterministic absence coverage can support
+  `not_matched` but has no span/snippet; network provenance and messageability are display-only
+  context and cannot enter a `score_claim`, aggregation, confidence or Gate B. A `score_signal`
+  is only the numeric aggregate/rollup over its ordered claim children; it is not evidence.
 - **`queue/` is the only caller of `mcp/`.** No request handler calls MCP inline; every MCP
   interaction is a job with a row in the DB, which is what makes it resumable and auditable.
   The one deliberate exception is the send itself (§16), which is synchronous by design so the
@@ -412,8 +428,13 @@ exists precisely so that choice is swappable in one file (T-1.2).
      raw_text ──► deterministic matchers ──► parsed_field(+span)
               └─► LLM proposals ──► substring verifier ──► parsed_field(origin=llm_verified)
                                      │ (fails) ──► llm_unverified · display only
-     parsed_field + brief ──► signals ──► score{score, lower, upper, confidence, stage=provisional}
-                                       └─► score_signal ──► evidence(span → raw_text)
+     immutable profile snapshot + brief + scoring-config
+       ──► pure signals ──► score{score, lower, upper, confidence, stage=provisional}
+                         └─► score_signal(aggregate rollup) ──► score_claim[]
+                              ├─► matched/contradicted ──► evidence_set(VerifiedSpan[] → raw_text)
+                              ├─► not_matched ──► coverage_set(section ids + hashes + searched terms)
+                              └─► unknown ──► missing_set(section reasons)
+     search network + profile_urn ──► typed non-scoring context/hints only
 
  (6) PROMOTE  (operator or operator-set threshold)
      ──► MCP get_person_profile(username, sections="skills,projects,certifications,education")
@@ -570,7 +591,10 @@ linkedin-dashboard/
 │     │  ├─ brief.py
 │     │  ├─ search.py                 ← reference → candidate normalization
 │     │  ├─ enrichment.py             ← stage planning, resume-after-rate-limit
-│     │  ├─ scoring.py                ← deterministic, importless of clock/RNG/network
+│     │  ├─ scoring/
+│     │  │  ├─ types.py  matching.py  aggregate.py
+│     │  │  └─ signals/               ← pure; no DB/API/MCP/network/clock/RNG
+│     │  ├─ scoring_persist.py         ← snapshots, history, evidence/coverage rows
 │     │  ├─ drafting.py               ← grounding check
 │     │  └─ sending.py                ← ONLY module with confirm_send=True
 │     ├─ queue/
@@ -625,15 +649,34 @@ phase_gate(id PK, session_id FK, gate CHECK(gate IN ('A','B','C')),
            accepted_at, accepted_note,
            UNIQUE(session_id, gate))
 
+phase_gate_evidence(phase_gate_id FK, evidence_id FK,
+                    PRIMARY KEY(phase_gate_id, evidence_id))
+-- Gate B only. Every linked row is revalidated as current, same-session,
+-- profile-span evidence under a matched/contradicted score_claim when Gate B is inserted;
+-- coverage/context cannot link.
+
 -- Brief ---------------------------------------------------------------------
 role_brief(id PK, session_id FK, version INT, created_at, superseded_at NULL,
            job_description TEXT, target_titles JSON, location TEXT,
            industries JSON, positive_keywords JSON, negative_keywords JSON,
-           message_tone TEXT, weights_version TEXT,
+           message_tone TEXT, required_experience_months INT NULL
+              CHECK(required_experience_months >= 0),
            UNIQUE(session_id, version))
 
 brief_skill(id PK, brief_id FK, term TEXT, kind CHECK(kind IN ('required','optional')),
             aliases JSON)
+
+brief_credential(id PK, brief_id FK, term TEXT, aliases JSON)
+
+scoring_config(id PK, session_id FK, version INT, created_at,
+               weights JSON, metro_region_equivalences JSON,
+               superseded_at NULL, UNIQUE(session_id, version))
+-- Immutable after insert. S-7 is not a configurable weight; validation rejects
+-- any S-7 key or any attempt to make search context contribute to scoring. Service and
+-- insert-trigger validation reject positive S-8 with no current credentials. If the normalized
+-- brief has >=1 input-active scoring signal, they also reject a prospective effective scorable
+-- weight sum <= 0 before any version/staleness/rescore write. An all-inert brief is the deliberate
+-- exception: its configuration may be versioned even though no weight is presently effective.
 
 -- Search --------------------------------------------------------------------
 search_run(id PK, session_id FK, brief_id FK, created_at,
@@ -667,9 +710,10 @@ profile_fetch(id PK, candidate_id FK, job_id FK, tool TEXT,
               returned_url TEXT NULL)
 
 profile_section(id PK, candidate_id FK, fetch_id FK, section_name TEXT,
-                raw_text TEXT, retrieved_at, char_len INT,
+                raw_text TEXT, content_sha256 TEXT, retrieved_at, char_len INT,
                 UNIQUE(candidate_id, section_name, fetch_id))
 -- Latest row per (candidate, section) wins; older rows retained for provenance.
+-- content_sha256 is computed from the exact stored bytes and immutable with raw_text.
 
 section_error(id PK, candidate_id FK NULL, search_run_id FK NULL, fetch_id FK,
               section_name TEXT, error_type TEXT, error_message TEXT,
@@ -687,22 +731,94 @@ parsed_field(id PK, candidate_id FK, field_key TEXT, value TEXT,
 -- span_start/span_end index into profile_section.raw_text for section_name.
 
 -- Scoring -------------------------------------------------------------------
-score(id PK, candidate_id FK, brief_id FK, weights_version TEXT,
+score(id PK, candidate_id FK, brief_id FK, scoring_config_id FK,
       stage CHECK(stage IN ('provisional','enriched')),
-      score REAL, score_lower REAL, score_upper REAL, confidence REAL,
-      confidence_band CHECK(confidence_band IN ('low','medium','high')),
-      computed_at, superseded_at NULL, is_current BOOL)
+      score REAL NULL, score_lower REAL NULL, score_upper REAL NULL,
+      confidence REAL,
+      confidence_band CHECK(confidence_band IN ('low','medium','high')) NULL,
+      calculation_status CHECK(calculation_status IN ('scored','unknown')),
+      active_signal_count INT CHECK(active_signal_count >= 0),
+      all_inert_attested BOOL CHECK(all_inert_attested IN (0,1)),
+      input_fingerprint TEXT, computed_at, superseded_at NULL, is_current BOOL,
+      CHECK (
+        (all_inert_attested = 1 AND active_signal_count = 0
+          AND calculation_status = 'unknown'
+          AND score IS NULL AND score_lower IS NULL AND score_upper IS NULL
+          AND confidence = 0 AND confidence_band = 'low')
+        OR
+        (all_inert_attested = 0 AND active_signal_count > 0 AND (
+          (calculation_status = 'unknown'
+            AND score IS NULL AND score_lower IS NULL AND score_upper IS NULL
+            AND confidence_band IS NULL AND confidence = 0)
+          OR
+          (calculation_status = 'scored'
+            AND score IS NOT NULL AND score_lower IS NOT NULL AND score_upper IS NOT NULL
+            AND 0 <= score_lower AND score_lower <= score
+            AND score <= score_upper AND score_upper <= 100
+            AND 0 < confidence AND confidence <= 1)))))
+-- All-unknown profile availability has active signals but nullable score/bounds/band and
+-- confidence 0. All-inert input is separately attested and uses the FR-040 low-band no-score form.
 
-score_signal(id PK, score_id FK, signal_id TEXT, weight REAL,
-             verdict CHECK(verdict IN ('matched','partial','not_matched','unknown','contradicted')),
+score_input_section(score_id FK, profile_section_id FK, content_sha256 TEXT,
+                    PRIMARY KEY(score_id, profile_section_id))
+-- Immutable source snapshot; hash must equal the linked profile_section hash.
+
+score_signal(id PK, score_id FK,
+             signal_id TEXT CHECK(signal_id IN ('S-1','S-2','S-3','S-4','S-5','S-6','S-8')),
+             weight REAL CHECK(weight >= 0),
+             rollup CHECK(rollup IN ('matched','not_matched','unknown','contradicted','mixed')),
              raw_subscore REAL, contribution REAL,
-             availability REAL,          -- 0.0 / 0.5 / 1.0 → drives confidence
+             availability REAL,          -- [0,1] → drives confidence
              note TEXT NULL)
+-- signal_id is one of S-1..S-6 or S-8. S-7 is intentionally impossible here.
 
-evidence(id PK, score_signal_id FK, parsed_field_id FK NULL,
-         section_name TEXT, span_start INT, span_end INT, snippet TEXT,
+evidence_set(id PK, candidate_id FK)
+
+evidence(id PK, evidence_set_id FK, parsed_field_id FK NULL,
+         profile_section_id FK, span_start INT, span_end INT, snippet TEXT,
          matcher CHECK(matcher IN ('exact','alias','stem','llm_verified')),
          matched_term TEXT, polarity CHECK(polarity IN ('supporting','contradicting')))
+-- Only exact profile-text spans. Insert triggers require 0 <= start < end <=
+-- length(raw_text) and snippet == raw_text[start:end] on the same candidate/section.
+-- Offsets are zero-based, half-open Unicode code-point indexes (the existing M3 contract),
+-- and equality is also checked on the exact UTF-8 bytes to prevent normalization drift.
+
+coverage_set(id PK, candidate_id FK, required_sections JSON)
+
+signal_coverage(id PK, coverage_set_id FK, profile_section_id FK,
+                content_sha256 TEXT, normalized_terms JSON, aliases JSON,
+                matcher_version TEXT)
+-- Used only for deterministic `not_matched`. Coverage requires every required
+-- section to have completed successfully, stores no snippet, and never satisfies Gate B.
+
+missing_set(id PK, candidate_id FK)
+
+signal_missing_section(id PK, missing_set_id FK, section_name TEXT,
+                       reason CHECK(reason IN ('not_requested','rate_limit','fetch_error')),
+                       section_error_id FK NULL)
+-- Used only for `unknown`; stores availability provenance, never profile evidence.
+
+score_claim(id PK, score_signal_id FK, claim_key TEXT, display_term TEXT,
+            verdict CHECK(verdict IN ('matched','not_matched','unknown','contradicted')),
+            evidence_set_id FK NULL, coverage_set_id FK NULL, missing_set_id FK NULL,
+            CHECK ((evidence_set_id IS NOT NULL) + (coverage_set_id IS NOT NULL)
+                   + (missing_set_id IS NOT NULL) = 1),
+            CHECK ((verdict IN ('matched','contradicted') AND evidence_set_id IS NOT NULL)
+                OR (verdict = 'not_matched' AND coverage_set_id IS NOT NULL)
+                OR (verdict = 'unknown' AND missing_set_id IS NOT NULL)),
+            UNIQUE(score_signal_id, claim_key))
+-- Sets and their children are inserted first, then the claim. Claim-insert triggers require a
+-- non-empty, same-candidate set of the verdict-compatible kind; coverage must contain every
+-- required successfully retrieved section and matching hashes. Once referenced, a set and all
+-- children are immutable. Before a score can become current, a trigger requires
+-- count(score_signal) = active_signal_count and every persisted signal to have >=1 claim, then
+-- requires rollup = the common verdict when count(DISTINCT verdict)=1, otherwise
+-- rollup='mixed'. The only zero-signal/zero-claim exception requires `all_inert_attested=1`; the
+-- same trigger re-derives all eight inert conditions from the linked immutable brief/config,
+-- requires the exact FR-040 no-score fields, and rejects any score_input_section,
+-- signal/provenance child or penalty contribution associated with that score. Claims are
+-- returned by claim_key order. This makes missing, multi-kind and empty
+-- provenance states impossible while permitting only the explicitly attested all-inert case.
 
 -- Review --------------------------------------------------------------------
 shortlist_decision(id PK, candidate_id FK, decision
@@ -842,10 +958,15 @@ audit_log(id PK, session_id FK, at, actor CHECK(actor IN ('operator','system')),
 
 ### Relationships
 
-`session` 1—N `role_brief` 1—N `brief_skill`; `session` 1—N `search_run` 1—N `candidate_ref`;
+`session` 1—N `role_brief` 1—N `brief_skill` / `brief_credential`; `session` 1—N
+`scoring_config`; `session` 1—N `search_run` 1—N `candidate_ref`;
 `candidate` N—N `search_run` via `candidate_source`; `candidate` 1—N `profile_fetch` 1—N
 `profile_section` / `section_error`; `candidate` 1—N `parsed_field`; `candidate` 1—N `score`
-1—N `score_signal` 1—N `evidence`; `evidence` N—1 `parsed_field` (nullable);
+1—N `score_input_section`; `score` 1—N `score_signal` 1—N `score_claim`; every claim points to
+exactly one of `evidence_set`, `coverage_set` or `missing_set`, whose children are respectively
+`evidence`, `signal_coverage` or `signal_missing_section`; `evidence` N—1 `profile_section` and
+optionally N—1 `parsed_field`;
+`phase_gate` N—N exact profile-span `evidence` via `phase_gate_evidence` for Gate B only;
 `candidate` 1—N `message_draft` 1—N `send_confirmation` / `send_attempt`.
 
 ### Retention rules
@@ -853,8 +974,8 @@ audit_log(id PK, session_id FK, at, actor CHECK(actor IN ('operator','system')),
 | Data | Default | Rule |
 |---|---|---|
 | `profile_section.raw_text`, `search_run.raw_response`, `profile_fetch.raw_response` | 30 days | Purged by `retention.py` on startup when `now > session.purge_after`, or on `DELETE /api/session/raw` |
-| `parsed_field`, `evidence.snippet` | 30 days | Purged with raw text — a snippet is profile text |
-| `score`, `score_signal` (numbers, verdicts, no snippets) | Kept | Survives raw purge; evidence links become "raw text purged" |
+| `parsed_field`, `evidence_set`/`evidence.snippet`, `coverage_set`/`signal_coverage`, `missing_set` details | 30 days | Purged with raw text — snippets and provenance-to-section chains are profile-derived |
+| `score`, `score_signal`, `score_claim` (numeric and typed history; no snippets) | Kept | Survive raw purge; claim provenance becomes "raw text purged" and cannot later satisfy Gate B |
 | `shortlist_decision`, `send_attempt`, `audit_log` | Kept until `DELETE /api/session` | The record that a message was sent is the one thing worth keeping |
 | `send_confirmation` | 24 h | Tokens are swept regardless of consumption |
 | `job.payload` | 7 days | Payload nulled; state kept |
@@ -866,7 +987,9 @@ A visible banner shows days remaining until purge. `DELETE /api/session` drops e
 
 ## 12. Backend API endpoints
 
-All under `http://127.0.0.1:8787/api`. All responses pass through the NFR-002 filter.
+Every path shown below is relative to the frozen base `http://127.0.0.1:8787/api`, including
+`/health` (therefore health is `/api/health`). All responses pass through the NFR-002 filter. M4 may add
+fields but must not rename these routes or change their stated request/response semantics.
 
 ### Session & health
 | Method | Path | Responsibility |
@@ -874,7 +997,9 @@ All under `http://127.0.0.1:8787/api`. All responses pass through the NFR-002 fi
 | `GET` | `/health` | Backend liveness; DB writable; send gate state |
 | `GET` | `/mcp/status` | MCP reachability: performs `tools/list`, returns tool names + last error class. **Never** exposes the MCP URL. |
 | `GET` | `/session` | Current session, budget used/remaining, purge date, phase gates |
-| `POST` | `/session/gates/{A\|B\|C}` | Record a phase-gate acceptance (operator, with note) |
+| `POST` | `/session/gates/A` | Body `{note}`. Record Gate A only when the session has a completed search; the operator note must be non-empty. |
+| `POST` | `/session/gates/B` | Body `{evidence_ids:[...], note?}`. Record Gate B only after Gate A and with ≥10 distinct evidence ids from current scores in the same session. The transaction revalidates every id as exact profile-span evidence under a matched/contradicted claim; coverage, missing and search-context ids are invalid. |
+| `POST` | `/session/gates/C` | Record Gate C under the M6/M7 preconditions. |
 | `PATCH` | `/session/settings` | Nav budget, inter-call delay, promotion threshold, `send_enabled` (requires gate C) |
 | `GET` | `/session/export` | JSON/CSV export (FR-091) |
 | `DELETE` | `/session/raw` | Purge raw text only (FR-092) |
@@ -884,9 +1009,15 @@ All under `http://127.0.0.1:8787/api`. All responses pass through the NFR-002 fi
 ### Brief
 | Method | Path | Responsibility |
 |---|---|---|
-| `POST` | `/briefs` | Create v1. Validates against the protected-attribute blocklist (FR-004) → `422` listing offending terms |
+| `POST` | `/briefs` | Create v1. Validates against the protected-attribute blocklist (FR-004) → `422` listing offending terms. Empty scoring inputs and a positive-keyword-only brief are valid; candidates use the all-inert no-score lifecycle until a scoring criterion is added. |
 | `GET` | `/briefs/current` | Current version + skills |
-| `PUT` | `/briefs/current` | Create next version; marks all `score.is_current` rows `stale` and returns the count so the UI can warn |
+| `PUT` | `/briefs/current` | Create next version; marks current scores stale and returns the count so the UI can warn. Includes optional nonnegative `required_experience_months` and structured `required_credentials:[{term, aliases[]}]`. Removing the final credential also creates the next config with S-8=0 in the same transaction. A zero prospective effective weight sum returns `422` with no writes only when at least one normalized scoring input remains active; an all-inert result is valid and re-scores to the attested no-score form. |
+
+### Scoring configuration
+| Method | Path | Responsibility |
+|---|---|---|
+| `GET` | `/weights` | Return the immutable current scoring-config version, configured weights, derived `active_signal_ids`, typed `inert_reasons`, and metro/region equivalence table. S-7 is absent from weights and returned only as non-scoring context. Configured weights for inert S-1–S-6 remain visible but do not enter a score. |
+| `PUT` | `/weights/current` | Body includes `expected_version`, weights, and metro/region equivalences. Optimistic-version mismatch → `409`; S-7, protected terms, positive S-8 with empty credentials, or no positive effective scorable weight while any scoring input is active → `422`, with no new version/staleness/rescore. If all scoring inputs are inert, the update succeeds, versions configuration, stales prior scores and re-scores each candidate exactly once into no-score without dividing. |
 
 ### Search
 | Method | Path | Responsibility |
@@ -899,13 +1030,14 @@ All under `http://127.0.0.1:8787/api`. All responses pass through the NFR-002 fi
 ### Candidates & enrichment
 | Method | Path | Responsibility |
 |---|---|---|
-| `GET` | `/candidates` | Ranked list. Query: `stage`, `decision`, `min_score`, `confidence`, `sort`. Returns score, band, stage badge, top signals — **not** raw text |
-| `GET` | `/candidates/{id}` | Detail: parsed fields, signals, evidence, section availability map, fetch history, send state |
-| `GET` | `/candidates/{id}/sections/{name}` | Raw text for one section + spans to highlight |
+| `GET` | `/candidate-pool?session_id={id}` | Ungated discovery/enrichment pool. This is the only M4 list route usable before Gate A. |
+| `GET` | `/candidates` | Ranked list, gated by Gate A. Query: `stage`, `decision`, `min_score`, `confidence`, `sort`. Returns nullable score/bounds, band, `calculation_status`, `active_signal_count`, confidence, stage, config version, delta and top signals — **not** raw text. All-inert returns `score/lower/upper:null`, `confidence:0`, `confidence_band:"low"`, `calculation_status:"unknown"`, `active_signal_count:0`, `top_signals:[]`; all-unknown profile availability retains its distinct null-band form. Stable default order: numeric score descending, confidence descending, candidate id ascending; both null-score forms sort last by candidate id. |
+| `GET` | `/candidates/{id}` | Detail: parsed fields; aggregate signals with `rollup` and ordered `claims[]`; each claim's one typed profile-evidence/absence-coverage/missing-section provenance; typed non-scoring search context/messageability hints; section availability, score history and fetch history. An all-inert result returns `signals:[]`, `active_signal_count:0` and exact empty-state copy from §14.5, never fabricated unknown claims. |
+| `GET` | `/candidates/{id}/sections/{name}` | Raw text for one section + parsed/profile-evidence spans to highlight. Coverage/context rows are not highlight spans. |
 | `POST` | `/candidates/{id}/enrich` | Body `{sections:[...]}`. Validates against `PERSON_SECTIONS`; enqueues one `get_person_profile` job; returns `{job_id, estimated_navigations}`. `409` if a fetch for this candidate is already queued/running |
 | `POST` | `/candidates/enrich-batch` | Body `{candidate_ids, sections}` — enqueues N jobs, still one at a time. Refuses if it would exceed the nav budget → `409` with the shortfall |
 | `POST` | `/candidates/{id}/decision` | `{decision, note?}` → appends `shortlist_decision` |
-| `POST` | `/candidates/{id}/rescore` | Re-run scoring from stored data; no MCP call |
+| `POST` | `/candidates/{id}/rescore` | Re-run scoring from one immutable brief/config/source snapshot; preserves history and makes no MCP call. |
 
 ### Drafting
 | Method | Path | Responsibility |
@@ -1005,7 +1137,7 @@ Every hit stores `(section_name, span_start, span_end, snippet, matcher, matched
 
 ## 14. Candidate scoring algorithm
 
-### 14.1 Signals and weights (`weights_version = "v1"`)
+### 14.1 Signals, inputs and weights (`scoring_config.version = 1`)
 
 | ID | Signal | Weight | Sections required | Stage-1 available? |
 |----|--------|--------|-------------------|--------------------|
@@ -1015,11 +1147,70 @@ Every hit stores `(section_name, span_start, span_end, snippet, matcher, matched
 | S-4 | Title / function similarity | 15 | `main_profile`, `experience` | Yes (1.0) |
 | S-5 | Industry / domain relevance | 10 | `experience`, `main_profile` | Yes (1.0) |
 | S-6 | Location fit | 8 | `main_profile` | Yes (1.0) |
-| S-7 | Connection degree | 7 | *search parameters* (not a section) | Yes (1.0) |
-| S-8 | Credential requirement | 0 by default | `education`, `certifications` | No (0.0) |
+| S-7 | Network / connection search context | **0 permanently** | *search parameters* (not a section) | Context only; excluded |
+| S-8 | Credential requirement | 0 by default; configurable only when credentials exist | `education`, `certifications` | No (0.0) |
 
-`S-8` carries weight **only** when the brief names an explicit required credential; otherwise
-it is inert. Education is never a general-purpose ranking signal (§14.6).
+Signal activity is derived only from the normalized current brief, before availability or profile
+text is examined. Trimmed empty primary terms are removed before the counts below; aliases do not
+activate a missing primary term.
+
+| Signal | Input-active condition | Input-inert condition and disposition |
+|--------|------------------------|--------------------------------------|
+| S-1 | At least one normalized required-skill term | No required skills: excluded from `I`, `W`, aggregation, confidence, persistence and claim/provenance requirements |
+| S-2 | At least one normalized optional-skill term | No optional skills: same exclusion |
+| S-3 | `required_experience_months > 0` | `null` or `0`: same exclusion |
+| S-4 | At least one normalized target title | No target titles: same exclusion |
+| S-5 | At least one normalized industry | No industries: same exclusion |
+| S-6 | `location.strip()` is non-empty | Missing or blank target location: same exclusion; the metro table alone cannot activate it |
+| S-7 | Never input-active | Always non-scoring search context; absent from weights, `I`, `W`, signals, claims, penalties, confidence and Gate B |
+| S-8 | At least one normalized required credential | No required credentials: same exclusion and its configured weight is forced to 0 |
+
+**Executable input-activity gate.** Start from one fixture with non-empty inputs for
+S-1/S-2/S-4/S-5/S-6/S-8, positive S-3 months and at least one positive configured weight. Eight
+independent cases then assert: empty required skills removes only S-1; empty optional skills only
+S-2; both `null` and `0` months remove only S-3; empty titles only S-4; empty industries only
+S-5; both absent and whitespace-only location remove only S-6; S-7 is absent in every case and
+rejects any persisted/configured weight; empty credentials remove only S-8 and force its weight
+to zero. Each case asserts the removed signal is absent from `I`, `W`, confidence math,
+`score_signal`, claims/provenance and source-hash fingerprint membership while its canonical
+empty input and config version remain in the fingerprint payload.
+
+The terminal case uses the valid brief `{positive_keywords:["distributed systems"],
+required_skills:[], optional_skills:[], required_experience_months:null, target_titles:[],
+industries:[], location:"   ", required_credentials:[]}` with otherwise valid metadata and
+default configured weights. It must save, derive `I=∅`, persist/return the exact FR-040
+no-score form and create zero associated source/signal/claim/provenance rows. Repeating it with
+S-3=`0` is byte-identical after canonicalization except for explicitly versioned identity.
+
+Positive keywords are search terms, not a scoring signal, and negative keywords are penalties,
+not an activation condition. Consequently a positive-keyword-only brief has every scoring signal
+input-inert and is valid. No synthetic default term or signal is created to make it scoreable.
+
+The versioned brief supplies S-3's optional nonnegative `required_experience_months` and S-8's
+structured `required_credentials[{term, aliases[]}]`. With at least one credential the operator
+may assign S-8 a nonnegative weight, but version 1 does not silently redistribute S-7's former
+seven points. Education is never a general-purpose ranking signal (§14.6).
+
+Let `I` be the input-active scorable signals from the table (S-1–S-6/S-8), including any whose
+configured weight is zero. Every inert signal is absent from `I` and produces no `score_signal`,
+`score_claim`, evidence, coverage or missing-section row. When `I` is non-empty, the prospective
+brief/config pair must give at least one member a positive effective weight (`W > 0`); otherwise
+the API and service return `422` before writing a brief/config version, staleness marker or
+rescore. When `I` is empty, that guard is deliberately not applied: the brief and later weight or
+equivalence edits are valid, are versioned, and produce the all-inert no-score result without
+division. A positive S-8 weight with no credentials remains a structural `422`.
+
+Removing the final credential is one transaction: create the new brief, create the new config
+with S-8 forced to 0, stale prior scores and rescore each candidate once. Re-adding a credential
+leaves S-8 at 0 until the operator explicitly sets a new weight; an old weight never resurrects.
+The prospective-positive-weight check runs after the forced S-8 transition. It rolls back the
+entire transaction only when another input-active signal remains and `W=0`; if the transition
+makes `I` empty, it commits and produces the all-inert no-score result.
+
+S-6 reads the metro/region equivalence table from the same immutable, versioned scoring
+configuration as the weights. An empty table means exact-only matching. Editing the brief,
+weights, or equivalence table changes a versioned input, marks earlier scores stale, and makes
+the next calculation use a new input fingerprint.
 
 Penalties (applied after normalization, not weighted):
 
@@ -1030,84 +1221,217 @@ Penalties (applied after normalization, not weighted):
 
 ### 14.2 Sub-scores
 
-- **S-1 / S-2:** `matched_terms / total_terms`, where a term is matched if any evidence span
-  exists in any retrieved section. Terms with no hit in *retrieved* sections are `unknown`
-  when a section that could contain them was not retrieved, and `not_matched` when every such
-  section *was* retrieved. **This distinction is the whole point of FR-042.**
-- **S-3:** `min(1.0, relevant_months / required_months)`, where a role counts as relevant when
+- **S-1 / S-2:** when input-active, `matched_terms / total_terms`. Each brief term produces one ordered
+  `score_claim`: a hit in any retrieved section is `matched` with exact evidence; no hit is
+  `not_matched` only when every section that could contain it completed successfully, with
+  complete coverage; otherwise it is `unknown` with the missing-section reasons. One aggregate
+  signal may therefore contain matched, not-matched and unknown claims concurrently.
+- **S-3:** when `required_experience_months > 0`,
+  `min(1.0, relevant_months / required_experience_months)`, where a role counts as relevant when
   its title or description matches a target title or a required skill. Roles whose date range
-  does not parse contribute to a separate `unparsed_roles` count and push availability toward 0.5.
-- **S-4:** best-match over target titles using token overlap of head nouns (e.g. "Staff Backend
+  does not parse contribute to a separate `unparsed_roles` count and push availability toward
+  0.5. When the input is `null` or `0`, S-3 is inactive and excluded from every denominator.
+- **S-4:** when input-active, best-match over target titles using token overlap of head nouns (e.g. "Staff Backend
   Engineer" vs "Backend Engineer" → 0.8). Exact 1.0, no match 0.0.
-- **S-5:** fraction of brief industries evidenced by employer names or description text.
-- **S-6:** 1.0 exact location match, 0.6 same metro/region per an operator-editable table,
-  0.0 otherwise, `unknown` when the location line did not parse.
-- **S-7:** derived from the `network` filter of the search(es) that produced the candidate:
-  `F → 1.0`, `S → 0.6`, `O → 0.3`. If the search used no `network` filter, S-7 is `unknown`
-  with availability 0.0. `profile_urn` presence is recorded as a **separate, non-scoring**
-  messageability hint (A-10) — it is displayed, labelled as a hint, and never scored
-  (**FR-047 / LD-06**, guarded by T-4.7).
+- **S-5:** when input-active, fraction of brief industries evidenced by employer names or description text.
+- **S-6:** when input-active, 1.0 exact location match, 0.6 same metro/region under the current versioned
+  operator-editable equivalence table, 0.0 otherwise, `unknown` when the location line did not
+  parse. An empty equivalence table permits exact matches only.
+- **S-7:** there is no S-7 sub-score. The `F`/`S`/`O` filters from every producing search are
+  returned as typed **search context** with provenance to `search_run`; they are not evidence,
+  never receive a verdict or availability, and are excluded from aggregation, bounds, penalties
+  and confidence. `profile_urn` presence is a separate non-scoring messageability hint (A-10).
+  Both are labelled as hints/context and guarded against scoring by T-4.7a/T-4.7b
+  (FR-047/FR-048).
+- **S-8:** when input-active, fraction of required credential terms with exact/alias
+  `VerifiedSpan` evidence. It is inert, absent from persistence and forced to configured weight 0
+  when no required credentials exist.
 
 ### 14.3 Aggregation
 
 ```
-available   = { i : availability_i > 0 }
-score       = 100 · Σ_{i∈available} w_i · availability_i · s_i
-                  / Σ_{i∈available} w_i · availability_i        − penalties
+I = input-active scorable signals under the §14.1 matrix (S-7 and every inert signal excluded)
+w_i >= 0,  a_i in [0,1],  s_i in [0,1]
+active_signal_count = |I|
 
-score_lower = 100 · Σ_{all i} w_i · s_i / Σ_{all i} w_i          − penalties   (unknown = 0)
-score_upper = 100 · Σ_{all i} (w_i·s_i for known) + Σ (w_i for unknown)
-                  / Σ_{all i} w_i                                − penalties   (unknown = 1)
+when I = ∅:                              # valid all-inert brief; stop before W or P
+  score = score_lower = score_upper = null
+  confidence = 0
+  confidence_band = low
+  calculation_status = unknown
+  active_signal_count = 0
+  persist no score_signal/score_claim/evidence/coverage/missing rows
+  evaluate and persist no penalty contribution
+
+otherwise:
+  W = Σ_{i∈I} w_i                        # prospective guard requires W > 0
+  if W = 0: return 422 atomically              # no version/stale/rescore write; never divide
+  x = Σ_{i∈I} w_i · a_i · s_i
+  y = Σ_{i∈I} w_i · a_i
+  u = Σ_{i∈I} w_i · (a_i · s_i + 1 - a_i)
+  P = sum of the explicit nonnegative penalties
+  C(z) = min(100, max(0, z))
+  Q(z) = Decimal(z).quantize(0.000001, ROUND_HALF_EVEN)  # shared monotone quantizer
+
+  when y > 0:
+    score       = Q(C(100 · x / y - P))
+    score_lower = Q(C(100 · x / W - P))
+    score_upper = Q(C(100 · u / W - P))
+    confidence  = Q(y / W)
+    confidence_band = low | medium | high under §14.4
+    calculation_status = scored
+
+  when y = 0:
+    score = score_lower = score_upper = confidence_band = null
+    confidence = 0
+    calculation_status = unknown
 ```
 
-The headline `score` is normalized over **available** signals, so a missing section lowers
-*confidence*, not the score. `score_lower`/`score_upper` bracket the truth and are rendered as a
-band on the row. This is what stops "we didn't fetch skills" from reading as "has no skills".
+The `I=∅` branch precedes construction of `W`, `x`, `y`, `u` and `P`; no code path can evaluate
+`0/0`. Negative-keyword and contradiction penalties are neither applied nor persisted as ranking
+contributions when there is no active scoring signal. The no-score row itself is still persisted
+to make lifecycle and API behavior deterministic, but its database attestation must prove the
+eight §14.1 dispositions and the absence of every signal/provenance child.
+
+For `I≠∅`, every input-active signal has one `score_signal` row even when its configured weight
+is zero; at least one member has positive weight because `W=0` was rejected. Every numeric result
+is deterministically quantized only after applying the same `P` and `C` to all three score forms.
+The headline normalizes over available weight; the lower bound credits only observed contribution
+against all effective weight; the upper bound additionally treats each unavailable fraction
+`(1-a_i)` as a possible full match. Thus fractional availability is bounded correctly.
+
+The invariant follows before penalty/clamp: `0 <= x <= y <= W`, so `x/W <= x/y`. Also
+`u=x+W-y`, and `u/W-x/y = (W-y)(y-x)/(Wy) >= 0`; therefore
+`x/W <= x/y <= u/W`. Subtracting the same penalty and applying monotone `C` then `Q` preserves the order.
+Property tests cover the earlier counterexample (`w=[1,1]`, `a=[0.5,1]`, `s=[1,0]` gives
+`25 <= 33.333… <= 50` before penalties) plus random fractional availabilities and penalty/clamp
+boundaries. All-unknown profile availability remains nullable rather than a misleading zero and
+is distinguished from all-inert by `active_signal_count>0`, `all_inert_attested=0` and a null
+band. All-inert uses the explicit low-band no-score form requested in FR-040. Removing S-7
+redistributes nothing because W is simply the sum of the remaining input-active weights.
+
+**Fingerprint and deterministic lifecycle.** `input_fingerprint` is SHA-256 over canonical JSON
+containing the algorithm version, candidate id, only the ordered source-section ids/hashes
+consumed by members of `I`, brief id/version, normalized values for **every** signal input
+(including canonical empty arrays, S-3 `null`/`0`, blank S-6 and empty S-8), scoring-config
+id/version, every configured weight and the normalized metro table, plus the derived ordered `I`.
+An inert signal contributes no source hash, runtime subscore, availability, claim or provenance
+material; its normalized input/config state and version identity are retained so brief/config
+versions never alias by accident. When `I=∅`, both the fingerprint source list and
+`score_input_section` set are empty. Replay of the same immutable inputs is byte-identical.
+
+Every accepted brief or config edit creates its immutable next version, stales the old current
+score rows, and performs exactly one local rescore per candidate. This includes all-inert →
+all-inert edits and weight/equivalence edits while `I=∅`: each produces a new fingerprint and
+a new attested no-score row, without signal or penalty rows. All-inert → active derives `I` from
+the new brief and requires `W>0`; active → all-inert is allowed and emits no-score; active →
+active with `W=0` is rejected atomically. Enrichment/source changes schedule a rescore only when
+a changed section is consumed by current `I`; with `I=∅` they cannot alter the fingerprint or
+create duplicate no-score history. No transition invokes MCP.
 
 ### 14.4 Confidence
 
 ```
-confidence = Σ_i w_i · availability_i / Σ_i w_i        ∈ [0,1]
+confidence = y / W        ∈ [0,1]
 band = low (<0.5) | medium (0.5–0.8) | high (≥0.8)
 ```
 
 `availability_i` is `1.0` if every section the signal needs was retrieved successfully,
 `0.5` if some were, `0.0` if none. A section that was retrieved but parsed to nothing counts
-as retrieved (availability 1.0) with sub-score 0 and verdict `not_matched` — because we *did*
-look and did not find it. A section that errored counts as `0.0` → `unknown`.
+as retrieved (availability 1.0) with sub-score 0 and a `not_matched` scalar claim — because we
+*did* look and did not find it. A section that errored contributes missing-section provenance
+and reduces availability.
 
-Typical values: Stage 1 ≈ 0.62 (medium) → `provisional`. Stage 2 with all four sections
-≈ 1.0 (high) → `enriched`.
+When `I≠∅` and `y=0` because no effective signal has retrieved availability, confidence is
+exactly 0 and `confidence_band` is null. When `I=∅`, confidence is also 0 but the explicit API/UI
+band is `low`; `active_signal_count` and the attestation distinguish the states.
+Stage 1 is `provisional`; Stage 2
+with its selected sections complete is `enriched`.
 
 ### 14.5 Evidence model
 
 ```
-Evidence {
+ScoreSignal {
   signal_id      : "S-1"
-  verdict        : matched | partial | not_matched | unknown | contradicted
+  rollup         : matched | not_matched | unknown | contradicted | mixed
+  raw_subscore   : 0.5
+  availability  : 0.5
+  claims         : ScoreClaim[]
+}
+
+ScoreClaim {
+  claim_key      : "required-skill:kubernetes"
+  display_term   : "kubernetes"
+  verdict        : matched | not_matched | unknown | contradicted
+  provenance     : exactly one of EvidenceSet | CoverageSet | MissingSet
+}
+
+ProfileEvidence {
   matched_term   : "kubernetes"
   matcher        : exact | alias | stem | llm_verified
-  section_name   : "experience"
+  profile_section_id : 42
+  content_sha256 : "…"
   span           : (1204, 1214)
   snippet        : "…migrated the platform to Kubernetes across three…"
   polarity       : supporting | contradicting
 }
+
+AbsenceCoverage {
+  verdict        : not_matched
+  profile_section_id : 42
+  content_sha256 : "…"
+  normalized_terms : ["kubernetes"]
+  aliases        : ["k8s"]
+  matcher_version: "v1"
+}
+
+MissingSection {
+  verdict        : unknown
+  section_name   : "skills"
+  reason         : not_requested | rate_limit | fetch_error
+  section_error_id : 7 | null
+}
 ```
+
+S-1/S-2 (and S-8 when active) emit one claim per ordered brief term; scalar S-3/S-4/S-5/S-6
+emit one claim. Signal `rollup` is the common child verdict when all claims agree and `mixed`
+otherwise; numeric subscore/contribution never derives from the rollup label. This is the exact
+rule that represents simultaneous matched/not-matched/unknown terms without discarding them.
+
+The provenance types cannot substitute for one another. A `matched` or `contradicted` claim
+references exactly one non-empty `EvidenceSet` of `ProfileEvidence` rows constructed from exact
+`VerifiedSpan` values. A `not_matched` claim references exactly one `CoverageSet`, valid only
+after every section required by that claim completed successfully; it contains one
+`AbsenceCoverage` row per searched section, has no span/snippet and is never presented as a
+match. An `unknown` claim references exactly one non-empty `MissingSet`. Schema checks encode the
+verdict-to-set mapping; triggers validate set content/candidate lineage and make referenced sets
+immutable. Search context and messageability hints remain outside signals and claims.
 
 The candidate detail view renders, for every signal:
 
-- **What matched** — term, quoted snippet, and the section it came from.
+- **What matched/contradicted** — per-claim term, quoted snippet, and the section it came from.
 - **Where it was found** — clicking the snippet scrolls the raw-text viewer to the span and
   highlights it. The link never breaks: spans index into stored raw text, and if that text was
   purged the UI says *"raw text purged on {date}"*.
-- **What did not match** — terms with verdict `not_matched`, listed with the sections searched.
-- **What was unavailable** — terms/signals with verdict `unknown`, each naming the section that
+- **What did not match** — deterministic absence results, listed with the exact successfully
+  retrieved sections and searched normalized terms/aliases; never as quoted snippets.
+- **What was unavailable** — claims with verdict `unknown`, each naming the section that
   was not retrieved and *why* (`rate_limit`, not requested, fetch error).
 - **Provisional or enriched** — the stage badge, plus "N of 6 sections retrieved".
 
 Copy rule, enforced in one shared component: `unknown` always renders as
-**"Not found in the retrieved data"** with a tooltip *"This does not mean the candidate lacks
+**"not found in the retrieved data"** with a tooltip *"This does not mean the candidate lacks
 this qualification."* No other string is permitted for that verdict (asserted by a UI test).
+
+An all-inert result contains no claim verdict, so it does not fabricate an `unknown` claim or use
+the FR-042 claim copy. The ranked row renders **"Not scored — no active scoring criteria"** and
+the detail/evidence empty state renders exactly **"Add a required or optional skill, experience
+minimum, target title, industry, target location, or required credential to calculate a score."**
+It also renders **"Low confidence (0%)"** from the explicit low band and labels positive keywords
+**"Search only — not a scoring criterion."** The weights screen leaves configured S-1–S-6 values
+editable and labels each input-inert row **"Saved, not currently applied: brief input is empty."**
+S-8 remains disabled/forced to zero until a credential exists; S-7 is context and has no weight
+control. These strings and `signals:[]` are frozen UI/API fixtures.
 
 ### 14.6 Protected-attribute exclusion
 
@@ -1123,7 +1447,7 @@ Enforcement:
   they are the sections most likely to carry protected signals — and any weight assigned to
   them requires an explicit operator override with a recorded justification.
 - Profile photos are never fetched or displayed.
-- A unit test (T-4.7) asserts no signal definition, alias table, or LLM prompt contains a
+- Pure-kernel and boundary tests (T-4.7a/T-4.7b) assert no signal definition, alias table, or LLM prompt contains a
   `PROTECTED_TERMS` entry, and that `education` contributes weight only via `S-8` with an
   explicit brief credential.
 
@@ -1440,7 +1764,7 @@ The politeness delay (NFR-004) is additive to the server's own `_NAV_DELAY`.
    - Whatever the provider, only the **sections needed for the task** are sent, never the whole
      candidate record, and never `contact_info`.
    - Every LLM call is audit-logged with provider, model, and a hash of the payload.
-   This is **D-02** and needs an explicit decision before M5.
+   The through-M5 outcome is locked by **D-02**; provider choice for M6 remains deferred.
 4. **`contact_info` is opt-in per candidate**, never fetched in bulk, and excluded from scoring
    and from every LLM prompt. It is the most sensitive section available.
 5. **Purpose limitation.** The stored data supports one sourcing session. No training, no
@@ -1463,8 +1787,9 @@ The politeness delay (NFR-004) is additive to the server's own `_NAV_DELAY`.
 |---|---|
 | `parsing/` | Each section parser against recorded raw text fixtures; spans point at the exact substring; parsers never raise; unparseable input yields zero fields + a note |
 | `parsing/verify.py` | An LLM proposal whose snippet is absent from raw text cannot produce a `VerifiedSpan` |
-| `services/scoring.py` | Sub-score math; `score_lower ≤ score ≤ score_upper`; availability→confidence; `unknown` vs `not_matched` on the "section retrieved but empty" case; determinism (same input → identical output across 100 runs) |
-| Protected attributes | No signal/alias/prompt contains a `PROTECTED_TERMS` entry; `education` contributes weight only via `S-8` with an explicit credential |
+| `services/scoring/` | Exact §14.3 fractional-availability bounds and proof counterexample; all-unknown null score/confidence 0; mixed per-term claims/rollups; 100-run determinism and shuffled-input stability; the eight-row input-activity matrix; positive-keyword-only/all-inert no-score with low band/status unknown/count 0/no penalties; S-3/S-6/S-8 versioned inputs |
+| Evidence persistence | Every claim has exactly one verdict-compatible provenance kind; exact code-point spans survive repeated substrings/astral Unicode; cross-candidate, wrong-section, off-by-one, empty, purged and stale spans fail; coverage/context cannot satisfy Gate B; zero signals/claims is accepted only for the database-attested all-inert no-score form |
+| Protected/non-scoring/config guards | No signal/alias/prompt contains a `PROTECTED_TERMS` entry; S-7/network/`profile_urn`/messageability cannot affect scoring; invalid S-8 and zero-effective-weight transitions with active input return `422` without writes; all-inert weight edits version and rescore without `0/0` |
 | Identity normalization | Agreement with the server's rules on a ported table from `tests/test_identifiers.py` |
 | Idempotency | Token consumption is single-winner under concurrent calls; duplicate `Idempotency-Key` returns the stored result without a second tool call |
 | Send classification | Each of the 7 statuses maps to the state in §16's table |
@@ -1531,6 +1856,8 @@ Vitest + React Testing Library for components; Playwright for flows (against the
 - Enter in the modal does not send.
 - The modal shows name, URL, exact body, and a character count equal to `body.length`.
 - Every `unknown` verdict renders the exact FR-042 string.
+- One mixed S-1/S-2 aggregate renders matched, not-matched and unknown claim children without
+  collapsing or fabricating snippets.
 - Clicking an evidence snippet highlights the right span in the raw viewer.
 - Each empty/loading/error state renders for its trigger.
 - After `SENT`, the send control is disabled and **no** send-fallback control is rendered — only a
@@ -1574,9 +1901,13 @@ tools against public profiles.
 
 **Phase gates are hard blocks, enforced in code (FR-081, NFR-012):**
 - **Gate A — discovery accepted.** Operator confirms candidate extraction and dedupe are correct
-  on a real search. Until recorded, `/candidates` scoring UI is hidden.
+  on a completed real search and supplies a non-empty note. Until recorded, `/api/candidates`
+  scoring UI is hidden; `/api/candidate-pool?session_id=…` remains available.
 - **Gate B — matching accepted.** Operator spot-checks ≥ 10 evidence links and confirms each
-  points at real text. Until recorded, `POST /drafts` returns `409`.
+  points at exact profile text. The request names ≥10 distinct evidence ids, and the insert
+  transaction revalidates that each belongs to a current score in the same session and resolves
+  byte-for-byte into its linked `profile_section`. Coverage, missing-section metadata, search
+  context and messageability hints never count. Until recorded, `POST /drafts` returns `409`.
 - **Gate C — drafting accepted.** Operator confirms ≥ 3 drafts are accurate and the grounding
   check catches a deliberately false claim. Until recorded, `send_enabled` cannot be set true
   and `POST /send` returns `409`.
@@ -1807,71 +2138,175 @@ a recorded non-blocking limitation. M4 is unblocked but has not started (see
 
 ### M4 — Scoring and evidence  → **Phase gates A and B**
 
+M4 is split into three non-overlapping work packages. **WP1 (T-4.1, T-4.2 and T-4.7a)** owns
+only the pure scoring package `services/scoring/{__init__,types,matching,aggregate,signals/**}`,
+`tests/unit/test_scoring_{signals,aggregate}.py` and
+`tests/unit/test_scoring_kernel_guards.py`. **WP2 (T-4.5/T-4.6)** owns every frontend change
+and develops against frozen API mocks. **WP3 (T-4.3/T-4.4 and T-4.7b)** starts only from a
+reviewed WP1 head and exclusively owns DB models, migration `v0023`, persistence/services,
+lifecycle hooks, scoring/gate APIs and `tests/unit/test_scoring_boundary_guards.py`. WP1
+must not access DB/API/UI/MCP/network/clock/RNG; WP2 must not edit backend code; WP3 must not
+change kernel behavior or make MCP calls. The API routes and semantics frozen in §12 are the
+WP2/WP3 integration boundary. No file or named test target is shared between work packages.
+
 **T-4.1 · Signal implementations**
 - *Purpose:* §14.1/14.2.
-- *Files:* `services/scoring/signals/*.py`
+- *Files:* `services/scoring/{__init__,types,matching,signals/**}`
 - *Depends on:* T-3.3, T-3.4, T-2.1
-- *Output:* eight signals, each returning `(sub_score, verdict, availability, evidence[])`.
-- *Acceptance:* each signal has a fixture where it returns each of its possible verdicts.
-- *Tests:* per-signal unit tests, mutation-checked.
+- *Output:* immutable brief/config/snapshot inputs and stably ordered S-1…S-6/S-8 signal
+  aggregates plus ordered per-term/claim children. Profile-derived `matched`/`contradicted`
+  claims accept only `VerifiedSpan`; `not_matched` returns typed complete-section coverage;
+  `unknown` returns typed missing-section metadata. S-7 is typed search context outside the
+  calculation, permanently weight 0. The §14.1 activity derivation runs before signal creation;
+  every inert signal emits no aggregate, claim or provenance child.
+- *Acceptance:* each active signal has fixtures for every valid verdict; S-3 covers
+  `required_experience_months` null/0/positive, S-6 covers empty and populated equivalence
+  tables, and S-8 covers empty credentials plus exact/alias requirements. S-1/S-2 fixtures
+  produce matched + not-matched + unknown claims in one aggregate whose rollup is `mixed`;
+  scalar signals emit exactly one claim. An executable matrix independently empties S-1 required
+  skills, S-2 optional skills, S-3 months, S-4 titles, S-5 industries, S-6 location and S-8
+  credentials and proves each disappears; S-7 never appears. Stable ordering holds after input
+  shuffling.
+- *Tests:* per-signal mutation-checked tests; the eight inert cases; a currently valid
+  positive-keyword-only/all-inert brief; attempts to give S-7, `profile_urn` or messageability a
+  score/weight must fail.
 - *Scope:* **[D]**
 
 **T-4.2 · Aggregation, confidence, bands**
 - *Purpose:* §14.3/14.4, FR-040, FR-043.
 - *Files:* `services/scoring/aggregate.py`
 - *Depends on:* T-4.1
-- *Output:* `score`, `score_lower`, `score_upper`, `confidence`, band, stage.
-- *Acceptance:* `lower ≤ score ≤ upper` always; a candidate with all sections missing scores `unknown` with confidence 0, not 0 points.
-- *Tests:* property test over random availability vectors; determinism test.
+- *Output:* explicitly penalized, clamped and quantized `score`, bounds, confidence, band,
+  calculation status, active count and stage from immutable WP1 values, including the
+  pre-denominator `I=∅` no-score branch.
+- *Acceptance:* the exact §14.3 `x/y`, `x/W` and `u/W` formulas hold; `lower ≤ score ≤ upper`
+  after identical penalty/clamp for every numeric result, including fractional availability.
+  An all-unknown candidate has `score:null`, null bounds/band and confidence 0, never zero
+  points. An all-inert brief returns null score/bounds, confidence 0, low band, status unknown,
+  active count 0 and applies/persists no penalty; S-7 and all inert signals are absent from every
+  denominator; shuffled inputs return byte-identical output.
+- *Tests:* the named §14.3 counterexample, randomized fractional-availability bounds,
+  penalty/clamp boundaries, 100-run determinism, shuffled-input stability, active `y=0`, `I=∅`,
+  active `W=0` rejection and an assertion that no evaluated branch divides by zero.
 - *Scope:* **[D]**
 
 **T-4.3 · Evidence persistence and links**
 - *Purpose:* FR-041, §14.5.
-- *Files:* `services/scoring/persist.py`
+- *Files:* `db/models.py`, `db/migrations/v0023*`, `services/scoring_persist.py`
 - *Depends on:* T-4.2, T-0.3
-- *Output:* `score_signal` + `evidence` rows with spans resolving into stored raw text.
-- *Acceptance:* every evidence row's snippet is found at its span in the referenced section.
-- *Tests:* an integrity test that re-reads every evidence span and compares.
+- *Output:* append-only score/source-snapshot/signal history and ordered `score_claim` children.
+  Each claim references exactly one immutable, non-empty `evidence_set`, `coverage_set` or
+  `missing_set`; their child rows are disjoint. Evidence points directly to a `profile_section`;
+  coverage stores section id/hash/terms/aliases/matcher version and no span.
+- *Acceptance:* DB guards re-read the linked raw text and reject any non-exact, empty,
+  cross-candidate, wrong-section, off-by-one, purged or stale profile span. Missing, empty,
+  multiple-kind or verdict-incompatible claim provenance is rejected. `not_matched` is rejected
+  unless all required sections completed successfully and its hashes match. Neither coverage
+  nor search context can satisfy Gate B. Persisted numeric scores must satisfy
+  `0 ≤ lower ≤ headline ≤ upper ≤ 100`; the active all-null score/bounds/band form requires
+  confidence 0. A score cannot become current with a missing claim or an incorrect
+  common/`mixed` rollup. Zero signals/claims can become current only with a transactionally
+  re-derived all-inert attestation, exact no-score fields and no provenance/penalty children;
+  its `score_input_section` set is also empty, and forging the flag or attaching any child is
+  rejected.
+- *Tests:* byte-exact repeated-substring and astral-Unicode spans; every rejection case above;
+  migration `v0023` succeeds on populated and blank databases.
 - *Scope:* **[D]**
 
 **T-4.4 · Re-scoring and staleness**
-- *Purpose:* FR-002, FR-044, FR-046.
-- *Files:* `services/scoring/`, `api/scoring.py`
+- *Purpose:* FR-002, FR-044, FR-046, FR-049.
+- *Files:* `services/scoring_persist.py`, brief/enrichment/search lifecycle services,
+  `api/{scoring,briefs,candidates,session}.py`
 - *Depends on:* T-4.3
-- *Output:* re-score on brief or weight change; previous score retained; delta shown.
-- *Acceptance:* changing a weight re-scores all candidates and stamps a new `weights_version`.
-- *Tests:* staleness and delta tests.
+- *Output:* immutable scoring-config versions, input fingerprint/source snapshot, score history
+  and delta; the frozen candidate/rescore/weights/gate endpoints in §12. Brief or config edits
+  stale old scores. `PUT /api/weights/current` uses optimistic versioning and performs one
+  atomic rescore per candidate.
+- *Acceptance:* changing a brief, weight or metro equivalence preserves history, stales the old
+  score and creates a result with the new versions/fingerprint. Concurrent stale config updates
+  fail `409`; no rescore path calls MCP. Gate A requires a completed search and note; Gate B
+  requires Gate A plus ≥10 distinct, current, same-session exact profile-evidence ids revalidated
+  inside the insert transaction. Positive S-8 with empty credentials and a zero-effective-weight
+  proposal while any input is active return `422` with no writes. All-inert creation and edits
+  are accepted; all-inert weight/equivalence edits create a config version and exactly one
+  no-score rescore per candidate without signal/penalty rows or division. Removing the final
+  credential atomically creates the next config with S-8=0 and exactly one rescore per candidate;
+  re-adding it leaves S-8=0. Active↔all-inert transitions follow §14.3 and never call MCP.
+- *Tests:* history/delta, input fingerprint, brief/config staleness, one-rescore-per-candidate,
+  optimistic conflict, S-8 empty/removal/re-add transitions, active all-zero no-write cases,
+  all-inert creation/edit/transition cases, canonical fingerprint distinction, ranked stable
+  sort/null-last, Gate A/B negative cases, and explicit rejection of coverage/context/
+  cross-session/stale evidence.
 - *Scope:* **[D]**
 
 **T-4.5 · Ranked list UI**
 - *Purpose:* FR-050, FR-043.
 - *Files:* `pages/CandidatesPage.tsx`, `components/CandidateRow.tsx`, `ScoreBadge`, `ConfidenceBand`
 - *Depends on:* T-4.2
-- *Output:* sortable, filterable ranked list with bands and stage badges.
-- *Acceptance:* provisional and enriched candidates are visually distinguishable at a glance.
-- *Tests:* RTL + Playwright.
+- *Output:* sortable/filterable ranked list against frozen mocks: score/bounds/band or unknown,
+  confidence, calculation status, active count, stage, config version, delta, top signals and
+  labelled non-scoring hints.
+- *Acceptance:* provisional/enriched and numeric/unknown candidates are distinguishable without
+  color alone; default order matches §12 and the permanent footer reads “Scores rank retrieved
+  evidence, not people.” The search screen defaults network to `["F","S"]` and warns that only
+  `F` is reliably messageable, without implying either token affects score. The all-inert fixture
+  renders the exact §14.5 copy, low confidence, no top signals, and distinguishes itself from an
+  active all-unknown profile without color alone.
+- *Tests:* RTL + Playwright, including keyboard access, non-color state cues and D-04 default/copy.
 - *Scope:* **[D]**
 
 **T-4.6 · Evidence panel UI**
 - *Purpose:* FR-041, FR-042, FR-051.
 - *Files:* `components/EvidencePanel.tsx`, `SignalTable.tsx`
 - *Depends on:* T-4.3, T-3.5
-- *Output:* what matched / where / what didn't / what was unavailable / provisional-or-enriched.
-- *Acceptance:* every `unknown` renders the exact FR-042 string; every snippet click highlights the right span.
-- *Tests:* UI test pinning the exact copy string.
+- *Output:* aggregate signal rollups (including `mixed`) with ordered per-claim
+  matched/contradicted evidence, deterministic absence coverage and missing-section reasons;
+  section highlights, score history and non-scoring search/messageability context.
+- *Acceptance:* every `unknown` renders exact lowercase “not found in the retrieved data”; every
+  profile-evidence click highlights the exact span; coverage/context never renders as a match
+  snippet or a Gate-B-selectable evidence link. All-inert renders the exact empty-state copy and
+  an empty signal list, not an `unknown` claim or Gate-B-selectable row.
+- *Tests:* exact-copy, repeated/astral span highlighting, keyboard/non-color accessibility and
+  frozen-response rendering tests.
 - *Scope:* **[D]**
 
-**T-4.7 · Protected-attribute guard test**
-- *Purpose:* FR-045, §14.6.
-- *Files:* `tests/unit/test_protected_attributes.py`
+**T-4.7a · Pure-kernel protected/non-scoring guards (WP1)**
+- *Purpose:* FR-045, FR-047, FR-048, §14.6.
+- *Files:* `tests/unit/test_scoring_kernel_guards.py`
 - *Depends on:* T-4.1
-- *Output:* a test scanning signal definitions, alias tables and prompt templates.
-- *Acceptance:* adding a protected term to any of them turns the test red.
+- *Output:* pure-package tests scanning signal definitions and aliases, plus type/aggregation
+  guards excluding every §14.1 input-inert signal, S-7, `profile_urn` and messageability from
+  kernel inputs, persistence outputs and denominators.
+- *Acceptance:* adding a protected term turns the protected scan red; assigning S-7 any nonzero
+  weight, emitting an inert signal, or letting any non-scoring hint affect score/bounds/confidence
+  turns a mutation test red.
 - *Tests:* the test is the deliverable; mutation-checked.
 - *Scope:* **[D]**
 
-**M4 gate work — G-A.1 / G-B.1:** an operator session on a real search, recording Gate A
-(dedupe correct) and Gate B (≥10 evidence links verified) via `POST /api/session/gates/{A,B}`.
+**T-4.7b · Persistence/API boundary guards (WP3)**
+- *Purpose:* FR-041, FR-045–FR-049, Gate B.
+- *Files:* `tests/unit/test_scoring_boundary_guards.py`
+- *Depends on:* T-4.3, T-4.4, T-4.7a
+- *Output:* DB/API mutation tests for claim-provenance exclusivity, exact Gate-B evidence,
+  protected inputs, S-7/S-8 validity, conditional positive effective weight and the all-inert
+  attestation exception.
+- *Acceptance:* coverage/context can never count for Gate B; incompatible/multiple/empty claim
+  provenance and positive empty-credential S-8 fail before version/staleness/rescore writes.
+  All-zero effective weights fail atomically when any normalized scoring input is active; they do
+  not fail when every input is inert. Zero claims are accepted only for the attested all-inert
+  no-score fields, and forged attestation or any attached signal/provenance/penalty child fails.
+- *Tests:* the test is the deliverable; mutation-checked independently of WP1's file.
+- *Scope:* **[D]**
+
+**M4 combined gates before live acceptance:** WP1/WP3 backend tests (including the §14.3 proof
+counterexample, executable eight-row inert matrix, positive-keyword-only no-score, mixed-claim
+provenance, S-8 transitions, active all-zero no-write and all-inert version/rescore cases), WP2 UI
+tests, full lint, type-check and build, the complete suite with `LLM_PROVIDER=null`, and migration
+`v0023` against both populated and blank databases. **M4 live gate work — G-A.1/G-B.1:** an operator session on
+a real search records Gate A (dedupe correct) and then Gate B via the frozen §12 endpoints. Gate
+B counts ≥10 distinct exact profile-span evidence links from current same-session scores, each
+manually verified and transactionally revalidated; absence coverage, missing-section metadata,
+search context and messageability hints never count.
 
 ### M5 — Review and shortlist
 
@@ -2030,12 +2465,12 @@ T-2.5 ─ T-3.1 ─┬─ T-3.2 ─────────────── T-
                └───────────────────┐│
 T-2.1 ────────────────────────────┐││
                                   ▼▼▼
-                              T-4.1 ─ T-4.2 ─ T-4.3 ─┬─ T-4.4
-                                              │      ├─ T-4.5
-                                              │      └─ T-4.6
-                                              └─ T-4.7 (parallel to 4.4–4.6)
+                              T-4.1 ─ T-4.2 ─┬─ T-4.3 ─┬─ T-4.4 ─┐
+                                            │          └─ T-4.6  ├─ T-4.7b
+                                            ├─ T-4.5             │
+                                            └─ T-4.7a ───────────┘
 
-T-4.3 ─ T-5.1 ─ T-5.2
+T-4.7b ─ T-5.1 ─ T-5.2
               └──────── [GATE B] ─ T-6.1 ─ T-6.2 ─ T-6.3 ─ T-6.4
                                                             │
                                                      [GATE C]
@@ -2050,7 +2485,7 @@ T-7.6 ─── T-8.5 ─ T-8.6
 ```
 
 Critical path: **T-0.1 → T-0.3 → T-1.1 → T-1.2 → T-1.4 → T-2.3 → T-2.5 → T-3.1 → T-3.3 →
-T-4.1 → T-4.2 → T-4.3 → T-5.1 → [Gate B] → T-6.2 → T-6.3 → [Gate C] → T-7.2 → T-7.3 → T-8.5.**
+T-4.1 → T-4.2 → T-4.3 → T-4.4 → T-4.7b → T-5.1 → [Gate B] → T-6.2 → T-6.3 → [Gate C] → T-7.2 → T-7.3 → T-8.5.**
 
 ---
 
@@ -2062,7 +2497,7 @@ T-4.1 → T-4.2 → T-4.3 → T-5.1 → [Gate B] → T-6.2 → T-6.3 → [Gate C
 | **M1** | `GET /api/mcp/status` lists the live server's tools; ten queued jobs execute strictly one at a time; a killed backend leaves `interrupted` rows and no lost work; every §18 error class is produced by a fixture; SSE shows queue position and per-section progress. |
 | **M2** | A real `search_people` stores raw text and references verbatim; `network` and `current_company` validation matches the server's rules **before** any call; the same person from two searches is one candidate with two sources; the identifier parity test passes; the UI makes "N of 15 references were people" legible. |
 | **M3** | Stage-1 fetches store both sections verbatim with `profile_urn` when present; a rate-limited fetch stores what returned and queues exactly the missing sections; parsers never raise on any fixture and strictly >85 % of manually annotated experience blocks have both title and company correct across all 3 authorized real profiles; a fabricated LLM span cannot become evidence; clicking a parsed field highlights its span. |
-| **M4** | Every scored candidate's evidence spans resolve to the exact substring in stored raw text (integrity test, 100 %); `lower ≤ score ≤ upper` on every candidate; a candidate with no sections has confidence 0 and no zero-score penalty; every `unknown` renders the FR-042 string; the protected-attribute test fails when a protected term is introduced; **Gates A and B recorded.** |
+| **M4** | Mixed S-1/S-2 outcomes persist as ordered claims, each with exactly one verdict-compatible provenance kind. Every matched/contradicted claim has exact `VerifiedSpan` evidence (100%); every `not_matched` claim has complete hashed coverage/no snippet; every `unknown` claim has missing-section provenance and exact lowercase FR-042 copy. The proven fractional-availability formulas satisfy `lower ≤ score ≤ upper` after identical penalty/clamp; all-unknown is nullable with confidence 0. The executable eight-row input matrix proves every inert signal is absent from calculation/persistence, and a positive-keyword-only/all-inert brief persists/returns null score/bounds, confidence 0, low band, status unknown, active count 0 and no child/penalty rows without `0/0`. S-7/network, `profile_urn` and messageability cannot affect scoring/Gate B. Empty-credential S-8, active zero-effective-weight rejection, and all-inert config version/rescore transitions obey FR-049/FR-046 without partial writes. Brief/config edits preserve history; populated/blank `v0023` migrations, disjoint ownership gates, frozen APIs, accessibility, `NullProvider`, full checks, and **Gates A and B** pass. |
 | **M5** | Decisions are append-only with history; navigating and scoring write no decision rows; auto-promotion is off by default and, when on, enqueues fetches only. |
 | **M6** | Drafts generate only for shortlisted candidates with a `main_profile`; the prompt contains only that candidate's evidence; a planted false claim is flagged; editing versions the draft and re-runs grounding; the whole flow works with `NullProvider`; **Gate C recorded.** |
 | **M7** | `confirm_send=True` appears in exactly one non-test file; the modal shows name, URL, exact body, char count and checkbox; the button is dead without the checkbox and Enter never sends; concurrent sends produce exactly one MCP call; each of the seven statuses maps to the right state; `send_unavailable` is `AMBIGUOUS` and never auto-retried; a crash mid-send yields `AMBIGUOUS`; a finished attempt cannot be mutated (both triggers fire); `confirmed_not_sent` produces a new attempt with a new idempotency key while the original row survives unchanged; the fallback matches the §15 matrix row-for-row; sending is impossible with any gate unrecorded. |
@@ -2118,17 +2553,18 @@ The **project** is done when:
 
 ## 27. Decisions requiring your approval
 
-**D-01, D-02 and D-08 were approved on 2026-09-02** and are recorded as locked in §1a. They are
-kept here with their reasoning for the record; the "Status" column is the authority.
+**D-01, D-02 and D-08 were approved on 2026-09-02; D-03 through D-06 were approved on
+2026-09-03.** All are recorded as locked in §1a and kept here with their reasoning for the
+record; the "Status" column is the authority.
 
 | ID | Decision | Options | Recommendation | Status |
 |----|----------|---------|----------------|--------|
 | **D-01** | **Where the companion app lives** | (a) sibling repo `linkedin-dashboard/`; (b) directory inside `linkedin-mcp-server`; (c) separate repo entirely | **(a)**. Keeps NFR-013 trivially true and keeps the server's release process (`AGENTS.md` § Release Process) untouched. A directory inside would drag the dashboard into the server's CI, versioning and Docker image. | **APPROVED 2026-09-02** — locked, see §1a |
 | **D-02** | **LLM provider, and whether profile text leaves the machine** | (a) `NullProvider` only for MVP; (b) local Ollama; (c) hosted (Anthropic/OpenAI-compatible) | **(a) for M0–M5, (b) for M6.** Hosted only with an explicit, informed opt-in. This is the plan's single biggest privacy lever (§19.3, R-08). | **APPROVED 2026-09-02** — locked, see §1a |
-| **D-03** | **Whether any MCP server change is permitted** | (a) none (NFR-013); (b) one additive read-only change | **(a)**. Every capability the workflow needs already exists. If (b) were ever taken, the only candidate worth it is search pagination (PL-1), and it belongs in the server's own issue/PR flow (`AGENTS.md` § Development Workflow), not here. | Open — needed before M4 |
-| **D-04** | **Default `network` filter for outreach-intent searches** | (a) none; (b) `["F"]`; (c) `["F","S"]` | **(c)**, with a UI note that only (b) reliably yields messageable candidates (R-02). | Open — needed before M4 |
-| **D-05** | **Retention window** | 7 / 30 / 90 days | **30 days**, with the purge countdown always visible and manual purge available at any time. | Open — needed before M4 |
-| **D-06** | **Auto-promotion to Stage 2** | (a) always manual; (b) operator-set score threshold, default off | **(b) default off.** Keeps FR-053 honest while letting a confident operator save clicks. | Open — needed before M4 |
+| **D-03** | **Whether any MCP server change is permitted** | (a) none (NFR-013); (b) one additive read-only change | **(a)**. Every capability the workflow needs already exists. If (b) were ever taken, the only candidate worth it is search pagination (PL-1), and it belongs in the server's own issue/PR flow (`AGENTS.md` § Development Workflow), not here. | **APPROVED 2026-09-03** — locked, see §1a |
+| **D-04** | **Default `network` filter for outreach-intent searches** | (a) none; (b) `["F"]`; (c) `["F","S"]` | **(c)**, with a UI note that only (b) reliably yields messageable candidates (R-02). Network remains non-scoring search context. | **APPROVED 2026-09-03** — locked, see §1a |
+| **D-05** | **Retention window** | 7 / 30 / 90 days | **30 days**, with the purge countdown always visible and manual purge available at any time. Implementation remains M8/T-8.1. | **APPROVED 2026-09-03** — locked, see §1a |
+| **D-06** | **Auto-promotion to Stage 2** | (a) always manual; (b) operator-set score threshold, default off | **(b) default off.** Keeps FR-053 honest while letting a confident operator save clicks. Implementation remains M5/T-5.3. | **APPROVED 2026-09-03** — locked, see §1a |
 | **D-07** | **Acceptable-use confirmation for the send feature** | Operator attests before `SEND_ENABLED` can be turned on | **Require it.** A one-time in-app attestation recorded in the audit log (R-15). | Open — needed before M7 |
 | **D-08** | **MCP server run mode** | (a) direct `--transport streamable-http`; (b) daemon owner with a bearer token | **(a)**. Simplest, and A-03 shows a direct server takes no token. If (b) is ever wanted, the client must present the owner's token and `mcp/client.py` is the only file that changes. | **APPROVED 2026-09-02** — locked, see §1a |
 | **D-09** | **Character-limit warning threshold** | Needs a real number | **[requires verification]** — measure LinkedIn's actual limit once, then set a soft warning below it. Until measured, show the count with no threshold (A-14). | Open — needed before M7 |
@@ -2166,7 +2602,7 @@ decision locked in §1a — a "no" there is not a scope question but a reverted 
 be resolved by editing §1a with a reason before any other work continues.
 
 1. Does every shipped feature map to an FR id in §4?
-2. **[D-01]** Is `git diff --stat` under `linkedin_mcp_server/` still empty?
+2. **[D-01, D-03]** Is `git diff --stat` under `linkedin_mcp_server/` still empty, with no additive server change?
 3. Does `confirm_send=True` still appear in exactly one non-test file?
 4. Is there still exactly one code path from a human click to a send?
 5. **[LD-02]** Is there still no timer, scheduler, cron, watcher, poller or background loop that can read or write a `send_attempt` row?
@@ -2186,6 +2622,13 @@ be resolved by editing §1a with a reason before any other work continues.
 19. **[LD-04]** Is candidate volume still coming from multiple narrow searches, with no pagination added anywhere?
 20. **[LD-06]** Do `profile_urn` and messageability still carry zero weight and appear in no signal definition?
 21. **[D-08]** Does the MCP client still construct no auth header and manage no server lifecycle?
+22. **[D-04]** Does search still default to `["F","S"]`, warn that only `F` is reliably messageable, and keep network as non-scoring context?
+23. **[FR-048]** Is S-7 still permanently weight 0 and excluded from score, bounds, penalties, confidence and Gate B?
+24. **[D-05]** Is retention still 30 days with countdown/manual purge, with implementation owned by M8/T-8.1?
+25. **[D-06]** Is the operator promotion threshold still default-off, with implementation owned by M5/T-5.3?
+26. Does every score claim still have exactly one verdict-compatible evidence, coverage or missing-section provenance kind, with mixed signal rollups preserved?
+27. Do invalid positive empty-credential S-8 and zero-effective-weight updates with at least one active input still return `422` before any version, staleness or rescore write?
+28. Does the eight-condition activity matrix still exclude every inert signal from calculation/persistence while allowing an all-inert positive-keyword-only brief and its versioned no-score lifecycle without `0/0`?
 
 ---
 
@@ -2197,7 +2640,7 @@ be resolved by editing §1a with a reason before any other work continues.
    Nothing above this line is meaningful until one real tool call round-trips.
 3. **T-2.1 → T-2.7** — brief, search, candidate extraction, identifier parity. **Gate A.**
 4. **T-3.1 → T-3.5** — Stage 1, resume, parsers, span verifier, raw+parsed detail view.
-5. **T-4.1 → T-4.7** — signals, aggregation, evidence persistence, ranked list, evidence panel,
+5. **T-4.1 → T-4.7a/T-4.7b** — signals, aggregation, claim/evidence persistence, ranked list, evidence panel,
    protected-attribute guard. **Gate B.**
 6. **T-5.1 → T-5.3** — decisions and shortlist.
 7. **T-6.1 → T-6.4** — providers, drafting, grounding, editor. **Gate C.**
@@ -2238,23 +2681,19 @@ its own. M6 (drafting) and M7
 | 2 | **A-11 — `confirm_send=false` never sends.** The whole dry-run design assumes the early return at `extractor.py:5010-5017` precedes the `keyboard.type` at `:5033`. | If wrong, our "safe validation" step is a send. | Verified by reading the source; confirm once against a live server with a consenting recipient **before** T-7.1 ships. |
 | 3 | **The `send_unavailable` → `AMBIGUOUS` classification.** Returned after typing and clicking (`extractor.py:5074-5080`). | Classifying it as a failure would let the operator re-send a message that already went out — the one unrecoverable bug (R-06). | Pinned by a mutation-checked test in T-7.3 and by reading the same source lines at review time. |
 | 4 | **R-02 — enough candidates are messageable.** `send_message` needs the profile to be directly messageable (`tools/messaging.py:232`). | If most shortlisted candidates come back `message_unavailable`, M7 delivers little and the fallback becomes the primary path. | **Cheap test during M4:** run `send_message(confirm_send=false)` against 3–5 already-scored candidates and count `confirmation_required` vs. `message_unavailable`. Do this *before* building M7. |
-| 5 | **R-04 — innerText parsing is good enough to score on.** Everything downstream of `sections` is our inference over free text. | If experience blocks parse poorly, S-3/S-4/S-5 (45 of 100 weight) degrade to `unknown` and confidence collapses. | **T-3.3 acceptance:** strictly >85 % of manually annotated experience blocks have both title and company correct across all 3 authorized real profiles. If missed, the LLM proposal path (T-3.4) moves from optional to required, which re-opens D-02 earlier. |
+| 5 | **R-04 — innerText parsing is good enough to score on.** Everything downstream of `sections` is our inference over free text. | If experience blocks parse poorly, S-3/S-4/S-5 (45 configured weight points before active-signal normalization) degrade to `unknown` and confidence collapses. | **T-3.3 acceptance:** strictly >85 % of manually annotated experience blocks have both title and company correct across all 3 authorized real profiles. If missed, the LLM proposal path (T-3.4) moves from optional to required, which re-opens D-02 earlier. |
 
 ---
 
 ## Decisions to approve before implementation
 
-**Nothing blocks M0.** The two decisions that gated the start — **D-01** (sibling repo) and
-**D-08** (direct streamable HTTP) — were approved 2026-09-02, along with **D-02** (local-first,
-`NullProvider` through M5) and the eight invariants LD-01…LD-08. All are locked in §1a.
-Implementation can proceed through discovery, enrichment, scoring and shortlisting with no
-unresolved architectural question.
+**Nothing blocks M4.** D-01, D-02 and D-08 were approved 2026-09-02; D-03, D-04, D-05 and
+D-06 were approved 2026-09-03; and the eight invariants LD-01…LD-08 remain unchanged. All are
+locked in §1a. D-05's 30-day retention is still implemented in M8/T-8.1, and D-06's
+operator-threshold/default-off behavior is still implemented in M5/T-5.3; approving their
+outcomes does not pull either implementation into M4.
 
-Remaining, none of them blocking M0–M3:
-
-- **Before M4:** **D-03** (whether any server change is permitted — recommended "no"; worth
-  stating rather than assuming), **D-04** (default `network` filter), **D-05** (retention
-  window), **D-06** (auto-promotion default).
+Remaining, none of them blocking M4–M5:
 - **Before M6:** the second half of **D-02** — whether message *generation* uses a local model
   (Ollama) or a hosted one. Deferred deliberately; the provider interface and `NullProvider`
   default mean this decision costs nothing to postpone and buys real information (by M6 you will
@@ -2268,9 +2707,10 @@ Remaining, none of them blocking M0–M3:
 
 | Req | Milestone | Primary tasks | Verified by |
 |---|---|---|---|
-| FR-001–FR-003 | M2 | T-2.1, T-2.2 | Brief round-trip test |
+| FR-001–FR-003 | M2/M4 | T-2.1, T-2.2, T-4.1, T-4.4 | Versioned input round-trip/staleness, eight inert cases and positive-keyword-only valid-brief tests |
 | FR-004 | M2 | T-2.1 | Blocklist 422 test |
-| FR-010, FR-011 | M2 | T-2.3, T-2.7 | Search validation tests |
+| FR-005 | M4 | T-4.1, T-4.4 | Equivalence version/exact-only/staleness tests |
+| FR-010, FR-011 | M2/M4 | T-2.3, T-2.7, T-4.5 | Search validation plus D-04 default/warning UI tests |
 | FR-012 | M2 | T-2.4 | URN present/absent fixtures |
 | FR-013 | M2 | T-2.3 | Verbatim-storage test |
 | FR-014, FR-015 | M2 | T-2.5, T-2.6 | Dedupe + identifier parity |
@@ -2286,14 +2726,16 @@ Remaining, none of them blocking M0–M3:
 | FR-030, FR-031 | M3 | T-3.3 | Parser span fixtures |
 | FR-032, FR-033 | M3 | T-3.4 | Verifier tests |
 | FR-034 | M3 | T-3.3, T-3.5 | Raw viewer test |
-| FR-040 | M4 | T-4.1, T-4.2 | Aggregation property tests |
-| FR-041 | M4 | T-4.3, T-4.6 | Evidence integrity test |
+| FR-040 | M4 | T-4.1–T-4.3, T-4.5, T-4.6 | Mixed-claim rollup, aggregation properties, eight-row inert matrix and all-inert no-score/UI tests |
+| FR-041 | M4 | T-4.1, T-4.3, T-4.6, T-4.7b | Claim-provenance exclusivity and evidence integrity tests |
 | FR-042 | M4 | T-4.6 | Exact-copy UI test |
 | FR-043 | M4 | T-4.2, T-4.5 | Stage badge UI test |
 | FR-044 | M4 | T-4.4 | Delta test |
-| FR-045 | M4 | T-4.7 | Protected-attribute guard |
-| FR-046 | M4 | T-4.4 | Weights-version test |
-| FR-047 **[LD-06]** | M4 | T-4.1, T-4.7 | No-messageability-signal guard |
+| FR-045 | M4 | T-4.7a, T-4.7b | Protected-attribute guards |
+| FR-046 | M4 | T-4.4, T-4.7b | Conditional positive-effective-weight no-write plus all-inert config-version/rescore tests |
+| FR-047 **[LD-06]** | M4 | T-4.1, T-4.7a, T-4.7b | No-messageability-signal guards |
+| FR-048 | M4 | T-4.1, T-4.2, T-4.7a, T-4.7b | S-7 non-scoring mutation guards |
+| FR-049 | M4 | T-4.4, T-4.7b | S-8 active/all-inert transition and conditional all-zero no-write tests |
 | FR-050 | M4 | T-4.5 | Ranked list UI test |
 | FR-051 | M3/M4 | T-3.5, T-4.6 | Detail view tests |
 | FR-052 | M5 | T-5.1, T-5.2 | Append-only decision test |
@@ -2330,5 +2772,5 @@ Remaining, none of them blocking M0–M3:
 | NFR-014 | M3 | T-3.1, T-3.3 | Memory-bound parser test |
 | NFR-015 **[LD-07]** | M3/M4/M6 | T-3.4, T-4.3, T-6.3 | Span integrity test (byte-for-byte) |
 | NFR-016 **[LD-08]** | M0–M5 | T-3.4, T-6.1 | Full suite green with `LLM_PROVIDER=null` |
-| LD-01…LD-08 | all | §1a guards | §29 items 2, 5, 8, 12, 15, 17–21 |
+| LD-01…LD-08 | all | §1a guards | §29 items 2, 5, 8, 12, 15, 17–21 and 23 |
 | NG-1…NG-15 | all | §29 checklist | Milestone acceptance review |

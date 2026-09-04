@@ -12,10 +12,14 @@ from linkedin_dashboard.api._filters import (
 )
 from linkedin_dashboard.db.models import (
     Candidate,
+    CandidateScore,
+    Evidence,
     Job,
     ParsedField,
+    PhaseGate,
     ProfileFetch,
     ProfileSection,
+    ScoreSignal,
     SectionError,
 )
 from linkedin_dashboard.services.enrichment import (
@@ -188,7 +192,7 @@ def candidate_detail(candidate_id: str, request: Request) -> dict[str, Any]:
                     ),
                 }
             )
-        return {
+        result: dict[str, Any] = {
             "id": candidate.id,
             "username": candidate.username,
             "profile_url": candidate.profile_url,
@@ -237,6 +241,67 @@ def candidate_detail(candidate_id: str, request: Request) -> dict[str, Any]:
                 for error in errors
             ],
         }
+        gate_a = session.scalar(
+            select(PhaseGate.id).where(
+                PhaseGate.session_id == candidate.session_id,
+                PhaseGate.gate == "A",
+            )
+        )
+        if gate_a is not None:
+            from linkedin_dashboard.api.scoring import ranked_record, score_detail
+
+            current_score = session.scalar(
+                select(CandidateScore).where(
+                    CandidateScore.candidate_id == candidate.id,
+                    CandidateScore.is_current.is_(True),
+                )
+            )
+            history = list(
+                session.scalars(
+                    select(CandidateScore)
+                    .where(CandidateScore.candidate_id == candidate.id)
+                    .order_by(
+                        CandidateScore.computed_at.desc(), CandidateScore.id.desc()
+                    )
+                )
+            )
+            result.update(
+                {
+                    "score": (
+                        ranked_record(session, candidate, current_score)
+                        if current_score is not None
+                        else None
+                    ),
+                    "score_history": [
+                        {
+                            "id": score.id,
+                            "score": score.score,
+                            "weights_version": score.weights_version,
+                            "computed_at": score.computed_at,
+                            "current": score.is_current,
+                        }
+                        for score in history
+                    ],
+                    "signals": (
+                        score_detail(session, current_score)
+                        if current_score is not None
+                        else []
+                    ),
+                    "non_scoring_hints": (
+                        ranked_record(session, candidate, current_score)[
+                            "non_scoring_hints"
+                        ]
+                        if current_score is not None
+                        else []
+                    ),
+                    "scoring_empty_state": (
+                        "No current score is available for this candidate."
+                        if current_score is None
+                        else None
+                    ),
+                }
+            )
+        return result
 
 
 def _overlaps(start: int, end: int, ranges: tuple[tuple[int, int], ...]) -> bool:
@@ -256,6 +321,9 @@ def candidate_section(
     """Return one latest raw section with fail-closed exact-span DTOs."""
     database = request.app.state.database
     with database.sessions() as session:
+        candidate = session.get(Candidate, candidate_id)
+        if candidate is None:
+            raise HTTPException(404, "candidate does not exist")
         section = session.scalar(
             select(ProfileSection)
             .where(
@@ -318,6 +386,64 @@ def candidate_section(
                     "provenance_label": "Exact stored text",
                 }
             )
+        gate_a = session.scalar(
+            select(PhaseGate.id).where(
+                PhaseGate.session_id == candidate.session_id,
+                PhaseGate.gate == "A",
+            )
+        )
+        if gate_a is not None:
+            evidence_rows = list(
+                session.scalars(
+                    select(Evidence)
+                    .join(ScoreSignal, ScoreSignal.id == Evidence.score_signal_id)
+                    .join(CandidateScore, CandidateScore.id == ScoreSignal.score_id)
+                    .where(
+                        CandidateScore.candidate_id == candidate_id,
+                        CandidateScore.is_current.is_(True),
+                        Evidence.profile_section_id == section.id,
+                        Evidence.evidence_set_id.is_not(None),
+                        Evidence.purged_at.is_(None),
+                    )
+                    .order_by(Evidence.span_start, Evidence.span_end, Evidence.id)
+                )
+            )
+            for evidence in evidence_rows:
+                valid = (
+                    evidence.section_name == section_name
+                    and evidence.content_sha256 == section.content_sha256
+                    and 0
+                    <= evidence.span_start
+                    < evidence.span_end
+                    <= len(section.raw_text)
+                    and section.raw_text[evidence.span_start : evidence.span_end]
+                    == evidence.snippet
+                )
+                withheld = not valid or _overlaps(
+                    evidence.span_start, evidence.span_end, masked_ranges
+                )
+                verbatim = (
+                    None
+                    if withheld
+                    else redacted[evidence.span_start : evidence.span_end]
+                )
+                spans.append(
+                    {
+                        "id": evidence.id,
+                        "profile_section_id": section.id,
+                        "span_start": None if withheld else evidence.span_start,
+                        "span_end": None if withheld else evidence.span_end,
+                        "value": verbatim,
+                        "snippet": verbatim,
+                        "verbatim": verbatim,
+                        "provenance_available": not withheld,
+                        "provenance_label": (
+                            "Provenance withheld"
+                            if withheld
+                            else "Exact score evidence"
+                        ),
+                    }
+                )
         return {
             "candidate_id": candidate_id,
             "section_name": section_name,
