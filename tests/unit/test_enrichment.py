@@ -1122,8 +1122,34 @@ def test_experience_parser_anchors_roles_and_inherits_group_company() -> None:
             )
 
         assert [
-            [entry["title"], entry["company"]] for entry in entries.values()
+            [entry["title"], entry.get("company")] for entry in entries.values()
         ] == case["pairs"]
+
+
+def test_experience_parser_only_anchors_whole_date_lines() -> None:
+    experience = (
+        "Experience\n"
+        "2020 ROLE_TITLE_ALPHA\n"
+        "COMPANY_ALPHA\n"
+        "Jan 2020 - Dec 2021 · 2 yrs\n"
+        "NARRATIVE mentions 2022 without being a date line\n"
+        "ROLE_TITLE_BETA\n"
+        "COMPANY_BETA\n"
+        "2022 - Present"
+    )
+
+    parsed = PARSERS["experience"](experience)
+    values = {
+        field.field_key: field.value
+        for field in parsed
+        if field.field_key.endswith((".title", ".company"))
+    }
+    assert values == {
+        "experience.0.title": "2020 ROLE_TITLE_ALPHA",
+        "experience.0.company": "COMPANY_ALPHA",
+        "experience.1.title": "ROLE_TITLE_BETA",
+        "experience.1.company": "COMPANY_BETA",
+    }
 
 
 def test_llm_proposal_requires_exact_substring() -> None:

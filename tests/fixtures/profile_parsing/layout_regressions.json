@@ -3,10 +3,12 @@
   "cases": [
     {
       "id": "grouped-employment",
-      "experience": "Experience\n\nGROUP_COMPANY\n\n8 yrs\n\nGROUP_WORK_MODE\n\nROLE_TITLE_ALPHA\n\n2022 - Present\n\nROLE_LOCATION\n\nROLE_SKILLS\n\nROLE_TITLE_BETA\n\n2020 - 2022\n\nROLE_LOCATION\n\nROLE_SKILLS",
+      "experience": "Experience\nPREVIOUS_ROLE_TITLE\nPREVIOUS_COMPANY\n2010 - 2014\nPREVIOUS_ROLE_LOCATION\nPREVIOUS_ROLE_SKILLS\n\nGROUP_COMPANY\n\n8 yrs\n\nGROUP_WORK_MODE\n\nROLE_TITLE_ALPHA\n\n2022 - Present\n\nROLE_LOCATION\n\nROLE_SKILLS\n\nROLE_TITLE_BETA\n\n2020 - 2022\n\n\nROLE_TITLE_GAMMA\nCOMPANY_GAMMA\n2023 - Present",
       "pairs": [
+        ["PREVIOUS_ROLE_TITLE", "PREVIOUS_COMPANY"],
         ["ROLE_TITLE_ALPHA", "GROUP_COMPANY"],
-        ["ROLE_TITLE_BETA", "GROUP_COMPANY"]
+        ["ROLE_TITLE_BETA", "GROUP_COMPANY"],
+        ["ROLE_TITLE_GAMMA", "COMPANY_GAMMA"]
       ]
     },
     {
@@ -16,6 +18,22 @@
         ["ROLE_TITLE_ALPHA", "COMPANY_ALPHA"],
         ["ROLE_TITLE_BETA", "COMPANY_BETA"],
         ["ROLE_TITLE_GAMMA", "COMPANY_GAMMA"]
+      ]
+    },
+    {
+      "id": "grouped-to-independent-boundary",
+      "experience": "Experience\nGROUP_COMPANY\n8 yrs\nROLE_TITLE_ALPHA\n2020 - 2022\n\n\nROLE_TITLE_BETA\nCOMPANY_BETA\n2022 - Present",
+      "pairs": [
+        ["ROLE_TITLE_ALPHA", "GROUP_COMPANY"],
+        ["ROLE_TITLE_BETA", "COMPANY_BETA"]
+      ]
+    },
+    {
+      "id": "partial-role-after-boundary",
+      "experience": "Experience\nROLE_TITLE_ALPHA\nCOMPANY_ALPHA\n2018 - 2020\nROLE_LOCATION\nDESCRIPTION\n\n\nROLE_TITLE_PARTIAL\n2022 - Present",
+      "pairs": [
+        ["ROLE_TITLE_ALPHA", "COMPANY_ALPHA"],
+        ["ROLE_TITLE_PARTIAL", null]
       ]
     }
   ]

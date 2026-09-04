@@ -5,33 +5,39 @@ import re
 from linkedin_dashboard.parsing.common import (
     LocatedLine,
     ParsedValue,
-    is_date_line,
     located_lines,
     value,
 )
 
-_DURATION = re.compile(r"\b\d+\s+(?:mos?|yrs?)\b", re.IGNORECASE)
-_DATED_RANGE = re.compile(
-    r"(?:\b(?:19|20)\d{2}\b|\bpresent\b|\bcurrent\b)", re.IGNORECASE
+_DURATION_PART = r"\d+\s+(?:mos?|yrs?)"
+_DURATION_LINE = re.compile(rf"{_DURATION_PART}(?:\s+{_DURATION_PART})*", re.IGNORECASE)
+_YEAR = r"(?:19|20)\d{2}"
+_MONTH_YEAR = rf"(?:[^\W\d_]+\.?\s+)?{_YEAR}"
+_ROLE_DATE_LINE = re.compile(
+    rf"{_MONTH_YEAR}\s*[-\u2013\u2014]\s*(?:{_MONTH_YEAR}|present|current)"
+    rf"(?:\s*(?:[·•,]\s*)?{_DURATION_PART}(?:\s+{_DURATION_PART})*)?",
+    re.IGNORECASE,
 )
+_SINGLE_YEAR_LINE = re.compile(_YEAR)
 
 
 def _is_group_duration(text: str) -> bool:
-    """Identify a parent-employment duration without treating role dates as one."""
-    return _DURATION.search(text) is not None and _DATED_RANGE.search(text) is None
+    """Identify the duration-only anchor used by grouped employment headers."""
+    return _DURATION_LINE.fullmatch(text) is not None
 
 
-def _latest_structural_block(
-    raw_text: str, lines: list[LocatedLine]
-) -> tuple[list[LocatedLine], bool]:
-    """Return lines after the last strong gap, preserving ordinary empty rows."""
-    boundary = 0
-    for position in range(1, len(lines)):
-        previous = lines[position - 1]
-        gap = raw_text[previous.start + len(previous.text) : lines[position].start]
-        if gap.count("\n") >= 3 or ("\n" not in gap and gap.count("\r") >= 3):
-            boundary = position
-    return lines[boundary:], boundary > 0
+def _is_role_date(text: str) -> bool:
+    """Accept complete date lines, never titles or prose that merely mention a year."""
+    return (
+        _ROLE_DATE_LINE.fullmatch(text) is not None
+        or _SINGLE_YEAR_LINE.fullmatch(text) is not None
+        or _is_group_duration(text)
+    )
+
+
+def _has_strong_gap(raw_text: str, previous: LocatedLine, current: LocatedLine) -> bool:
+    gap = raw_text[previous.start + len(previous.text) : current.start]
+    return gap.count("\n") >= 3 or ("\n" not in gap and gap.count("\r") >= 3)
 
 
 def _append_entry(
@@ -64,14 +70,24 @@ def parse(raw_text: str) -> list[ParsedValue]:
     """Parse date-anchored roles and inherit company names for grouped roles."""
     try:
         lines = located_lines(raw_text, headings={"experience"})
-        anchors: list[tuple[list[LocatedLine], LocatedLine]] = []
+        anchors: list[tuple[list[LocatedLine], LocatedLine, bool]] = []
         pending: list[LocatedLine] = []
+        pending_starts_at_boundary = False
+        previous: LocatedLine | None = None
         for line in lines:
-            if is_date_line(line.text):
-                anchors.append((pending, line))
+            strong_gap = previous is not None and _has_strong_gap(
+                raw_text, previous, line
+            )
+            if _is_role_date(line.text):
+                anchors.append((pending, line, pending_starts_at_boundary))
                 pending = []
+                pending_starts_at_boundary = False
             else:
+                if strong_gap:
+                    pending = []
+                    pending_starts_at_boundary = True
                 pending.append(line)
+            previous = line
 
         if not anchors:
             return _parse_without_date_anchors(raw_text, lines)
@@ -79,26 +95,22 @@ def parse(raw_text: str) -> list[ParsedValue]:
         output: list[ParsedValue] = []
         entry = 0
         group_company: LocatedLine | None = None
-        for candidates, dates in anchors:
-            latest_candidates, has_strong_boundary = _latest_structural_block(
-                raw_text, candidates
-            )
-            if not latest_candidates:
+        for candidates, dates, starts_at_boundary in anchors:
+            if not candidates:
                 continue
 
-            if _is_group_duration(dates.text) and len(latest_candidates) == 1:
-                group_company = latest_candidates[0]
+            if _is_group_duration(dates.text):
+                # Tail lines from the preceding role may share ordinary blank
+                # spacing with a new group header. The duration-only anchor
+                # makes its immediately preceding line the parent company.
+                group_company = candidates[-1]
                 continue
 
-            if (
-                group_company is not None
-                and has_strong_boundary
-                and len(latest_candidates) >= 2
-            ):
+            if group_company is not None and starts_at_boundary:
                 group_company = None
 
             if group_company is not None:
-                title = latest_candidates[-1]
+                title = candidates[-1]
                 company = group_company
             else:
                 # A date anchors the two lines immediately before it. Earlier
