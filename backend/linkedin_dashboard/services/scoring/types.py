@@ -9,6 +9,7 @@ from typing import Literal
 
 from linkedin_dashboard.parsing.spans import VerifiedSpan
 from linkedin_dashboard.services.scoring.normalization import normalize_text
+from linkedin_dashboard.services.scoring.version import RECOGNIZED_MATCHER_VERSIONS
 
 
 class SignalId(StrEnum):
@@ -112,6 +113,29 @@ def _canonical_strings(values: tuple[str, ...]) -> tuple[str, ...]:
         if key and (key not in unique or display < unique[key]):
             unique[key] = display
     return tuple(unique[key] for key in sorted(unique))
+
+
+def _validated_normalized_strings(
+    values: object,
+    field: str,
+    *,
+    allow_empty: bool,
+) -> tuple[str, ...]:
+    if type(values) is not tuple:
+        raise ValueError(f"{field} must be a canonical tuple")
+    normalized: list[str] = []
+    for value in values:
+        if not isinstance(value, str) or type(value) is not str:
+            raise ValueError(f"{field} must contain only strings")
+        if not value or normalize_text(value) != value:
+            raise ValueError(f"{field} must contain canonical nonempty values")
+        normalized.append(value)
+    if not normalized and not allow_empty:
+        raise ValueError(f"{field} cannot be empty")
+    canonical = tuple(sorted(set(normalized)))
+    if tuple(normalized) != canonical:
+        raise ValueError(f"{field} must be sorted and deduplicated")
+    return canonical
 
 
 @dataclass(frozen=True, slots=True)
@@ -503,6 +527,27 @@ class AbsenceCoverage:
     normalized_terms: tuple[str, ...]
     aliases: tuple[str, ...]
     matcher_version: str
+
+    def __post_init__(self) -> None:
+        normalized_terms = _validated_normalized_strings(
+            self.normalized_terms,
+            "normalized terms",
+            allow_empty=False,
+        )
+        aliases = _validated_normalized_strings(
+            self.aliases,
+            "aliases",
+            allow_empty=True,
+        )
+        if set(normalized_terms).intersection(aliases):
+            raise ValueError("aliases cannot duplicate normalized terms")
+        if (
+            type(self.matcher_version) is not str
+            or self.matcher_version not in RECOGNIZED_MATCHER_VERSIONS
+        ):
+            raise ValueError("matcher version must be recognized")
+        object.__setattr__(self, "normalized_terms", normalized_terms)
+        object.__setattr__(self, "aliases", aliases)
 
 
 @dataclass(frozen=True, slots=True)

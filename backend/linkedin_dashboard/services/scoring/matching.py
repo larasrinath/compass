@@ -12,8 +12,10 @@ from linkedin_dashboard.services.scoring.normalization import (
     normalize_text,
 )
 from linkedin_dashboard.services.scoring.types import Matcher, Term
+from linkedin_dashboard.services.scoring.version import (
+    MATCHER_VERSION as MATCHER_VERSION,
+)
 
-MATCHER_VERSION = "scoring-v1"
 _STEM_EQUIVALENTS = {
     "engineer": "engineer",
     "engineering": "engineer",

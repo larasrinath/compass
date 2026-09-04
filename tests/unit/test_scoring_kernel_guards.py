@@ -13,7 +13,9 @@ import pytest
 from linkedin_dashboard.parsing.spans import VerifiedSpan
 from linkedin_dashboard.services.brief import PROTECTED_TERMS
 from linkedin_dashboard.services.scoring import (
+    MATCHER_VERSION,
     MAX_SIGNAL_WEIGHT,
+    AbsenceCoverage,
     BriefInput,
     CoverageSet,
     EvidenceSet,
@@ -229,6 +231,98 @@ def test_claim_provenance_kinds_cannot_be_substituted() -> None:
         ScoreClaim("skill:x", "x", Verdict.NOT_MATCHED, missing)
     with pytest.raises(ValueError, match="cannot be empty"):
         CoverageSet(())
+
+
+def test_absence_coverage_uses_the_kernel_matcher_version() -> None:
+    signal = evaluate_signals(
+        BriefInput(required_skills=(Term("Rust"),)),
+        ScoringConfigInput(),
+        _simple_snapshot(),
+    )[0]
+    provenance = signal.claims[0].provenance
+    assert isinstance(provenance, CoverageSet)
+    assert {item.matcher_version for item in provenance.entries} == {MATCHER_VERSION}
+
+    coverage = AbsenceCoverage(
+        1,
+        "skills",
+        "sha256",
+        ("kubernetes",),
+        (),
+        MATCHER_VERSION,
+    )
+    assert coverage.normalized_terms == ("kubernetes",)
+    assert coverage.aliases == ()
+
+
+@pytest.mark.parametrize(
+    "normalized_terms",
+    (
+        (),
+        ("",),
+        ("Kubernetes",),
+        (" kubernetes",),
+        ("kubernetes", "kubernetes"),
+        ("rust", "kubernetes"),
+        cast(tuple[str, ...], (True,)),
+    ),
+)
+def test_absence_coverage_rejects_noncanonical_terms(
+    normalized_terms: tuple[str, ...],
+) -> None:
+    with pytest.raises(ValueError, match="normalized terms"):
+        AbsenceCoverage(
+            1,
+            "skills",
+            "sha256",
+            normalized_terms,
+            (),
+            MATCHER_VERSION,
+        )
+
+
+@pytest.mark.parametrize(
+    "aliases",
+    (
+        ("",),
+        ("K8s",),
+        (" k8s",),
+        ("k8s", "k8s"),
+        ("rust", "k8s"),
+        ("kubernetes",),
+        cast(tuple[str, ...], (False,)),
+    ),
+)
+def test_absence_coverage_rejects_noncanonical_aliases(
+    aliases: tuple[str, ...],
+) -> None:
+    with pytest.raises(ValueError, match="aliases"):
+        AbsenceCoverage(
+            1,
+            "skills",
+            "sha256",
+            ("kubernetes",),
+            aliases,
+            MATCHER_VERSION,
+        )
+
+
+@pytest.mark.parametrize(
+    "matcher_version",
+    ("", "scoring-v0", "scoring-v2", cast(str, True), cast(str, None)),
+)
+def test_absence_coverage_rejects_unknown_matcher_versions(
+    matcher_version: str,
+) -> None:
+    with pytest.raises(ValueError, match="matcher version"):
+        AbsenceCoverage(
+            1,
+            "skills",
+            "sha256",
+            ("kubernetes",),
+            (),
+            matcher_version,
+        )
 
 
 def test_contradicted_claim_rejects_mixed_polarity_evidence() -> None:
