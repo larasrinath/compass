@@ -32,12 +32,18 @@ test('plan and frontend share the four-value missing-reason domain', () => {
   const sqlDomain = plan.match(/reason CHECK\(reason IN \(([^)]+)\)\)/)?.[1]
   const planType = plan.match(/MissingSection \{[\s\S]*?reason\s+: ([^\n]+)/)?.[1]
   const frontendType = api.match(/export type MissingReason =([\s\S]*?)\n\n/)?.[1]
+  const parsingContract = plan.match(/### 13\.2 Section parsing([\s\S]*?)### 13\.3/)?.[1]
   assert.ok(sqlDomain)
   assert.ok(planType)
   assert.ok(frontendType)
+  assert.ok(parsingContract)
   assert.deepEqual(quotedValues(sqlDomain), missingReasons)
   assert.deepEqual(planType.split('|').map((reason) => reason.trim()), missingReasons)
   assert.deepEqual(quotedValues(frontendType), missingReasons)
+  assert.match(parsingContract, /Reliably parsed content with no relevant value[\s\S]*full retrieved availability[\s\S]*eligible for deterministic `not_matched`/)
+  assert.match(parsingContract, /marked unreliable by a `parse_note`[\s\S]*canonical `unparseable` missing[\s\S]*reduced availability/)
+  assert.match(parsingContract, /never produces absence coverage or `not_matched`[\s\S]*never coerced to `fetch_error`/)
+  assert.doesNotMatch(parsingContract, /parses to nothing[\s\S]*counts as \*retrieved\*/)
 })
 
 test('Gate A structurally separates candidate pool from ranking', () => {

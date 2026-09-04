@@ -1099,9 +1099,12 @@ Each section gets a parser producing `(field_key, value, span)` tuples. All pars
 | `certifications` | `{name, issuer, issued, expires}` | Block split. |
 | `projects` | `{name, dates, description}` | Block split. |
 
-Every parser is **total**: it never raises; unparseable content becomes zero fields plus a
-`parse_note` recording the fact. A section that parses to nothing still keeps its raw text and
-still counts as *retrieved* (which matters for confidence, §14.4).
+Every parser is **total**: it never raises. Reliably parsed content with no relevant value
+produces zero relevant fields, keeps its raw text, receives full retrieved availability, and is
+eligible for deterministic `not_matched`. Content marked unreliable by a `parse_note` also
+produces zero fields and keeps its raw text, but produces canonical `unparseable` missing
+provenance and reduced availability. It never produces absence coverage or `not_matched`, and
+is never coerced to `fetch_error` (§14.4).
 
 ### 13.3 LLM-assisted extraction (optional, never authoritative)
 
