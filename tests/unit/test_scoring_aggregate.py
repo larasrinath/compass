@@ -342,6 +342,31 @@ def test_negative_keywords_are_penalties_not_activation() -> None:
     assert all(item.span.snippet for item in active.penalties[0].evidence)
 
 
+def test_months_only_is_numeric_or_all_unknown() -> None:
+    numeric = calculate_score(
+        BriefInput(required_experience_months=60),
+        ScoringConfigInput(),
+        rich_snapshot(),
+        stage=ScoreStage.PROVISIONAL,
+    )
+    assert tuple(item.signal_id for item in numeric.signals) == (SignalId.EXPERIENCE,)
+    assert numeric.score == Decimal("100.000000")
+    assert numeric.calculation_status is CalculationStatus.SCORED
+
+    unknown = calculate_score(
+        BriefInput(required_experience_months=60),
+        ScoringConfigInput(),
+        ProfileSnapshot(()),
+        stage=ScoreStage.PROVISIONAL,
+    )
+    assert tuple(item.signal_id for item in unknown.signals) == (SignalId.EXPERIENCE,)
+    assert unknown.signals[0].rollup is Rollup.UNKNOWN
+    assert unknown.score is None
+    assert unknown.score_lower is None
+    assert unknown.score_upper is None
+    assert unknown.calculation_status is CalculationStatus.UNKNOWN
+
+
 def test_contradiction_penalty_is_named_and_bounded() -> None:
     result = calculate_score(
         full_brief(),
