@@ -3,7 +3,7 @@ import { verdictCopy } from './scoringCopy'
 
 export function SignalTable({ signals }: { signals: ScoreSignalRecord[] }) {
   return (
-    <div className="signal-table-wrap">
+    <div className="signal-table-wrap" role="region" aria-label="Scoring signal comparison" tabIndex={0}>
       <table className="signal-table">
         <caption>How retrieved evidence contributes to this score</caption>
         <thead>

@@ -789,8 +789,9 @@ footer strong {
 .claim-card.unknown { border-left-style: dashed; }
 .claim-heading {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
-  gap: 16px;
+  gap: 8px 16px;
 }
 .profile-evidence-list,
 .profile-evidence,
@@ -882,6 +883,8 @@ footer strong {
 }
 .signal-table {
   table-layout: fixed;
+  /* Keep normal words readable; the existing wrapper owns narrow-view scrolling. */
+  min-width: 640px;
 }
 .status-dot {
   width: 8px;

@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
 import canonicalRanking from '../tests/fixtures/canonical-ranking.json' with { type: 'json' }
 
 const filler = Array.from({ length: 180 }, (_, index) => `experience line ${index}`).join('\n')
@@ -94,6 +94,39 @@ const detail = {
     { kind: 'network', label: 'Search network', value: 'F/S' },
     { kind: 'messageability', label: 'Messageability', value: 'hint only' },
   ],
+}
+
+const mobileEvidenceDetail = {
+  ...detail,
+  score: { ...score, active_signal_count: 3 },
+  signals: [signals[0], {
+    ...signals[0], id: 'signal-optional', signal_id: 'S-2', label: 'Optional skills',
+    rollup: 'unknown', weight: 10, raw_subscore: 0, contribution: 0, availability: 0,
+    claims: [{ ...signals[0].claims[1], id: 'claim-go', display_term: 'Go' }],
+  }, {
+    ...signals[0], id: 'signal-title', signal_id: 'S-4', label: 'Target title',
+    rollup: 'not_matched', weight: 15, raw_subscore: 0, contribution: 0, availability: 1,
+    claims: [{ ...signals[0].claims[2], id: 'claim-title', display_term: 'Director' }],
+  }],
+}
+
+// Measure rendered word fragments, rather than accepting a contained but unreadable layout.
+async function wordsBrokenAcrossLines(locator: Locator) {
+  return locator.evaluate((element) => {
+    const broken: string[] = []
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT)
+    while (walker.nextNode()) {
+      const node = walker.currentNode
+      for (const match of (node.textContent ?? '').matchAll(/\p{L}+/gu)) {
+        const range = document.createRange()
+        range.setStart(node, match.index)
+        range.setEnd(node, match.index + match[0].length)
+        const lines = new Set(Array.from(range.getClientRects(), (rect) => Math.round(rect.top)))
+        if (lines.size > 1) broken.push(match[0])
+      }
+    }
+    return broken
+  })
 }
 
 const sessionBase = {
@@ -386,6 +419,49 @@ test('ranked and detail layouts stay readable at narrow width with non-color cue
   await expect(unparseable).not.toContainText('Searched every required retrieved section')
   await expect(page.getByText('○ not matched')).toBeVisible()
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy()
+})
+
+test('mobile signal table keeps normal words intact and supports keyboard scrolling', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await mockApi(page, true, false, mobileEvidenceDetail)
+  await page.goto('/candidates/candidate-1')
+  const table = page.locator('.signal-table')
+  await expect(table).toBeVisible()
+  expect(await wordsBrokenAcrossLines(table)).toEqual([])
+  const scrollRegion = page.getByRole('region', { name: 'Scoring signal comparison' })
+  expect(await scrollRegion.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true)
+  await scrollRegion.focus()
+  await expect(scrollRegion).toBeFocused()
+  await expect(scrollRegion).toHaveCSS('outline-style', 'solid')
+  await page.keyboard.press('ArrowRight')
+  await expect.poll(() => scrollRegion.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+})
+
+test('mobile claim headings keep Go and Rust intact beside lowercase unknown copy', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await mockApi(page, true, false, mobileEvidenceDetail)
+  await page.goto('/candidates/candidate-1')
+  const claims = page.locator('.signal-claims')
+  await expect(claims).toBeVisible()
+  for (const heading of await claims.locator('.claim-heading').all()) {
+    expect(await wordsBrokenAcrossLines(heading)).toEqual([])
+  }
+  for (const term of ['Go', 'Rust']) {
+    const claim = claims.locator('.claim-card').filter({ has: page.getByText(term, { exact: true }) })
+    await expect(claim.locator('strong')).toHaveText(term)
+    const verdict = claim.locator('.verdict-symbol')
+    await expect(verdict).toHaveCSS('text-transform', 'none')
+    expect(await verdict.innerText()).toBe('? not found in the retrieved data')
+    await expect(claim).toHaveCSS('border-left-style', 'dashed')
+  }
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  await page.screenshot({ path: testInfo.outputPath('evidence-mobile-readable.png'), fullPage: true })
+  const panelBox = await page.locator('.evidence-panel').boundingBox()
+  if (!panelBox) throw new Error('Evidence panel has no rendered bounds')
+  await page.screenshot({
+    path: testInfo.outputPath('evidence-mobile-panel.png'), fullPage: true, clip: panelBox,
+  })
 })
 
 test('hostile unbroken API strings never widen the 390px candidate views', async ({ page }) => {
