@@ -70,16 +70,18 @@ STATEMENTS = (
 def _preflight_storage_classes(connection: Connection) -> None:
     for table, column, invalid_predicate in _STORAGE_CHECKS:
         if table == "role_brief":
-            source = '"role_brief" subject'
-            session_column = "subject.session_id"
+            source = (
+                '"role_brief" subject LEFT JOIN session owning_session '
+                "ON owning_session.id=subject.session_id"
+            )
         else:
             source = (
                 f'"{table}" subject LEFT JOIN role_brief owner '
-                "ON owner.id=subject.brief_id"
+                "ON owner.id=subject.brief_id LEFT JOIN session owning_session "
+                "ON owning_session.id=owner.session_id"
             )
-            session_column = "owner.session_id"
         invalid = connection.exec_driver_sql(
-            f'SELECT subject.id,typeof(subject."{column}"),{session_column} '
+            f'SELECT subject.id,typeof(subject."{column}"),owning_session.id '
             f"FROM {source} "
             f"WHERE {invalid_predicate} ORDER BY subject.id LIMIT 1"
         ).first()

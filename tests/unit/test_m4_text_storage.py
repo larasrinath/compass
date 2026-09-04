@@ -517,25 +517,89 @@ def test_exact_v27_blob_fails_v28_atomically_then_purge_retries(
         assert names.issuperset(v0028_m4_text_storage.TRIGGER_NAMES)
 
 
+def test_v28_missing_session_owner_requires_database_backup_restore(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "v27-unresolved-role-brief.db"
+    _initialize_exact_v27(path, monkeypatch)
+    with _connect(path) as connection:
+        _seed_session(connection, "gone-session")
+        _insert_brief(
+            connection,
+            brief_id="orphan-role-brief",
+            version=1,
+            session_id="gone-session",
+            location=b"Chicago",
+        )
+        connection.execute("DELETE FROM session WHERE id='gone-session'")
+        baseline_schema = connection.execute(
+            "SELECT type,name,sql FROM sqlite_master "
+            "WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
+        ).fetchall()
+
+    failed = Database(path)
+    try:
+        with pytest.raises(RuntimeError) as error:
+            failed.initialize()
+    finally:
+        failed.dispose()
+    assert str(error.value) == (
+        f"cannot apply {v0028_m4_text_storage.VERSION}: role_brief.location for row "
+        "orphan-role-brief uses SQLite blob storage; restore the database from a "
+        "known-good backup before retrying"
+    )
+    _assert_no_direct_row_repair_guidance(str(error.value))
+    assert "purge owning session 'gone-session'" not in str(error.value)
+
+    with _connect(path) as connection:
+        assert (
+            connection.execute(
+                "SELECT 1 FROM schema_migration WHERE version=?",
+                (v0028_m4_text_storage.VERSION,),
+            ).fetchone()
+            is None
+        )
+        assert (
+            connection.execute(
+                "SELECT type,name,sql FROM sqlite_master "
+                "WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
+            ).fetchall()
+            == baseline_schema
+        )
+        assert connection.execute(
+            "SELECT typeof(location) FROM role_brief WHERE id='orphan-role-brief'"
+        ).fetchone() == ("blob",)
+
+
+@pytest.mark.parametrize("owner_state", ["missing_session", "missing_brief"])
 @pytest.mark.parametrize("table", ["brief_skill", "brief_term", "brief_credential"])
 def test_v28_unresolved_owner_requires_database_backup_restore(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, table: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    table: str,
+    owner_state: str,
 ) -> None:
-    path = tmp_path / f"v27-unresolved-{table}.db"
+    path = tmp_path / f"v27-{owner_state}-{table}.db"
     _initialize_exact_v27(path, monkeypatch)
     row_id = f"orphan-{table}"
     with _connect(path) as connection:
-        _seed_session(connection)
-        _insert_brief(connection, brief_id="missing-brief", version=1)
+        _seed_session(connection, "gone-session")
+        _insert_brief(
+            connection,
+            brief_id="owner-brief",
+            version=1,
+            session_id="gone-session",
+        )
         _insert_child(
             connection,
             table,
-            brief_id="missing-brief",
+            brief_id="owner-brief",
             row_id=row_id,
             aliases=b"[]",
         )
-        connection.execute("DELETE FROM session WHERE id='text-session'")
-        connection.execute("DELETE FROM role_brief WHERE id='missing-brief'")
+        connection.execute("DELETE FROM session WHERE id='gone-session'")
+        if owner_state == "missing_brief":
+            connection.execute("DELETE FROM role_brief WHERE id='owner-brief'")
         baseline_schema = connection.execute(
             "SELECT type,name,sql FROM sqlite_master "
             "WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
@@ -553,6 +617,7 @@ def test_v28_unresolved_owner_requires_database_backup_restore(
         "known-good backup before retrying"
     )
     _assert_no_direct_row_repair_guidance(str(error.value))
+    assert "purge owning session 'gone-session'" not in str(error.value)
 
     with _connect(path) as connection:
         assert (
