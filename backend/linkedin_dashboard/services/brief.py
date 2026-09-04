@@ -248,6 +248,8 @@ class BriefService:
         self._transition_lock = database.transition_lock
 
     def create_session(self, label: str, nav_budget: int = 120) -> DashboardSession:
+        if type(label) is not str:
+            raise ValueError("session label must be a string")
         with self._transition_lock:
             return self._create_session_locked(label, nav_budget)
 
@@ -316,6 +318,8 @@ class BriefService:
             return row
 
     def save(self, session_id: str, value: BriefValue) -> tuple[RoleBrief, int]:
+        if type(session_id) is not str:
+            raise ValueError("session_id must be a string")
         value = normalize_brief(value)
         manifest = scoring_inputs(value)
         # SQLite serializes writers, but a process-local lock prevents two

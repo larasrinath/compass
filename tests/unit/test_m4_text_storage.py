@@ -6,13 +6,18 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from linkedin_dashboard.api.discovery import BriefInput
+from linkedin_dashboard.api.discovery import BriefInput, SessionCreate
 from linkedin_dashboard.db import session as db_session
 from linkedin_dashboard.db.migrations import v0028_m4_text_storage
 from linkedin_dashboard.db.scoring_manifest import build_manifest
 from linkedin_dashboard.db.session import Database
 from linkedin_dashboard.db.unicode_identity import register_sqlite_unicode_casefold
-from linkedin_dashboard.services.brief import BriefValue, TermValue, normalize_brief
+from linkedin_dashboard.services.brief import (
+    BriefService,
+    BriefValue,
+    TermValue,
+    normalize_brief,
+)
 from pydantic import ValidationError
 
 
@@ -57,9 +62,12 @@ def _manifest(
     )
 
 
-def _seed_session(connection: sqlite3.Connection) -> None:
+def _seed_session(
+    connection: sqlite3.Connection, session_id: str = "text-session"
+) -> None:
     connection.execute(
-        "INSERT INTO session VALUES ('text-session','now','storage','later',120,0,0)"
+        "INSERT INTO session VALUES (?, 'now','storage','later',120,0,0)",
+        (session_id,),
     )
 
 
@@ -68,6 +76,7 @@ def _insert_brief(
     *,
     brief_id: str,
     version: int,
+    session_id: str = "text-session",
     location: str | bytes = "",
     scoring_inputs: str | bytes | None = None,
     sealed: bool = False,
@@ -78,10 +87,11 @@ def _insert_brief(
         "job_description,target_titles,location,industries,positive_keywords,"
         "negative_keywords,message_tone,required_experience_months,"
         "weights_version,scoring_inputs) VALUES "
-        "(?,'text-session',?,'now',?,'past','job','[]',?,'[]','[\"platform\"]',"
+        "(?,?,?,'now',?,'past','job','[]',?,'[]','[\"platform\"]',"
         "'[]','plain',NULL,'1',?)",
         (
             brief_id,
+            session_id,
             version,
             "now" if sealed else None,
             location,
@@ -118,7 +128,7 @@ def _insert_child(
 
 def _seed_v27_blob(
     connection: sqlite3.Connection, target: str, *, recursive_triggers: str
-) -> tuple[str, str, bytes]:
+) -> tuple[str, str, str, bytes]:
     connection.execute("PRAGMA trusted_schema=OFF")
     connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
     _seed_session(connection)
@@ -170,20 +180,18 @@ def _seed_v27_blob(
     )
     column = "aliases" if target.startswith("brief_") else target
     table = target if target.startswith("brief_") else "role_brief"
+    row_id = f"child-{target}" if target.startswith("brief_") else brief_id
     assert connection.execute(
-        f'SELECT typeof("{column}") FROM "{table}" LIMIT 1'
+        f'SELECT typeof("{column}") FROM "{table}" WHERE id=?', (row_id,)
     ).fetchone() == ("blob",)
-    return table, column, blob
+    return table, column, row_id, blob
 
 
-def _purge_with_migration_reconciliation(path: Path) -> None:
+def _purge_affected_session(path: Path, *, recursive_triggers: str) -> None:
     with _connect(path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
-        for (name,) in connection.execute(
-            "SELECT name FROM sqlite_master WHERE type='trigger'"
-        ).fetchall():
-            if name != "phase_gate_manifest_insert":
-                connection.execute(f'DROP TRIGGER "{name}"')
+        connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
+        connection.execute("PRAGMA trusted_schema=OFF")
         connection.execute("DELETE FROM session WHERE id='text-session'")
 
 
@@ -266,27 +274,69 @@ def _brief_payload() -> dict[str, Any]:
     }
 
 
+@pytest.mark.parametrize("byte_like", [bytes, bytearray, memoryview])
 @pytest.mark.parametrize(
-    ("field", "value"),
+    "field",
     [
-        ("location", b"Chicago"),
-        ("term", b"Python"),
-        ("aliases", [b"py"]),
+        "session_id",
+        "job_description",
+        "term",
+        "aliases",
+        "location",
+        "positive_keywords",
+        "negative_keywords",
+        "message_tone",
     ],
 )
-def test_brief_api_models_reject_bytes(field: str, value: object) -> None:
+def test_brief_api_models_reject_byte_like_text(
+    field: str, byte_like: type[bytes] | type[bytearray] | type[memoryview]
+) -> None:
     payload = _brief_payload()
-    if field == "location":
-        payload[field] = value
+    unsafe = byte_like(b"text")
+    if field == "term":
+        payload["required_skills"][0][field] = unsafe
+    elif field == "aliases":
+        payload["required_skills"][0][field] = [unsafe]
+    elif field in {"positive_keywords", "negative_keywords"}:
+        payload[field] = [unsafe]
     else:
-        payload["required_skills"][0][field] = value
+        payload[field] = unsafe
     with pytest.raises(ValidationError):
         BriefInput.model_validate(payload)
 
 
+@pytest.mark.parametrize("byte_like", [bytes, bytearray, memoryview])
+def test_session_create_rejects_byte_like_label(
+    byte_like: type[bytes] | type[bytearray] | type[memoryview],
+) -> None:
+    with pytest.raises(ValidationError):
+        SessionCreate.model_validate({"label": byte_like(b"label")})
+
+
+def test_brief_api_models_keep_valid_text_unchanged() -> None:
+    payload = _brief_payload()
+    payload["required_skills"][0]["aliases"] = ["py"]
+    payload["location"] = "Chicago"
+    payload["positive_keywords"] = ["platform"]
+    payload["negative_keywords"] = ["intern"]
+    model = BriefInput.model_validate(payload)
+    assert model.session_id == "session"
+    assert model.job_description == "Platform engineer"
+    assert model.required_skills[0].term == "Python"
+    assert model.required_skills[0].aliases == ["py"]
+    assert model.location == "Chicago"
+    assert model.positive_keywords == ["platform"]
+    assert model.negative_keywords == ["intern"]
+    assert model.message_tone == "Direct"
+    assert SessionCreate.model_validate({"label": "Hiring"}).label == "Hiring"
+
+
+@pytest.mark.parametrize("byte_like", [bytes, bytearray, memoryview])
 @pytest.mark.parametrize("field", ["location", "term", "alias", "keyword"])
-def test_brief_service_rejects_bytes(field: str) -> None:
-    unsafe = cast(Any, b"bytes")
+def test_brief_service_rejects_byte_like_text(
+    field: str, byte_like: type[bytes] | type[bytearray] | type[memoryview]
+) -> None:
+    unsafe = cast(Any, byte_like(b"bytes"))
     value = BriefValue(
         job_description="job",
         required_skills=(
@@ -305,6 +355,38 @@ def test_brief_service_rejects_bytes(field: str) -> None:
     )
     with pytest.raises(ValueError, match="must be strings"):
         normalize_brief(value)
+
+
+@pytest.mark.parametrize("byte_like", [bytes, bytearray, memoryview])
+def test_brief_service_rejects_byte_like_identifiers(
+    tmp_path: Path,
+    byte_like: type[bytes] | type[bytearray] | type[memoryview],
+) -> None:
+    database = Database(tmp_path / f"service-{byte_like.__name__}.db")
+    database.initialize()
+    service = BriefService(database)
+    unsafe = cast(Any, byte_like(b"text"))
+    try:
+        with pytest.raises(ValueError, match="session label must be a string"):
+            service.create_session(unsafe)
+        valid_session = service.create_session("Hiring")
+        value = BriefValue(
+            job_description="job",
+            required_skills=(TermValue("Python"),),
+            optional_skills=(),
+            target_titles=(),
+            location="",
+            industries=(),
+            positive_keywords=(),
+            negative_keywords=(),
+            message_tone="Direct",
+        )
+        with pytest.raises(ValueError, match="session_id must be a string"):
+            service.save(unsafe, value)
+        saved, _ = service.save(valid_session.id, value)
+        assert saved.session_id == valid_session.id
+    finally:
+        database.dispose()
 
 
 @pytest.mark.parametrize("recursive_triggers", ["ON", "OFF"])
@@ -327,9 +409,21 @@ def test_exact_v27_blob_fails_v28_atomically_then_purge_retries(
     path = tmp_path / f"v27-{target}-{recursive_triggers.lower()}.db"
     _initialize_exact_v27(path, monkeypatch)
     with _connect(path) as connection:
-        table, column, blob = _seed_v27_blob(
+        table, column, row_id, blob = _seed_v27_blob(
             connection, target, recursive_triggers=recursive_triggers
         )
+        _seed_session(connection, "unrelated-session")
+        _insert_brief(
+            connection,
+            brief_id="unrelated-brief",
+            version=1,
+            session_id="unrelated-session",
+            scoring_inputs=_manifest(),
+            sealed=True,
+        )
+        unrelated_before = connection.execute(
+            "SELECT * FROM role_brief WHERE id='unrelated-brief'"
+        ).fetchone()
         baseline_schema = connection.execute(
             "SELECT type,name,sql FROM sqlite_master "
             "WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
@@ -339,7 +433,10 @@ def test_exact_v27_blob_fails_v28_atomically_then_purge_retries(
     try:
         with pytest.raises(
             RuntimeError,
-            match=rf"{table}\.{column}.*SQLite blob storage.*restore.*purge",
+            match=(
+                rf"{table}\.{column}.*SQLite blob storage.*restore.*"
+                r"purge affected session 'text-session'.*session-purge"
+            ),
         ):
             failed.initialize()
     finally:
@@ -361,10 +458,29 @@ def test_exact_v27_blob_fails_v28_atomically_then_purge_retries(
             == baseline_schema
         )
         assert connection.execute(
-            f'SELECT "{column}" FROM "{table}" LIMIT 1'
+            f'SELECT "{column}" FROM "{table}" WHERE id=?', (row_id,)
         ).fetchone() == (blob,)
+        assert (
+            connection.execute(
+                "SELECT * FROM role_brief WHERE id='unrelated-brief'"
+            ).fetchone()
+            == unrelated_before
+        )
 
-    _purge_with_migration_reconciliation(path)
+    _purge_affected_session(path, recursive_triggers=recursive_triggers)
+    with _connect(path) as connection:
+        assert (
+            connection.execute(
+                "SELECT 1 FROM session WHERE id='text-session'"
+            ).fetchone()
+            is None
+        )
+        assert (
+            connection.execute(
+                "SELECT * FROM role_brief WHERE id='unrelated-brief'"
+            ).fetchone()
+            == unrelated_before
+        )
     retry = Database(path)
     retry.initialize()
     retry.dispose()
@@ -374,6 +490,12 @@ def test_exact_v27_blob_fails_v28_atomically_then_purge_retries(
         ).fetchone() == (28,)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        assert (
+            connection.execute(
+                "SELECT * FROM role_brief WHERE id='unrelated-brief'"
+            ).fetchone()
+            == unrelated_before
+        )
         names = {
             row[0]
             for row in connection.execute(

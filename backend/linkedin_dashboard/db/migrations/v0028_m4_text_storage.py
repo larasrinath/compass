@@ -10,16 +10,17 @@ from linkedin_dashboard.db.migrations import v0027_m4_bounded_manifests as v27
 VERSION = "0028_m4_text_storage"
 
 _STORAGE_CHECKS = (
-    ("role_brief", "location", "typeof(location)<>'text'"),
+    ("role_brief", "location", "typeof(subject.location)<>'text'"),
     (
         "role_brief",
         "scoring_inputs",
-        "(scoring_inputs IS NOT NULL AND typeof(scoring_inputs)<>'text') "
-        "OR (sealed_at IS NOT NULL AND scoring_inputs IS NULL)",
+        "(subject.scoring_inputs IS NOT NULL "
+        "AND typeof(subject.scoring_inputs)<>'text') "
+        "OR (subject.sealed_at IS NOT NULL AND subject.scoring_inputs IS NULL)",
     ),
-    ("brief_skill", "aliases", "typeof(aliases)<>'text'"),
-    ("brief_term", "aliases", "typeof(aliases)<>'text'"),
-    ("brief_credential", "aliases", "typeof(aliases)<>'text'"),
+    ("brief_skill", "aliases", "typeof(subject.aliases)<>'text'"),
+    ("brief_term", "aliases", "typeof(subject.aliases)<>'text'"),
+    ("brief_credential", "aliases", "typeof(subject.aliases)<>'text'"),
 )
 
 TRIGGER_NAMES = (
@@ -68,15 +69,35 @@ STATEMENTS = (
 
 def _preflight_storage_classes(connection: Connection) -> None:
     for table, column, invalid_predicate in _STORAGE_CHECKS:
+        if table == "role_brief":
+            source = '"role_brief" subject'
+            session_column = "subject.session_id"
+        else:
+            source = (
+                f'"{table}" subject LEFT JOIN role_brief owner '
+                "ON owner.id=subject.brief_id"
+            )
+            session_column = "owner.session_id"
         invalid = connection.exec_driver_sql(
-            f'SELECT id,typeof("{column}") FROM "{table}" '
-            f"WHERE {invalid_predicate} ORDER BY id LIMIT 1"
+            f'SELECT subject.id,typeof(subject."{column}"),{session_column} '
+            f"FROM {source} "
+            f"WHERE {invalid_predicate} ORDER BY subject.id LIMIT 1"
         ).first()
         if invalid is not None:
+            if isinstance(invalid[2], str) and invalid[2]:
+                purge = (
+                    f"purge affected session {invalid[2]!r} through the supported "
+                    "session-purge workflow"
+                )
+            else:
+                purge = (
+                    "purge the session owning the affected brief through the "
+                    "supported session-purge workflow"
+                )
             raise RuntimeError(
                 f"cannot apply {VERSION}: {table}.{column} for row {invalid[0]} "
                 f"uses SQLite {invalid[1]} storage; restore canonical TEXT from a "
-                "known-good value or purge the affected brief before retrying"
+                f"known-good value or {purge} before retrying"
             )
 
 

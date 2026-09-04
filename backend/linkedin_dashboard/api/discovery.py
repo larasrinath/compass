@@ -33,7 +33,7 @@ def get_search_service(request: Request) -> SearchService:
 class SessionCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    label: str = Field(min_length=1, max_length=120)
+    label: StrictStr = Field(min_length=1, max_length=120)
     nav_budget: int = Field(default=120, ge=1, le=500)
 
 
@@ -62,20 +62,20 @@ class BriefTermInput(BaseModel):
 class BriefInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    session_id: str = Field(min_length=1, max_length=36)
-    job_description: str = Field(min_length=1, max_length=30_000)
+    session_id: StrictStr = Field(min_length=1, max_length=36)
+    job_description: StrictStr = Field(min_length=1, max_length=30_000)
     required_skills: list[BriefTermInput] = Field(default_factory=list, max_length=100)
     optional_skills: list[BriefTermInput] = Field(default_factory=list, max_length=100)
     target_titles: list[BriefTermInput] = Field(default_factory=list, max_length=100)
     location: StrictStr = Field(default="", max_length=240)
     industries: list[BriefTermInput] = Field(default_factory=list, max_length=100)
-    positive_keywords: list[Annotated[str, Field(max_length=160)]] = Field(
+    positive_keywords: list[Annotated[StrictStr, Field(max_length=160)]] = Field(
         default_factory=list, max_length=100
     )
-    negative_keywords: list[Annotated[str, Field(max_length=160)]] = Field(
+    negative_keywords: list[Annotated[StrictStr, Field(max_length=160)]] = Field(
         default_factory=list, max_length=100
     )
-    message_tone: str = Field(default="Professional and concise", max_length=500)
+    message_tone: StrictStr = Field(default="Professional and concise", max_length=500)
     required_experience_months: StrictInt | None = Field(default=None, ge=0)
     required_credentials: list[BriefTermInput] | None = Field(
         default=None, max_length=100
