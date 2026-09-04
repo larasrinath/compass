@@ -14,7 +14,9 @@ from linkedin_dashboard.db import session as db_session
 from linkedin_dashboard.db.migrations import (
     v0001_constraints,
     v0015_approved_evidence_roots,
+    v0023_m4_scoring,
     v0024_m4_integrity_upgrade,
+    v0025_m4_semantic_integrity,
 )
 from linkedin_dashboard.db.session import Database
 from linkedin_dashboard.db.unicode_identity import register_sqlite_unicode_casefold
@@ -309,7 +311,7 @@ def test_migrated_v22_score_signal_is_immutable_until_session_purge(
     legacy = Database(path)
     try:
         with monkeypatch.context() as patch:
-            patch.setattr(db_session, "_MIGRATION_MODULES", modules[:-2])
+            patch.setattr(db_session, "_MIGRATION_MODULES", modules[:-3])
             legacy.initialize()
             with legacy.engine.begin() as connection:
                 connection.exec_driver_sql(
@@ -421,7 +423,7 @@ def _initialize_v23_database(
     database = Database(path)
     try:
         with monkeypatch.context() as patch:
-            patch.setattr(db_session, "_MIGRATION_MODULES", modules[:-1])
+            patch.setattr(db_session, "_MIGRATION_MODULES", modules[:-2])
             database.initialize()
             if populated:
                 with database.engine.begin() as connection:
@@ -502,7 +504,7 @@ def _initialize_v23_database(
 
 
 @pytest.mark.parametrize("populated", [False, True])
-def test_exact_v23_database_upgrades_to_v24_without_data_loss(
+def test_exact_v23_database_upgrades_through_v25_without_data_loss(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, populated: bool
 ) -> None:
     path = tmp_path / f"exact-v23-{'populated' if populated else 'blank'}.db"
@@ -528,10 +530,14 @@ def test_exact_v23_database_upgrades_to_v24_without_data_loss(
     with _maintenance_connect(path) as connection:
         assert connection.execute(
             "SELECT count(*) FROM schema_migration"
-        ).fetchone() == (24,)
+        ).fetchone() == (25,)
         assert connection.execute(
             "SELECT 1 FROM schema_migration WHERE version=?",
             (v0024_m4_integrity_upgrade.VERSION,),
+        ).fetchone() == (1,)
+        assert connection.execute(
+            "SELECT 1 FROM schema_migration WHERE version=?",
+            (v0025_m4_semantic_integrity.VERSION,),
         ).fetchone() == (1,)
         for table, rows in before.items():
             assert connection.execute(f'SELECT * FROM "{table}"').fetchall() == rows
@@ -616,6 +622,162 @@ def test_v24_failure_rolls_back_and_retry_succeeds(
         )
 
     monkeypatch.setattr(v0024_m4_integrity_upgrade, "apply", original_apply)
+    retry = Database(path)
+    retry.initialize()
+    retry.dispose()
+
+
+def _initialize_exact_v24_database(
+    path: Path, monkeypatch: pytest.MonkeyPatch, *, populated: bool
+) -> None:
+    _initialize_v23_database(path, monkeypatch, populated=populated)
+    modules = db_session._MIGRATION_MODULES
+    db_session._expected_schema.cache_clear()
+    database = Database(path)
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(db_session, "_MIGRATION_MODULES", modules[:-1])
+            database.initialize()
+            with database.engine.connect() as connection:
+                assert (
+                    connection.exec_driver_sql(
+                        "SELECT count(*) FROM schema_migration"
+                    ).scalar_one()
+                    == 24
+                )
+    finally:
+        database.dispose()
+        db_session._expected_schema.cache_clear()
+
+    # The replacement model knows about the v25 column. Remove it to reproduce
+    # the exact schema emitted by the prior v24 head rather than a hybrid fixture.
+    with _maintenance_connect(path) as connection:
+        connection.execute("DROP TRIGGER role_brief_append_only")
+        connection.execute("ALTER TABLE role_brief DROP COLUMN scoring_inputs")
+        old_trigger = next(
+            statement
+            for statement in v0023_m4_scoring.STATEMENTS
+            if statement.startswith("CREATE TRIGGER role_brief_append_only")
+        )
+        connection.execute(old_trigger)
+
+
+@pytest.mark.parametrize("populated", [False, True])
+def test_exact_v24_database_upgrades_to_v25_atomically(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, populated: bool
+) -> None:
+    path = tmp_path / f"exact-v24-{'populated' if populated else 'blank'}.db"
+    _initialize_exact_v24_database(path, monkeypatch, populated=populated)
+    with _maintenance_connect(path) as connection:
+        before = {
+            table: connection.execute(f'SELECT * FROM "{table}"').fetchall()
+            for table in (
+                "session",
+                "candidate",
+                "score",
+                "score_signal",
+                "evidence",
+                "message_draft",
+                "phase_gate",
+            )
+        }
+
+    upgraded = Database(path)
+    upgraded.initialize()
+    upgraded.dispose()
+
+    with _maintenance_connect(path) as connection:
+        assert connection.execute(
+            "SELECT count(*) FROM schema_migration"
+        ).fetchone() == (25,)
+        assert connection.execute(
+            "SELECT 1 FROM schema_migration WHERE version=?",
+            (v0025_m4_semantic_integrity.VERSION,),
+        ).fetchone() == (1,)
+        for table, rows in before.items():
+            assert connection.execute(f'SELECT * FROM "{table}"').fetchall() == rows
+        columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(role_brief)")
+        }
+        assert "scoring_inputs" in columns
+        if populated:
+            manifest = json.loads(
+                connection.execute(
+                    "SELECT scoring_inputs FROM role_brief WHERE id='v23-brief'"
+                ).fetchone()[0]
+            )
+            assert manifest["matcher_version"] == "scoring-v1"
+            assert manifest["S-1"] == []
+        for name in v0025_m4_semantic_integrity.TRIGGER_NAMES:
+            assert connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?", (name,)
+            ).fetchone() == (1,)
+        assert connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index' "
+            "AND name='score_signal_identity_v25'"
+        ).fetchone() == (1,)
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        if populated:
+            connection.execute("PRAGMA foreign_keys=ON")
+            connection.execute("DELETE FROM session WHERE id='v23-session'")
+            for table in (
+                "candidate",
+                "role_brief",
+                "score",
+                "score_signal",
+                "evidence",
+                "message_draft",
+                "phase_gate",
+            ):
+                assert connection.execute(
+                    f'SELECT count(*) FROM "{table}"'
+                ).fetchone() == (0,)
+
+
+def test_v25_failure_rolls_back_exact_v24_and_retry_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "v25-interrupted.db"
+    _initialize_exact_v24_database(path, monkeypatch, populated=True)
+    baseline_schema = _schema_objects(path)
+    with _maintenance_connect(path) as connection:
+        baseline_data = {
+            table: connection.execute(f'SELECT * FROM "{table}"').fetchall()
+            for table in ("role_brief", "score", "score_signal", "evidence")
+        }
+
+    original_apply = v0025_m4_semantic_integrity.apply
+
+    def interrupted_apply(connection) -> None:
+        v0025_m4_semantic_integrity._prepare_brief_manifests(connection)
+        v0025_m4_semantic_integrity._preflight(connection)
+        for index, statement in enumerate(
+            v0025_m4_semantic_integrity.STATEMENTS, start=1
+        ):
+            connection.exec_driver_sql(statement)
+            if index == 3:
+                raise RuntimeError("interrupted during v25")
+
+    monkeypatch.setattr(v0025_m4_semantic_integrity, "apply", interrupted_apply)
+    failed = Database(path)
+    with pytest.raises(RuntimeError, match="interrupted during v25"):
+        failed.initialize()
+    failed.dispose()
+
+    assert _schema_objects(path) == baseline_schema
+    with _maintenance_connect(path) as connection:
+        for table, rows in baseline_data.items():
+            assert connection.execute(f'SELECT * FROM "{table}"').fetchall() == rows
+        assert (
+            connection.execute(
+                "SELECT 1 FROM schema_migration WHERE version=?",
+                (v0025_m4_semantic_integrity.VERSION,),
+            ).fetchone()
+            is None
+        )
+
+    monkeypatch.setattr(v0025_m4_semantic_integrity, "apply", original_apply)
     retry = Database(path)
     retry.initialize()
     retry.dispose()

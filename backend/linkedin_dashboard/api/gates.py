@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import IntegrityError
 
 from linkedin_dashboard.api._filters import redact_provenance_text
@@ -241,6 +241,16 @@ def accept_gate_b(
                         Evidence.purged_at.is_(None),
                         Evidence.evidence_set_id.is_not(None),
                         ScoreClaim.verdict.in_(("matched", "contradicted")),
+                        or_(
+                            and_(
+                                ScoreClaim.verdict == "matched",
+                                Evidence.polarity == "supporting",
+                            ),
+                            and_(
+                                ScoreClaim.verdict == "contradicted",
+                                Evidence.polarity == "contradicting",
+                            ),
+                        ),
                     )
                 ).all()
                 by_id = {

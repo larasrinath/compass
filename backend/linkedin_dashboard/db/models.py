@@ -113,6 +113,7 @@ class RoleBrief(Base):
     message_tone: Mapped[str] = mapped_column(Text, nullable=False)
     required_experience_months: Mapped[int | None] = mapped_column(Integer)
     weights_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    scoring_inputs: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
 
 class BriefSkill(Base):

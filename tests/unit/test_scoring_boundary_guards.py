@@ -13,7 +13,11 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 from linkedin_dashboard.api.scoring import _sort_ranked_records
-from linkedin_dashboard.db.migrations import v0023_m4_scoring
+from linkedin_dashboard.db.migrations import (
+    v0023_m4_scoring,
+    v0024_m4_integrity_upgrade,
+    v0025_m4_semantic_integrity,
+)
 from linkedin_dashboard.db.models import (
     BriefCredential,
     Candidate,
@@ -29,6 +33,7 @@ from linkedin_dashboard.db.models import (
     SectionError,
     SignalMissingSection,
 )
+from linkedin_dashboard.db.session import Database
 from linkedin_dashboard.db.unicode_identity import register_sqlite_unicode_casefold
 from linkedin_dashboard.main import create_app
 from linkedin_dashboard.queue.jobs import JobPayload
@@ -121,6 +126,95 @@ def _brief(session_id: str, **changes: Any) -> dict[str, Any]:
     }
     payload.update(changes)
     return payload
+
+
+def _search_result() -> dict[str, Any]:
+    return {
+        "url": "https://www.linkedin.com/search/results/people/",
+        "sections": {"search_results": "Ada Example"},
+        "references": {
+            "search_results": [
+                {"kind": "person", "url": "/in/ada/", "text": "Ada Example"}
+            ]
+        },
+    }
+
+
+def _profile_result(**sections: str) -> dict[str, Any]:
+    return {"url": "https://www.linkedin.com/in/ada/", "sections": sections}
+
+
+def _downgrade_v25_schema_to_v24(connection: sqlite3.Connection) -> None:
+    for name in (
+        "score_claim_finalize_v25",
+        "score_finalize_signal_set_v25",
+        "signal_coverage_shape_v25",
+        "phase_gate_manifest_insert",
+        "role_brief_append_only",
+    ):
+        connection.execute(f'DROP TRIGGER "{name}"')
+    connection.execute("DROP INDEX score_signal_identity_v25")
+    connection.execute("ALTER TABLE role_brief DROP COLUMN scoring_inputs")
+    connection.execute(
+        next(
+            statement
+            for statement in v0023_m4_scoring.STATEMENTS
+            if statement.startswith("CREATE TRIGGER role_brief_append_only")
+        )
+    )
+    connection.execute(
+        next(
+            statement
+            for statement in v0024_m4_integrity_upgrade.STATEMENTS
+            if statement.startswith("CREATE TRIGGER phase_gate_manifest_insert")
+        )
+    )
+    connection.execute(
+        "DELETE FROM schema_migration WHERE version=?",
+        (v0025_m4_semantic_integrity.VERSION,),
+    )
+
+
+def _seed_profile_database(
+    path: Path, *, stage_one: dict[str, Any], stage_two: dict[str, Any]
+) -> str:
+    executor = SequenceExecutor([_search_result(), stage_one, stage_two])
+    app = create_app(_settings(path), queue_executor=executor)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        session_id = client.post("/api/session", json={"label": "migration"}).json()[
+            "id"
+        ]
+        brief = client.post(
+            "/api/briefs", json=_brief(session_id, required_credentials=[])
+        ).json()
+        search = client.post(
+            "/api/searches",
+            json={
+                "session_id": session_id,
+                "brief_id": brief["id"],
+                "keywords": "platform",
+            },
+        ).json()
+        assert _wait(app, search["job_id"]).state == "done"
+        candidate_id = client.get(
+            "/api/candidate-pool", params={"session_id": session_id}
+        ).json()[0]["id"]
+        first = client.post(f"/api/candidates/{candidate_id}/enrich", json={}).json()
+        assert _wait(app, first["job_id"]).state == "done"
+        second = client.post(
+            f"/api/candidates/{candidate_id}/enrich",
+            json={"sections": ["skills"]},
+        ).json()
+        assert _wait(app, second["job_id"]).state == "done"
+        with app.state.database.sessions() as session:
+            score_id = session.scalar(
+                select(CandidateScore.id).where(
+                    CandidateScore.candidate_id == candidate_id,
+                    CandidateScore.is_current.is_(True),
+                )
+            )
+            assert score_id is not None
+            return score_id
 
 
 def _seed_current_score(app: Any, client: TestClient) -> tuple[str, str, str]:
@@ -492,6 +586,537 @@ def test_rank_sort_modes_are_stable_and_null_last() -> None:
         "b",
         "c",
     ]
+
+
+def test_ranked_headline_never_resurrects_an_older_parse(tmp_path: Path) -> None:
+    executor = SequenceExecutor(
+        [
+            _search_result(),
+            _profile_result(main_profile="Ada Example\nPlatform Engineer"),
+            _profile_result(main_profile="Ada Example"),
+        ]
+    )
+    app = create_app(
+        _settings(tmp_path / "headline-lineage.db"), queue_executor=executor
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        session_id = client.post("/api/session", json={"label": "headline"}).json()[
+            "id"
+        ]
+        brief = client.post("/api/briefs", json=_brief(session_id)).json()
+        search = client.post(
+            "/api/searches",
+            json={
+                "session_id": session_id,
+                "brief_id": brief["id"],
+                "keywords": "platform",
+            },
+        ).json()
+        assert _wait(app, search["job_id"]).state == "done"
+        candidate_id = client.get(
+            "/api/candidate-pool", params={"session_id": session_id}
+        ).json()[0]["id"]
+        assert (
+            client.post("/api/session/gates/A", json={"note": "reviewed"}).status_code
+            == 201
+        )
+
+        first = client.post(
+            f"/api/candidates/{candidate_id}/enrich",
+            json={},
+        ).json()
+        assert _wait(app, first["job_id"]).state == "done"
+        ranked = client.get("/api/candidates", params={"session_id": session_id})
+        assert ranked.status_code == 200
+        assert ranked.json()[0]["headline"] == "Platform Engineer"
+
+        second = client.post(
+            f"/api/candidates/{candidate_id}/enrich",
+            json={"sections": ["education"]},
+        ).json()
+        assert _wait(app, second["job_id"]).state == "done"
+        ranked = client.get("/api/candidates", params={"session_id": session_id})
+        assert ranked.status_code == 200
+        assert ranked.json()[0]["headline"] is None
+        detail = client.get(f"/api/candidates/{candidate_id}").json()
+        assert not any(field["field_key"] == "headline" for field in detail["fields"])
+
+
+def test_gate_b_rejects_selected_evidence_with_wrong_polarity(tmp_path: Path) -> None:
+    skills = " ".join(f"skill{index}" for index in range(10))
+    executor = SequenceExecutor(
+        [
+            _search_result(),
+            _profile_result(main_profile="Ada Example"),
+            _profile_result(skills=skills),
+        ]
+    )
+    app = create_app(_settings(tmp_path / "gate-polarity.db"), queue_executor=executor)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        session_id = client.post("/api/session", json={"label": "polarity"}).json()[
+            "id"
+        ]
+        brief = client.post(
+            "/api/briefs",
+            json=_brief(
+                session_id,
+                required_skills=[
+                    {"term": f"skill{index}", "aliases": []} for index in range(10)
+                ],
+                required_credentials=[],
+            ),
+        ).json()
+        search = client.post(
+            "/api/searches",
+            json={
+                "session_id": session_id,
+                "brief_id": brief["id"],
+                "keywords": "platform",
+            },
+        ).json()
+        assert _wait(app, search["job_id"]).state == "done"
+        candidate_id = client.get(
+            "/api/candidate-pool", params={"session_id": session_id}
+        ).json()[0]["id"]
+        assert (
+            client.post("/api/session/gates/A", json={"note": "reviewed"}).status_code
+            == 201
+        )
+        stage_one = client.post(
+            f"/api/candidates/{candidate_id}/enrich",
+            json={},
+        ).json()
+        assert _wait(app, stage_one["job_id"]).state == "done"
+        enrich = client.post(
+            f"/api/candidates/{candidate_id}/enrich",
+            json={"sections": ["skills"]},
+        ).json()
+        assert _wait(app, enrich["job_id"]).state == "done"
+        detail = client.get(f"/api/candidates/{candidate_id}").json()
+        evidence_ids = [
+            item["id"]
+            for signal in detail["signals"]
+            for claim in signal["claims"]
+            for item in claim["evidence"]
+            if item["availability"]["state"] == "available"
+        ]
+        assert len(evidence_ids) == 10
+        score_id = detail["score"]["score_id"]
+        fingerprint = detail["score"]["input_fingerprint"]
+        with sqlite3.connect(app.state.database.path) as connection:
+            trigger_sql = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' "
+                "AND name='evidence_m4_is_immutable'"
+            ).fetchone()[0]
+            connection.execute("DROP TRIGGER evidence_m4_is_immutable")
+            connection.execute(
+                "UPDATE evidence SET polarity='contradicting' WHERE id=?",
+                (evidence_ids[0],),
+            )
+            connection.execute(trigger_sql)
+
+        response = client.post(
+            "/api/session/gates/B", json={"evidence_ids": evidence_ids}
+        )
+        assert response.status_code == 409
+        assert response.json()["detail"] == (
+            "Gate B evidence is stale, purged, or cross-session"
+        )
+        manifest = json.dumps(
+            [
+                {
+                    "evidence_id": evidence_id,
+                    "score_id": score_id,
+                    "input_fingerprint": fingerprint,
+                }
+                for evidence_id in evidence_ids
+            ],
+            separators=(",", ":"),
+        )
+        with sqlite3.connect(app.state.database.path) as connection:
+            with pytest.raises(
+                sqlite3.IntegrityError,
+                match="ten current exact evidence spans",
+            ):
+                connection.execute(
+                    "INSERT INTO phase_gate "
+                    "(id,session_id,gate,accepted_at,accepted_note,evidence_manifest) "
+                    "VALUES ('raw-gate-b',?,'B','now','reviewed',?)",
+                    (session_id, manifest),
+                )
+
+
+@pytest.mark.parametrize("recursive", ("ON", "OFF"))
+def test_raw_claims_require_polarity_and_canonical_coverage(
+    tmp_path: Path, recursive: str
+) -> None:
+    executor = SequenceExecutor(
+        [
+            _search_result(),
+            _profile_result(main_profile="Ada Example", experience="Rust"),
+            _profile_result(skills="Rust"),
+        ]
+    )
+    app = create_app(
+        _settings(tmp_path / f"claim-semantics-{recursive}.db"),
+        queue_executor=executor,
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        session_id = client.post("/api/session", json={"label": "claims"}).json()["id"]
+        brief = client.post(
+            "/api/briefs",
+            json=_brief(session_id, required_credentials=[]),
+        ).json()
+        search = client.post(
+            "/api/searches",
+            json={
+                "session_id": session_id,
+                "brief_id": brief["id"],
+                "keywords": "platform",
+            },
+        ).json()
+        assert _wait(app, search["job_id"]).state == "done"
+        candidate_id = client.get(
+            "/api/candidate-pool", params={"session_id": session_id}
+        ).json()[0]["id"]
+        assert (
+            client.post("/api/session/gates/A", json={"note": "reviewed"}).status_code
+            == 201
+        )
+        stage_one = client.post(
+            f"/api/candidates/{candidate_id}/enrich", json={}
+        ).json()
+        assert _wait(app, stage_one["job_id"]).state == "done"
+        stage_two = client.post(
+            f"/api/candidates/{candidate_id}/enrich",
+            json={"sections": ["skills"]},
+        ).json()
+        assert _wait(app, stage_two["job_id"]).state == "done"
+        detail = client.get(f"/api/candidates/{candidate_id}").json()
+        score_id = detail["score"]["score_id"]
+
+        with sqlite3.connect(app.state.database.path) as connection:
+            connection.execute("PRAGMA foreign_keys=ON")
+            connection.execute(f"PRAGMA recursive_triggers={recursive}")
+            immutable_sql = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' "
+                "AND name='score_content_is_immutable'"
+            ).fetchone()[0]
+            connection.execute("DROP TRIGGER score_content_is_immutable")
+            connection.execute("UPDATE score SET is_current=0 WHERE id=?", (score_id,))
+            connection.execute(immutable_sql)
+            signal_id = connection.execute(
+                "SELECT id FROM score_signal WHERE score_id=? AND signal_id='S-1'",
+                (score_id,),
+            ).fetchone()[0]
+            claim_trigger = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' "
+                "AND name='score_claim_is_immutable'"
+            ).fetchone()[0]
+            connection.execute("DROP TRIGGER score_claim_is_immutable")
+            connection.execute(
+                "UPDATE score_claim SET claim_key='legacy:S-1:python' "
+                "WHERE score_signal_id=? AND claim_key='S-1:python'",
+                (signal_id,),
+            )
+            connection.execute(claim_trigger)
+            section_id, content_hash = connection.execute(
+                "SELECT score_input_section.profile_section_id,"
+                "score_input_section.content_sha256 FROM score_input_section "
+                "JOIN profile_section ON profile_section.id=profile_section_id "
+                "WHERE score_id=? AND section_name='skills'",
+                (score_id,),
+            ).fetchone()
+
+            connection.execute(
+                "INSERT INTO coverage_set VALUES "
+                "('forged-coverage',?,?, '[\"skills\"]')",
+                (candidate_id, signal_id),
+            )
+            for row_id, terms, matcher in (
+                ("empty-terms", "[]", "scoring-v1"),
+                ("unknown-matcher", '["python"]', "unknown-v9"),
+            ):
+                with pytest.raises(
+                    sqlite3.IntegrityError,
+                    match="absence coverage is not canonical",
+                ):
+                    connection.execute(
+                        "INSERT INTO signal_coverage VALUES (?,?,?,?,?,'[]',?)",
+                        (
+                            row_id,
+                            "forged-coverage",
+                            section_id,
+                            content_hash,
+                            terms,
+                            matcher,
+                        ),
+                    )
+            connection.execute(
+                "INSERT INTO signal_coverage VALUES "
+                "('wrong-terms','forged-coverage',?,?, '[\"rust\"]','[]',"
+                "'scoring-v1')",
+                (section_id, content_hash),
+            )
+            with pytest.raises(
+                sqlite3.IntegrityError,
+                match="score claim semantics do not match brief",
+            ):
+                connection.execute(
+                    "INSERT INTO score_claim VALUES "
+                    "('wrong-coverage',?,'S-1:python','Python','not_matched',NULL,"
+                    "'forged-coverage',NULL)",
+                    (signal_id,),
+                )
+            connection.execute(
+                "INSERT INTO evidence_set VALUES ('mixed-set',?,?)",
+                (candidate_id, signal_id),
+            )
+            for evidence_id, polarity in (
+                ("mixed-supporting", "supporting"),
+                ("mixed-contradicting", "contradicting"),
+            ):
+                connection.execute(
+                    "INSERT INTO evidence "
+                    "(id,score_signal_id,evidence_set_id,section_name,"
+                    "profile_section_id,content_sha256,span_start,span_end,snippet,"
+                    "matcher,matched_term,polarity) VALUES "
+                    "(?,?,?,'skills',?,?,0,4,'Rust','exact','Rust',?)",
+                    (
+                        evidence_id,
+                        signal_id,
+                        "mixed-set",
+                        section_id,
+                        content_hash,
+                        polarity,
+                    ),
+                )
+            with pytest.raises(
+                sqlite3.IntegrityError,
+                match="score claim semantics do not match brief",
+            ):
+                connection.execute(
+                    "INSERT INTO score_claim VALUES "
+                    "('mixed-claim',?,'S-1:forged','Forged','matched',"
+                    "'mixed-set',NULL,NULL)",
+                    (signal_id,),
+                )
+
+
+@pytest.mark.parametrize("recursive", ("ON", "OFF"))
+@pytest.mark.parametrize("defect", ("duplicate", "wrong_weight", "wrong_set"))
+def test_raw_score_signals_require_unique_exact_configured_set(
+    tmp_path: Path, recursive: str, defect: str
+) -> None:
+    app = create_app(
+        _settings(tmp_path / f"signal-set-{defect}-{recursive}.db"),
+        queue_executor=PoisonExecutor(),
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        _, _, score_id = _seed_current_score(app, client)
+        with sqlite3.connect(app.state.database.path) as connection:
+            connection.execute("PRAGMA foreign_keys=ON")
+            connection.execute(f"PRAGMA recursive_triggers={recursive}")
+            connection.execute("BEGIN")
+            score_trigger = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' "
+                "AND name='score_content_is_immutable'"
+            ).fetchone()[0]
+            connection.execute("DROP TRIGGER score_content_is_immutable")
+            connection.execute("UPDATE score SET is_current=0 WHERE id=?", (score_id,))
+            connection.execute(score_trigger)
+            first = connection.execute(
+                "SELECT id,signal_id,weight,verdict,rollup,raw_subscore,"
+                "contribution,availability,note FROM score_signal "
+                "WHERE score_id=? ORDER BY signal_id LIMIT 1",
+                (score_id,),
+            ).fetchone()
+            assert first is not None
+            if defect == "duplicate":
+                with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint"):
+                    connection.execute(
+                        "INSERT INTO score_signal VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (
+                            "duplicate-signal",
+                            score_id,
+                            *first[1:],
+                        ),
+                    )
+            else:
+                child_trigger = connection.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='trigger' "
+                    "AND name='score_child_is_immutable'"
+                ).fetchone()[0]
+                connection.execute("DROP TRIGGER score_child_is_immutable")
+                if defect == "wrong_weight":
+                    connection.execute(
+                        "UPDATE score_signal SET weight=weight+1 WHERE id=?",
+                        (first[0],),
+                    )
+                else:
+                    rows = connection.execute(
+                        "SELECT id,signal_id FROM score_signal WHERE score_id=? "
+                        "ORDER BY signal_id",
+                        (score_id,),
+                    ).fetchall()
+                    assert len(rows) == 2
+                    replacement_weight = connection.execute(
+                        "SELECT json_extract(weights, '$.\"' || ? || '\"') "
+                        "FROM scoring_config JOIN score "
+                        "ON score.scoring_config_id=scoring_config.id "
+                        "WHERE score.id=?",
+                        (rows[0][1], score_id),
+                    ).fetchone()[0]
+                    connection.execute("DROP INDEX score_signal_identity_v25")
+                    connection.execute(
+                        "UPDATE score_signal SET signal_id=?,weight=? WHERE id=?",
+                        (rows[0][1], replacement_weight, rows[1][0]),
+                    )
+                connection.execute(child_trigger)
+                with pytest.raises(
+                    sqlite3.IntegrityError,
+                    match="score signal set does not match snapshot",
+                ):
+                    connection.execute(
+                        "UPDATE score SET is_current=1 WHERE id=?", (score_id,)
+                    )
+            connection.rollback()
+
+
+def test_v25_upgrade_rejects_existing_mixed_polarity_claim(tmp_path: Path) -> None:
+    path = tmp_path / "mixed-polarity-upgrade.db"
+    executor = SequenceExecutor(
+        [
+            _search_result(),
+            _profile_result(main_profile="Ada Python", experience="Python"),
+            _profile_result(skills="Python"),
+        ]
+    )
+    app = create_app(_settings(path), queue_executor=executor)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        session_id = client.post("/api/session", json={"label": "upgrade"}).json()["id"]
+        brief = client.post(
+            "/api/briefs", json=_brief(session_id, required_credentials=[])
+        ).json()
+        search = client.post(
+            "/api/searches",
+            json={
+                "session_id": session_id,
+                "brief_id": brief["id"],
+                "keywords": "platform",
+            },
+        ).json()
+        assert _wait(app, search["job_id"]).state == "done"
+        candidate_id = client.get(
+            "/api/candidate-pool", params={"session_id": session_id}
+        ).json()[0]["id"]
+        stage_one = client.post(
+            f"/api/candidates/{candidate_id}/enrich", json={}
+        ).json()
+        assert _wait(app, stage_one["job_id"]).state == "done"
+        stage_two = client.post(
+            f"/api/candidates/{candidate_id}/enrich",
+            json={"sections": ["skills"]},
+        ).json()
+        assert _wait(app, stage_two["job_id"]).state == "done"
+
+    with sqlite3.connect(path) as connection:
+        register_sqlite_unicode_casefold(connection)
+        evidence_rows = connection.execute(
+            "SELECT e.id FROM evidence e JOIN score_claim claim "
+            "ON claim.evidence_set_id=e.evidence_set_id "
+            "WHERE claim.verdict='matched' ORDER BY e.id"
+        ).fetchall()
+        assert len(evidence_rows) >= 2
+        _downgrade_v25_schema_to_v24(connection)
+        evidence_trigger = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='trigger' "
+            "AND name='evidence_m4_is_immutable'"
+        ).fetchone()[0]
+        connection.execute("DROP TRIGGER evidence_m4_is_immutable")
+        connection.execute(
+            "UPDATE evidence SET polarity='contradicting' WHERE id=?",
+            (evidence_rows[0][0],),
+        )
+        connection.execute(evidence_trigger)
+        baseline = connection.execute(
+            "SELECT id,polarity FROM evidence ORDER BY id"
+        ).fetchall()
+
+    upgraded = Database(path)
+    with pytest.raises(RuntimeError, match="incompatible polarity"):
+        upgraded.initialize()
+    upgraded.dispose()
+    with sqlite3.connect(path) as connection:
+        assert (
+            connection.execute(
+                "SELECT id,polarity FROM evidence ORDER BY id"
+            ).fetchall()
+            == baseline
+        )
+        assert (
+            connection.execute(
+                "SELECT 1 FROM schema_migration WHERE version=?",
+                (v0025_m4_semantic_integrity.VERSION,),
+            ).fetchone()
+            is None
+        )
+        assert "scoring_inputs" not in {
+            row[1] for row in connection.execute("PRAGMA table_info(role_brief)")
+        }
+
+
+@pytest.mark.parametrize("defect", ("coverage", "weight"))
+def test_v25_upgrade_rejects_existing_semantic_corruption(
+    tmp_path: Path, defect: str
+) -> None:
+    path = tmp_path / f"semantic-{defect}-upgrade.db"
+    score_id = _seed_profile_database(
+        path,
+        stage_one=_profile_result(main_profile="Ada", experience="Rust"),
+        stage_two=_profile_result(skills="Rust"),
+    )
+    with sqlite3.connect(path) as connection:
+        register_sqlite_unicode_casefold(connection)
+        _downgrade_v25_schema_to_v24(connection)
+        if defect == "coverage":
+            immutable_sql = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' "
+                "AND name='signal_coverage_no_update'"
+            ).fetchone()[0]
+            connection.execute("DROP TRIGGER signal_coverage_no_update")
+            connection.execute(
+                "UPDATE signal_coverage SET normalized_terms='[\"rust\"]' "
+                "WHERE id=(SELECT id FROM signal_coverage LIMIT 1)"
+            )
+            connection.execute(immutable_sql)
+            expected = "noncanonical absence coverage"
+        else:
+            immutable_sql = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' "
+                "AND name='score_child_is_immutable'"
+            ).fetchone()[0]
+            connection.execute("DROP TRIGGER score_child_is_immutable")
+            connection.execute(
+                "UPDATE score_signal SET weight=weight+1 "
+                "WHERE id=(SELECT id FROM score_signal WHERE score_id=? LIMIT 1)",
+                (score_id,),
+            )
+            connection.execute(immutable_sql)
+            expected = "invalid signal set or weight"
+
+    upgraded = Database(path)
+    with pytest.raises(RuntimeError, match=expected):
+        upgraded.initialize()
+    upgraded.dispose()
+    with sqlite3.connect(path) as connection:
+        assert (
+            connection.execute(
+                "SELECT 1 FROM schema_migration WHERE version=?",
+                (v0025_m4_semantic_integrity.VERSION,),
+            ).fetchone()
+            is None
+        )
 
 
 def test_v22_gate_b_preflight_is_actionable_and_rollback_safe(tmp_path: Path) -> None:

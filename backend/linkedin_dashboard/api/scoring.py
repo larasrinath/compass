@@ -16,9 +16,11 @@ from linkedin_dashboard.db.models import (
     CandidateScore,
     CandidateSource,
     Evidence,
+    ParsedField,
     PhaseGate,
     ProfileSection,
     ScoreClaim,
+    ScoreInputSection,
     ScoreSignal,
     SearchRun,
     SignalCoverage,
@@ -106,18 +108,38 @@ def _sort_ranked_records(
     return sorted(records, key=key)
 
 
-def _headline(session: Session, candidate_id: str) -> str | None:
-    from linkedin_dashboard.db.models import ParsedField
-
-    return session.scalar(
+def _headline(session: Session, candidate_id: str, score_id: str) -> str | None:
+    latest = session.scalar(
+        select(ProfileSection)
+        .where(
+            ProfileSection.candidate_id == candidate_id,
+            ProfileSection.section_name == "main_profile",
+        )
+        .order_by(ProfileSection.retrieved_at.desc(), ProfileSection.id.desc())
+        .limit(1)
+    )
+    if latest is None:
+        return None
+    sourced = session.scalar(
+        select(ScoreInputSection.score_id).where(
+            ScoreInputSection.score_id == score_id,
+            ScoreInputSection.profile_section_id == latest.id,
+            ScoreInputSection.content_sha256 == latest.content_sha256,
+        )
+    )
+    if sourced is None:
+        return None
+    field = session.scalar(
         select(ParsedField.snippet)
         .where(
             ParsedField.candidate_id == candidate_id,
             ParsedField.field_key == "headline",
+            ParsedField.profile_section_id == latest.id,
         )
         .order_by(ParsedField.created_at.desc(), ParsedField.id.desc())
         .limit(1)
     )
+    return field
 
 
 def _non_scoring_hints(session: Session, candidate: Candidate) -> list[dict[str, str]]:
@@ -180,7 +202,7 @@ def ranked_record(
         "username": candidate.username,
         "profile_url": candidate.profile_url,
         "display_name": candidate.display_name,
-        "headline": _headline(session, candidate.id),
+        "headline": _headline(session, candidate.id, score.id),
         "stage": score.stage,
         "score": score.score,
         "score_lower": score.score_lower,

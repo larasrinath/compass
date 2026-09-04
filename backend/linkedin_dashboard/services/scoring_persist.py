@@ -45,6 +45,7 @@ from linkedin_dashboard.db.models import (
 )
 from linkedin_dashboard.parsing.verify import verify_substring
 from linkedin_dashboard.services.scoring.aggregate import calculate_score
+from linkedin_dashboard.services.scoring.matching import MATCHER_VERSION
 from linkedin_dashboard.services.scoring.normalization import normalize_text
 from linkedin_dashboard.services.scoring.signals import active_signal_ids
 from linkedin_dashboard.services.scoring.types import (
@@ -66,6 +67,7 @@ from linkedin_dashboard.services.scoring.types import (
     SignalWeight,
     SourcedText,
     Term,
+    Verdict,
 )
 
 ALGORITHM_VERSION = "m4-v1"
@@ -572,16 +574,106 @@ def _float(value: Decimal | None) -> float | None:
     return None if value is None else float(value)
 
 
+def _expected_absence_coverage(
+    session: Session,
+    *,
+    brief: RoleBrief,
+    signal_id: str,
+    display_term: str,
+) -> tuple[tuple[str, ...], tuple[str, ...], str]:
+    skills = list(
+        session.scalars(
+            select(BriefSkill)
+            .where(BriefSkill.brief_id == brief.id)
+            .order_by(BriefSkill.position, BriefSkill.id)
+        )
+    )
+    terms = list(
+        session.scalars(
+            select(BriefTerm)
+            .where(BriefTerm.brief_id == brief.id)
+            .order_by(BriefTerm.position, BriefTerm.id)
+        )
+    )
+    credentials = list(
+        session.scalars(
+            select(BriefCredential)
+            .where(BriefCredential.brief_id == brief.id)
+            .order_by(BriefCredential.position, BriefCredential.id)
+        )
+    )
+
+    selected: list[tuple[str, list[str]]]
+    claim_key: str
+    if signal_id in {"S-1", "S-2"}:
+        kind = "required" if signal_id == "S-1" else "optional"
+        key = normalize_text(display_term)
+        selected = [
+            (item.term, item.aliases)
+            for item in skills
+            if item.kind == kind and normalize_text(item.term) == key
+        ]
+        claim_key = f"{signal_id}:{key}"
+    elif signal_id == "S-8":
+        key = normalize_text(display_term)
+        selected = [
+            (item.term, item.aliases) for item in credentials if item.term_key == key
+        ]
+        claim_key = f"S-8:{key}"
+    elif signal_id == "S-4":
+        selected = [
+            (item.term, item.aliases) for item in terms if item.kind == "target_title"
+        ]
+        claim_key = "S-4:title-similarity"
+    elif signal_id == "S-5":
+        selected = [
+            (item.term, item.aliases) for item in terms if item.kind == "industry"
+        ]
+        claim_key = "S-5:industry-relevance"
+    elif signal_id == "S-6":
+        selected = [(brief.location, [])]
+        claim_key = "S-6:location-fit"
+    elif signal_id == "S-3":
+        selected = [
+            (item.term, item.aliases) for item in terms if item.kind == "target_title"
+        ] + [(item.term, item.aliases) for item in skills if item.kind == "required"]
+        claim_key = "S-3:experience-depth"
+    else:
+        raise ValueError("absence coverage uses an unsupported signal")
+
+    normalized_terms = tuple(normalize_text(term) for term, _ in selected)
+    aliases = tuple(
+        sorted(
+            normalized
+            for _, raw_aliases in selected
+            for alias in raw_aliases
+            if (normalized := normalize_text(alias))
+        )
+    )
+    if not normalized_terms or any(not term for term in normalized_terms):
+        raise ValueError("absence coverage requires canonical search terms")
+    return normalized_terms, aliases, claim_key
+
+
 def _persist_claim(
     session: Session,
     *,
     candidate: Candidate,
+    brief: RoleBrief,
     signal_row: ScoreSignalRow,
     claim: Any,
 ) -> None:
     set_id = str(uuid4())
     evidence_set_id = coverage_set_id = missing_set_id = None
     if isinstance(claim.provenance, EvidenceSet):
+        expected_polarity = (
+            "supporting" if claim.verdict is Verdict.MATCHED else "contradicting"
+        )
+        if any(
+            entry.polarity.value != expected_polarity
+            for entry in claim.provenance.entries
+        ):
+            raise ValueError("claim evidence polarity does not match its verdict")
         evidence_set_id = set_id
         session.add(
             EvidenceSetRecord(
@@ -613,6 +705,28 @@ def _persist_claim(
             )
         session.flush()
     elif isinstance(claim.provenance, CoverageSet):
+        expected_terms, expected_aliases, expected_claim_key = (
+            _expected_absence_coverage(
+                session,
+                brief=brief,
+                signal_id=signal_row.signal_id,
+                display_term=claim.display_term,
+            )
+        )
+        if claim.claim_key != expected_claim_key:
+            raise ValueError("absence coverage claim does not match its brief input")
+        for entry in claim.provenance.entries:
+            if (
+                not entry.normalized_terms
+                or entry.normalized_terms != expected_terms
+                or entry.aliases != expected_aliases
+                or entry.matcher_version != MATCHER_VERSION
+                or any(
+                    normalize_text(value) != value for value in entry.normalized_terms
+                )
+                or any(normalize_text(value) != value for value in entry.aliases)
+            ):
+                raise ValueError("absence coverage does not match its brief input")
         coverage_set_id = set_id
         required = [entry.section_name for entry in claim.provenance.entries]
         session.add(
@@ -746,7 +860,11 @@ def persist_calculation(
         session.flush()
         for claim in signal.claims:
             _persist_claim(
-                session, candidate=candidate, signal_row=signal_row, claim=claim
+                session,
+                candidate=candidate,
+                brief=brief,
+                signal_row=signal_row,
+                claim=claim,
             )
     for penalty in calculation.penalties:
         session.add(

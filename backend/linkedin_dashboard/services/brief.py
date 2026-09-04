@@ -19,6 +19,7 @@ from linkedin_dashboard.db.models import (
     RoleBrief,
 )
 from linkedin_dashboard.db.session import Database
+from linkedin_dashboard.services.scoring.matching import MATCHER_VERSION
 from linkedin_dashboard.services.scoring.normalization import normalize_text
 
 if TYPE_CHECKING:
@@ -145,6 +146,48 @@ def normalize_brief(value: BriefValue) -> BriefValue:
         raise ValueError("at least one usable discovery criterion is required")
     _reject_protected(normalized)
     return normalized
+
+
+def scoring_inputs(value: BriefValue) -> dict[str, object]:
+    """Freeze the exact normalized terms used by absence provenance."""
+
+    def entry(item: TermValue) -> dict[str, object]:
+        return {
+            "display": item.term,
+            "term": normalize_text(item.term),
+            "aliases": sorted(
+                normalized
+                for alias in item.aliases
+                if (normalized := normalize_text(alias))
+            ),
+        }
+
+    required = [entry(item) for item in value.required_skills]
+    optional = [entry(item) for item in value.optional_skills]
+    titles = [entry(item) for item in value.target_titles]
+    industries = [entry(item) for item in value.industries]
+    credentials = [entry(item) for item in value.required_credentials]
+    location = (
+        [
+            {
+                "display": value.location,
+                "term": normalize_text(value.location),
+                "aliases": [],
+            }
+        ]
+        if normalize_text(value.location)
+        else []
+    )
+    return {
+        "matcher_version": MATCHER_VERSION,
+        "S-1": required,
+        "S-2": optional,
+        "S-3": [*titles, *required],
+        "S-4": titles,
+        "S-5": industries,
+        "S-6": location,
+        "S-8": credentials,
+    }
 
 
 def contains_protected_criterion(entered: str) -> bool:
@@ -338,6 +381,7 @@ class BriefService:
                 message_tone=value.message_tone,
                 required_experience_months=value.required_experience_months,
                 weights_version=str(config.version) if config is not None else "v1",
+                scoring_inputs=scoring_inputs(value),
             )
             session.add(brief)
             session.flush()
