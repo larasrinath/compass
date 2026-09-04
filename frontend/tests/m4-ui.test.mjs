@@ -48,6 +48,7 @@ test('plan and frontend share the four-value missing-reason domain', () => {
   assert.match(parsingContract, /marked unreliable by a `parse_note`[\s\S]*canonical `unparseable` missing[\s\S]*reduced availability/)
   assert.match(parsingContract, /never produces absence coverage or `not_matched`[\s\S]*never coerced to `fetch_error`/)
   assert.doesNotMatch(parsingContract, /parses to nothing[\s\S]*counts as \*retrieved\*/)
+  assert.match(s3Contract, /role counts as relevant when[\s\S]*title or description matches a normalized target-title or required-skill term/)
   assert.match(s3Contract, /no normalized target-title or required-skill terms[\s\S]*every parsed role is relevant/)
   assert.match(s3Contract, /empty relevance-filter term set never creates absence coverage/)
   assert.match(s3Contract, /Optional skills, positive[\s\S]*keywords and job-description prose are not S-3 relevance filters/)
