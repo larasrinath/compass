@@ -398,6 +398,10 @@ def test_m4_score_gate_and_exact_evidence_lifecycle(tmp_path: Path) -> None:
                 .where(ScoreSignal.id == evidence.score_signal_id)
             )
             assert source_score is not None
+            finalized_score_ids = [
+                source_score.id,
+                refreshed["score"]["score_id"],
+            ]
             assert "newer-marker" not in str(source_score.source_snapshot)
             assert "rollback-marker" not in str(source_score.source_snapshot)
             staged_score = CandidateScore(
@@ -477,6 +481,25 @@ def test_m4_score_gate_and_exact_evidence_lifecycle(tmp_path: Path) -> None:
             )
         assert score_count >= 4
         assert current_count == 1
+        for index, finalized_score_id in enumerate(finalized_score_ids):
+            with pytest.raises(
+                IntegrityError, match="only staged M4 scores accept new signals"
+            ):
+                with app.state.database.sessions.begin() as session:
+                    session.add(
+                        ScoreSignal(
+                            id=f"late-signal-{index}",
+                            score_id=finalized_score_id,
+                            signal_id="S-2",
+                            weight=0,
+                            verdict="unknown",
+                            rollup=None,
+                            raw_subscore=0,
+                            contribution=0,
+                            availability=0,
+                            note=None,
+                        )
+                    )
         with pytest.raises(IntegrityError, match="score snapshot is finalized"):
             with app.state.database.sessions.begin() as session:
                 session.add(late)

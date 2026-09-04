@@ -42,6 +42,7 @@ from linkedin_dashboard.db.migrations import (
     v0021_m3_final_integrity,
     v0022_terminal_projection_authority,
     v0023_m4_scoring,
+    v0024_m4_integrity_upgrade,
 )
 from linkedin_dashboard.db.models import Base
 from linkedin_dashboard.db.unicode_identity import (
@@ -74,6 +75,7 @@ _MIGRATION_MODULES = (
     v0021_m3_final_integrity,
     v0022_terminal_projection_authority,
     v0023_m4_scoring,
+    v0024_m4_integrity_upgrade,
 )
 
 _SCHEMA_ACTIONS = {

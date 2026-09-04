@@ -186,34 +186,6 @@ WHERE rb.session_id=NEW.session_id AND rb.superseded_at IS NULL
 LIMIT 1
 """
 
-_LATEST_ROOTED_ERROR_FROM = """
-FROM section_error canonical_error
-JOIN profile_fetch canonical_fetch
-  ON canonical_fetch.id=canonical_error.fetch_id
- AND canonical_fetch.candidate_id=s.candidate_id
-JOIN json_each(json_extract(
-  canonical_fetch.projection_payload,'$.section_errors')) canonical_item
-WHERE canonical_error.candidate_id=s.candidate_id
-  AND canonical_error.search_run_id IS NULL
-  AND canonical_error.section_name=json_extract(snap.value,'$.name')
-  AND canonical_fetch.contract_error IS NULL
-  AND canonical_fetch.raw_response IS NOT NULL
-  AND canonical_fetch.raw_response<>'null'
-  AND canonical_item.key=canonical_error.section_name
-  AND json(canonical_item.value)=json(canonical_error.source_item)
-  AND json_extract(canonical_item.value,'$.error_type')=canonical_error.error_type
-  AND json_extract(canonical_item.value,'$.error_message')=canonical_error.error_message
-ORDER BY canonical_fetch.finished_at DESC NULLS LAST,
-  canonical_fetch.started_at DESC,canonical_fetch.id DESC,canonical_error.id DESC
-LIMIT 1
-"""
-
-_LATEST_ROOTED_ERROR_ID = f"(SELECT canonical_error.id {_LATEST_ROOTED_ERROR_FROM})"
-_LATEST_ROOTED_ERROR_REASON = (
-    "(SELECT CASE WHEN lower(canonical_error.error_type)='rate_limit' "
-    f"THEN 'rate_limit' ELSE 'fetch_error' END {_LATEST_ROOTED_ERROR_FROM})"
-)
-
 
 STATEMENTS = (
     "DROP TRIGGER IF EXISTS role_brief_append_only",
@@ -355,21 +327,6 @@ STATEMENTS = (
        BEFORE UPDATE OF raw_text,content_sha256 ON profile_section FOR EACH ROW
        WHEN NEW.raw_text IS NOT OLD.raw_text OR NEW.content_sha256 IS NOT OLD.content_sha256
        BEGIN SELECT RAISE(ABORT, 'profile section history is immutable'); END""",
-    "DROP TRIGGER IF EXISTS section_error_is_immutable",
-    """CREATE TRIGGER section_error_is_immutable BEFORE UPDATE ON section_error
-       FOR EACH ROW
-       BEGIN SELECT RAISE(ABORT, 'section error history is immutable'); END""",
-    """CREATE TRIGGER section_error_insert_collision_all
-       BEFORE INSERT ON section_error FOR EACH ROW WHEN EXISTS (
-         SELECT 1 FROM section_error old WHERE old.id=NEW.id)
-       BEGIN SELECT RAISE(ABORT, 'section error already exists'); END""",
-    """CREATE TRIGGER section_error_no_delete_all BEFORE DELETE ON section_error
-       FOR EACH ROW WHEN
-         EXISTS (SELECT 1 FROM candidate c JOIN session root ON root.id=c.session_id
-                 WHERE c.id=OLD.candidate_id)
-         OR EXISTS (SELECT 1 FROM search_run sr JOIN session root
-                    ON root.id=sr.session_id WHERE sr.id=OLD.search_run_id)
-       BEGIN SELECT RAISE(ABORT, 'section error history is append-only'); END""",
     """CREATE TRIGGER section_error_exact_root_insert BEFORE INSERT ON section_error
        FOR EACH ROW WHEN
          (NEW.candidate_id IS NOT NULL AND (
@@ -806,8 +763,7 @@ STATEMENTS = (
     """CREATE TRIGGER score_signal_m4_insert_collision
        BEFORE INSERT ON score_signal FOR EACH ROW WHEN EXISTS (
          SELECT 1 FROM score_signal old JOIN score s ON s.id=old.score_id
-         JOIN candidate c ON c.id=s.candidate_id
-         JOIN session root ON root.id=c.session_id WHERE old.id=NEW.id)
+         WHERE old.id=NEW.id AND s.scoring_config_id IS NOT NULL)
        BEGIN SELECT RAISE(ABORT, 'M4 score signal already exists'); END""",
     """CREATE TRIGGER score_child_is_immutable BEFORE UPDATE ON score_signal
        FOR EACH ROW WHEN OLD.rollup IS NOT NULL
@@ -816,7 +772,7 @@ STATEMENTS = (
        FOR EACH ROW WHEN EXISTS (
          SELECT 1 FROM score s JOIN candidate c ON c.id=s.candidate_id
          JOIN session root ON root.id=c.session_id
-         WHERE s.id=OLD.score_id)
+         WHERE s.id=OLD.score_id AND s.scoring_config_id IS NOT NULL)
        BEGIN SELECT RAISE(ABORT, 'M4 score signal is append-only'); END""",
     """CREATE TRIGGER score_claim_insert_collision BEFORE INSERT ON score_claim
        FOR EACH ROW WHEN EXISTS (SELECT 1 FROM score_claim old WHERE old.id=NEW.id)
@@ -856,7 +812,7 @@ STATEMENTS = (
          JOIN session root ON root.id=c.session_id
          WHERE ss.id=OLD.score_signal_id)
        BEGIN SELECT RAISE(ABORT, 'score evidence is append-only'); END""",
-    f"""CREATE TRIGGER phase_gate_manifest_insert BEFORE INSERT ON phase_gate
+    """CREATE TRIGGER phase_gate_manifest_insert BEFORE INSERT ON phase_gate
        FOR EACH ROW WHEN (NEW.gate IN ('A','C') AND json_array_length(NEW.evidence_manifest)<>0)
          OR (NEW.gate='B' AND (
            json_type(NEW.evidence_manifest)<>'array'
@@ -905,23 +861,6 @@ STATEMENTS = (
                        SELECT 1 FROM profile_section now_present
                        WHERE now_present.candidate_id=s.candidate_id
                          AND now_present.section_name=json_extract(snap.value,'$.name'))))))))
-         OR (NEW.gate='B' AND EXISTS (
-           SELECT 1 FROM json_each(NEW.evidence_manifest) item
-           JOIN score s ON s.id=json_extract(item.value,'$.score_id')
-             AND s.input_fingerprint=json_extract(item.value,'$.input_fingerprint')
-             AND s.is_current=1
-           JOIN candidate c ON c.id=s.candidate_id AND c.session_id=NEW.session_id
-           JOIN json_each(
-             s.source_snapshot,'$.profile_snapshot.sections') snap
-           WHERE json_extract(snap.value,'$.state')='missing' AND (
-             EXISTS (SELECT 1 FROM profile_section now_present
-               WHERE now_present.candidate_id=s.candidate_id
-                 AND now_present.section_name=json_extract(snap.value,'$.name'))
-             OR NOT (
-               json_extract(snap.value,'$.section_error_id') IS
-                 {_LATEST_ROOTED_ERROR_ID}
-               AND json_extract(snap.value,'$.missing_reason') IS
-                 coalesce({_LATEST_ROOTED_ERROR_REASON},'not_requested')))))
        BEGIN SELECT RAISE(ABORT, 'Gate B requires ten current exact evidence spans'); END""",
     """CREATE TRIGGER phase_gate_evidence_exact_insert
        BEFORE INSERT ON phase_gate_evidence FOR EACH ROW WHEN NOT EXISTS (
