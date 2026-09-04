@@ -26,6 +26,7 @@ from linkedin_dashboard.db.models import (
     ScoreInputSection,
     ScoreSignal,
     ScoringConfig,
+    SectionError,
     SignalMissingSection,
 )
 from linkedin_dashboard.db.unicode_identity import register_sqlite_unicode_casefold
@@ -765,6 +766,12 @@ def test_error_only_parse_failure_is_rooted_fetch_error(
             {
                 "url": "https://www.linkedin.com/search/results/people/",
                 "sections": {"search_results": "Ada"},
+                "section_errors": {
+                    "search_results": {
+                        "error_type": "partial",
+                        "error_message": "one search segment was unavailable",
+                    }
+                },
                 "references": {
                     "search_results": [
                         {"kind": "person", "url": "/in/ada/", "text": "Ada"}
@@ -815,3 +822,68 @@ def test_error_only_parse_failure_is_rooted_fetch_error(
         assert experience["claims"][0]["missing_sections"] == [
             {"section_name": "experience", "reason": "fetch_error"}
         ]
+        with app.state.database.sessions() as session:
+            errors = list(session.scalars(select(SectionError)))
+            error_ids = {
+                "search": next(
+                    row.id for row in errors if row.search_run_id is not None
+                ),
+                "fetch": next(row.id for row in errors if row.fetch_id is not None),
+            }
+        for recursive in ("ON", "OFF"):
+            with sqlite3.connect(app.state.database.path) as connection:
+                register_sqlite_unicode_casefold(connection)
+                connection.execute("PRAGMA foreign_keys=ON")
+                connection.execute(f"PRAGMA recursive_triggers={recursive}")
+                for root, error_id in error_ids.items():
+                    with pytest.raises(
+                        sqlite3.IntegrityError,
+                        match=r"section error history is immutable|provenance",
+                    ):
+                        if root == "search":
+                            connection.execute(
+                                "UPDATE section_error SET candidate_id=? WHERE id=?",
+                                (candidate_id, error_id),
+                            )
+                        else:
+                            connection.execute(
+                                "UPDATE section_error SET candidate_id=NULL,"
+                                "fetch_id=NULL WHERE id=?",
+                                (error_id,),
+                            )
+                    with pytest.raises(
+                        sqlite3.IntegrityError,
+                        match="section error already exists",
+                    ):
+                        connection.execute(
+                            "INSERT INTO section_error "
+                            "SELECT * FROM section_error WHERE id=? "
+                            "ON CONFLICT(id) DO UPDATE SET error_message='forged'",
+                            (error_id,),
+                        )
+                    with pytest.raises(
+                        sqlite3.IntegrityError,
+                        match="section error already exists",
+                    ):
+                        connection.execute(
+                            "INSERT OR REPLACE INTO section_error "
+                            "SELECT * FROM section_error WHERE id=?",
+                            (error_id,),
+                        )
+                    with pytest.raises(
+                        sqlite3.IntegrityError,
+                        match="section error history is append-only",
+                    ):
+                        connection.execute(
+                            "DELETE FROM section_error WHERE id=?", (error_id,)
+                        )
+                    assert connection.execute(
+                        "SELECT count(*) FROM section_error WHERE id=?", (error_id,)
+                    ).fetchone() == (1,)
+        with sqlite3.connect(app.state.database.path) as connection:
+            register_sqlite_unicode_casefold(connection)
+            connection.execute("PRAGMA foreign_keys=ON")
+            connection.execute("DELETE FROM session WHERE id=?", (session_id,))
+            assert connection.execute(
+                "SELECT count(*) FROM section_error"
+            ).fetchone() == (0,)

@@ -299,6 +299,85 @@ def test_duplicate_configured_migration_version_is_rejected(
 
 
 @pytest.mark.parametrize("recursive_triggers", ["ON", "OFF"])
+def test_migrated_v22_score_signal_is_immutable_until_session_purge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recursive_triggers: str
+) -> None:
+    path = tmp_path / f"legacy-signal-{recursive_triggers.lower()}.db"
+    modules = db_session._MIGRATION_MODULES
+    db_session._expected_schema.cache_clear()
+    legacy = Database(path)
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(db_session, "_MIGRATION_MODULES", modules[:-1])
+            legacy.initialize()
+            with legacy.engine.begin() as connection:
+                connection.exec_driver_sql(
+                    "INSERT INTO session VALUES "
+                    "('legacy-session','now','legacy','later',120,0,0)"
+                )
+                connection.exec_driver_sql(
+                    "INSERT INTO candidate "
+                    "(id,session_id,username,profile_url,first_seen_at,stage,"
+                    "retrieval_status) VALUES "
+                    "('legacy-candidate','legacy-session','legacy',"
+                    "'https://www.linkedin.com/in/legacy/','now','discovered',"
+                    "'pending')"
+                )
+                connection.exec_driver_sql(
+                    "INSERT INTO role_brief "
+                    "(id,session_id,version,created_at,job_description,target_titles,"
+                    "location,industries,positive_keywords,negative_keywords,"
+                    "message_tone,weights_version) VALUES "
+                    "('legacy-brief','legacy-session',1,'now','job','[]','',"
+                    "'[]','[]','[]','plain','v1')"
+                )
+                connection.exec_driver_sql(
+                    "INSERT INTO score "
+                    "(id,candidate_id,brief_id,weights_version,stage,score,score_lower,"
+                    "score_upper,confidence,confidence_band,computed_at,"
+                    "superseded_at,is_current) VALUES "
+                    "('legacy-score','legacy-candidate','legacy-brief','v1',"
+                    "'provisional',1,1,1,1,'high','now',NULL,1)"
+                )
+                connection.exec_driver_sql(
+                    "INSERT INTO score_signal "
+                    "(id,score_id,signal_id,weight,verdict,raw_subscore,contribution,"
+                    "availability,note) VALUES "
+                    "('legacy-signal','legacy-score','S-1',1,'matched',1,1,1,NULL)"
+                )
+    finally:
+        legacy.dispose()
+        db_session._expected_schema.cache_clear()
+
+    upgraded = Database(path)
+    upgraded.initialize()
+    upgraded.dispose()
+    with _maintenance_connect(path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
+        assert connection.execute(
+            "SELECT scoring_config_id FROM score WHERE id='legacy-score'"
+        ).fetchone() == (None,)
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            connection.execute("DELETE FROM score_signal WHERE id='legacy-signal'")
+        with pytest.raises(sqlite3.IntegrityError, match="already exists"):
+            connection.execute(
+                "INSERT OR REPLACE INTO score_signal "
+                "(id,score_id,signal_id,weight,verdict,rollup,raw_subscore,"
+                "contribution,availability,note) VALUES "
+                "('legacy-signal','legacy-score','S-2',1,'matched','matched',"
+                "1,1,1,NULL)"
+            )
+        assert connection.execute(
+            "SELECT signal_id,rollup FROM score_signal WHERE id='legacy-signal'"
+        ).fetchone() == ("S-1", "matched")
+        connection.execute("DELETE FROM session WHERE id='legacy-session'")
+        assert connection.execute(
+            "SELECT count(*) FROM score_signal WHERE id='legacy-signal'"
+        ).fetchone() == (0,)
+
+
+@pytest.mark.parametrize("recursive_triggers", ["ON", "OFF"])
 @pytest.mark.parametrize(
     "operation",
     ["update", "update_or_replace", "upsert", "replace", "collision"],

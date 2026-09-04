@@ -516,6 +516,36 @@ def _score_insert_sql(*, replace: bool = False) -> str:
     )
 
 
+def _m4_config_sql(config_id: str, session_id: str) -> str:
+    return (
+        "INSERT INTO scoring_config VALUES "
+        f"('{config_id}','{session_id}',1,'now',"
+        '\'{"S-1":0,"S-2":0,"S-3":0,"S-4":0,"S-5":0,'
+        '"S-6":1,"S-8":0}\',\'{}\',NULL)'
+    )
+
+
+def _m4_score_sql(
+    score_id: str,
+    candidate_id: str,
+    brief_id: str,
+    config_id: str,
+    fingerprint: str,
+    *,
+    operation: str = "INSERT",
+) -> str:
+    return (
+        f"{operation} INTO score "
+        "(id,candidate_id,brief_id,weights_version,scoring_config_id,stage,score,"
+        "score_lower,score_upper,confidence,confidence_band,calculation_status,"
+        "active_signal_count,all_inert_attested,input_fingerprint,source_snapshot,"
+        "computed_at,superseded_at,is_current) VALUES "
+        f"('{score_id}','{candidate_id}','{brief_id}','1','{config_id}',"
+        "'provisional',NULL,NULL,NULL,0,NULL,'unknown',0,1,"
+        f"'{fingerprint}','{{}}','now',NULL,0)"
+    )
+
+
 @pytest.mark.parametrize("recursive_triggers", ["ON", "OFF"])
 def test_score_pair_must_share_session_for_insert_update_and_upsert(
     database: Database,
@@ -529,32 +559,35 @@ def test_score_pair_must_share_session_for_insert_update_and_upsert(
     with _maintenance_connect(path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
+        connection.execute(_m4_config_sql(f"config-{suffix}-a", f"session-{suffix}-a"))
+        connection.execute(_m4_config_sql(f"config-{suffix}-b", f"session-{suffix}-b"))
+        with pytest.raises(sqlite3.IntegrityError, match="share a session"):
+            connection.execute(
+                _m4_score_sql(
+                    f"score-cross-{suffix}",
+                    f"candidate-{suffix}-a",
+                    f"brief-{suffix}-b",
+                    f"config-{suffix}-a",
+                    "c" * 64,
+                )
+            )
+
+        valid_id = f"score-valid-{suffix}"
+        connection.execute(
+            _m4_score_sql(
+                valid_id,
+                f"candidate-{suffix}-a",
+                f"brief-{suffix}-a",
+                f"config-{suffix}-a",
+                "d" * 64,
+            )
+        )
         with pytest.raises(
             sqlite3.IntegrityError,
             match=(
                 r"must share a session|roots are immutable|"
-                r"identity.*immutable|staged"
+                r"identity.*immutable|already exists"
             ),
-        ):
-            connection.execute(
-                _score_insert_sql(),
-                (
-                    f"score-cross-{suffix}",
-                    f"candidate-{suffix}-a",
-                    f"brief-{suffix}-b",
-                ),
-            )
-
-        valid_id = f"score-valid-{suffix}"
-        with pytest.raises(sqlite3.IntegrityError, match=r"scoring config|staged"):
-            connection.execute(
-                _score_insert_sql(),
-                (valid_id, f"candidate-{suffix}-a", f"brief-{suffix}-a"),
-            )
-        return
-        with pytest.raises(
-            sqlite3.IntegrityError,
-            match=r"must share a session|roots are immutable|identity.*immutable",
         ):
             connection.execute(
                 "UPDATE OR REPLACE score SET brief_id=? WHERE id=?",
@@ -562,11 +595,20 @@ def test_score_pair_must_share_session_for_insert_update_and_upsert(
             )
         with pytest.raises(
             sqlite3.IntegrityError,
-            match=r"must share a session|roots are immutable|identity.*immutable",
+            match=(
+                r"must share a session|roots are immutable|"
+                r"identity.*immutable|already exists"
+            ),
         ):
             connection.execute(
-                _score_insert_sql(replace=True),
-                (valid_id, f"candidate-{suffix}-a", f"brief-{suffix}-b"),
+                _m4_score_sql(
+                    valid_id,
+                    f"candidate-{suffix}-a",
+                    f"brief-{suffix}-b",
+                    f"config-{suffix}-a",
+                    "d" * 64,
+                    operation="INSERT OR REPLACE",
+                )
             )
         with pytest.raises(
             sqlite3.IntegrityError,
@@ -832,15 +874,18 @@ def test_score_roots_are_immutable_for_updates_and_real_upserts(
                 "'[]', '[]', '[]', 'plain', 'v1', "
                 f"{superseded})"
             )
-        with pytest.raises(DBAPIError, match=r"scoring config|staged"):
-            connection.exec_driver_sql(
-                _score_insert_sql().replace(
-                    "VALUES (?, ?, ?",
-                    "VALUES ("
-                    f"'score-{suffix}', 'candidate-{suffix}', 'brief-base-{suffix}'",
-                )
+        connection.exec_driver_sql(
+            _m4_config_sql(f"config-{suffix}", f"session-{suffix}")
+        )
+        connection.exec_driver_sql(
+            _m4_score_sql(
+                f"score-{suffix}",
+                f"candidate-{suffix}",
+                f"brief-base-{suffix}",
+                f"config-{suffix}",
+                "e" * 64,
             )
-        return
+        )
     path = database.path
     database.dispose()
     replacement = (
@@ -852,7 +897,7 @@ def test_score_roots_are_immutable_for_updates_and_real_upserts(
         connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
         with pytest.raises(
             sqlite3.IntegrityError,
-            match=r"roots are immutable|identity.*immutable",
+            match=r"roots are immutable|identity.*immutable|already exists",
         ):
             if operation == "update":
                 connection.execute(
@@ -865,14 +910,15 @@ def test_score_roots_are_immutable_for_updates_and_real_upserts(
                 )
                 brief = replacement if root == "brief_id" else f"brief-base-{suffix}"
                 connection.execute(
-                    "INSERT INTO score "
-                    "(id, candidate_id, brief_id, weights_version, stage, score, "
-                    "score_lower, score_upper, confidence, confidence_band, "
-                    "computed_at, is_current) VALUES (?, ?, ?, 'v1', "
-                    "'provisional', 1, 1, 1, 1, 'high', 'now', 1) "
-                    "ON CONFLICT(id) DO UPDATE SET "
-                    "candidate_id=excluded.candidate_id, brief_id=excluded.brief_id",
-                    (f"score-{suffix}", candidate, brief),
+                    _m4_score_sql(
+                        f"score-{suffix}",
+                        candidate,
+                        brief,
+                        f"config-{suffix}",
+                        "e" * 64,
+                    )
+                    + " ON CONFLICT(id) DO UPDATE SET "
+                    "candidate_id=excluded.candidate_id,brief_id=excluded.brief_id"
                 )
             else:
                 candidate = (
@@ -880,8 +926,14 @@ def test_score_roots_are_immutable_for_updates_and_real_upserts(
                 )
                 brief = replacement if root == "brief_id" else f"brief-base-{suffix}"
                 connection.execute(
-                    _score_insert_sql(replace=True),
-                    (f"score-{suffix}", candidate, brief),
+                    _m4_score_sql(
+                        f"score-{suffix}",
+                        candidate,
+                        brief,
+                        f"config-{suffix}",
+                        "e" * 64,
+                        operation="INSERT OR REPLACE",
+                    )
                 )
         assert connection.execute(
             "SELECT candidate_id, brief_id FROM score WHERE id=?", (f"score-{suffix}",)

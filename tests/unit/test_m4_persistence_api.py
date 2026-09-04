@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ast
+import json
+import sqlite3
 import time
 from pathlib import Path
 from typing import Any
@@ -122,11 +124,20 @@ def test_m4_score_gate_and_exact_evidence_lifecycle(tmp_path: Path) -> None:
             _search_result(),
             _profile_result(
                 main_profile="Ada Example\nPlatform Engineer",
-                experience="Experience\nPlatform Engineer at Acme",
             ),
             _profile_result(main_profile="Ada Example", skills=skills),
             _profile_result(skills=f"{skills} rollback-marker"),
             _profile_result(skills=f"{skills} newer-marker"),
+            {
+                "url": "https://www.linkedin.com/in/ada/",
+                "sections": {},
+                "section_errors": {
+                    "experience": {
+                        "error_type": "unparseable",
+                        "error_message": "exact later fetch error",
+                    }
+                },
+            },
         ]
     )
     app = create_app(_settings(tmp_path / "m4.db"), queue_executor=executor)
@@ -265,6 +276,74 @@ def test_m4_score_gate_and_exact_evidence_lifecycle(tmp_path: Path) -> None:
             client.post(
                 "/api/session/gates/B",
                 json={"evidence_ids": current_ids[:10], "note": "stale profile"},
+            ).status_code
+            == 409
+        )
+        app.state.scoring_service.rescore_candidate_in_session = original_rescore
+        assert client.post(f"/api/candidates/{candidate_id}/rescore").status_code == 200
+        refreshed = client.get(f"/api/candidates/{candidate_id}").json()
+        current_ids = [
+            item["id"]
+            for signal in refreshed["signals"]
+            for claim in signal["claims"]
+            for item in claim["evidence"]
+            if item["availability"]["state"] == "available"
+        ]
+        score_id = refreshed["score"]["score_id"]
+        fingerprint = refreshed["score"]["input_fingerprint"]
+        with app.state.database.sessions() as session:
+            persisted = session.get(CandidateScore, score_id)
+            assert persisted is not None
+            sections = persisted.source_snapshot["profile_snapshot"]["sections"]
+            experience_snapshot = next(
+                item for item in sections if item["name"] == "experience"
+            )
+            assert experience_snapshot == {
+                "id": "missing:experience",
+                "name": "experience",
+                "state": "missing",
+                "content_sha256": None,
+                "missing_reason": "not_requested",
+                "section_error_id": None,
+            }
+        app.state.scoring_service.rescore_candidate_in_session = (
+            lambda _session, _candidate: None
+        )
+        error_only = client.post(
+            f"/api/candidates/{candidate_id}/enrich",
+            json={"sections": ["experience"]},
+        ).json()
+        assert _wait(app, error_only["job_id"]).state == "done"
+        manifest = [
+            {
+                "evidence_id": evidence_id,
+                "score_id": score_id,
+                "input_fingerprint": fingerprint,
+            }
+            for evidence_id in current_ids[:10]
+        ]
+        for recursive in ("ON", "OFF"):
+            with sqlite3.connect(app.state.database.path) as connection:
+                connection.execute(f"PRAGMA recursive_triggers={recursive}")
+                with pytest.raises(
+                    sqlite3.IntegrityError,
+                    match="ten current exact evidence spans",
+                ):
+                    connection.execute(
+                        "INSERT INTO phase_gate "
+                        "(id,session_id,gate,accepted_at,accepted_note,"
+                        "evidence_manifest) VALUES "
+                        "(?,?,'B','now','raw stale error',?)",
+                        (
+                            f"raw-stale-error-{recursive}",
+                            session_id,
+                            json.dumps(manifest),
+                        ),
+                    )
+        assert (
+            client.post(
+                "/api/session/gates/B",
+                json={"evidence_ids": current_ids[:10], "note": "stale error"},
             ).status_code
             == 409
         )
