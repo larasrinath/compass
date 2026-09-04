@@ -5,13 +5,130 @@
 from __future__ import annotations
 
 import json
-import unicodedata
-from collections.abc import Iterable
 from typing import Any
 
 from sqlalchemy import Connection
 
+from linkedin_dashboard.db.scoring_manifest import SIGNAL_IDS, build_manifest
+from linkedin_dashboard.db.unicode_identity import (
+    SCORING_CANONICAL_SENTINEL,
+    SCORING_DISPLAY_CANONICAL_SENTINEL,
+)
+
 VERSION = "0025_m4_semantic_integrity"
+
+
+def _signal_source(signal_id: str, brief: str) -> str:
+    sources = {
+        "S-1": f"SELECT term,aliases FROM brief_skill WHERE brief_id={brief}.id AND kind='required'",
+        "S-2": f"SELECT term,aliases FROM brief_skill WHERE brief_id={brief}.id AND kind='optional'",
+        "S-3": (
+            f"SELECT term,aliases FROM brief_term WHERE brief_id={brief}.id AND kind='target_title' "
+            "UNION ALL "
+            f"SELECT term,aliases FROM brief_skill WHERE brief_id={brief}.id AND kind='required'"
+        ),
+        "S-4": f"SELECT term,aliases FROM brief_term WHERE brief_id={brief}.id AND kind='target_title'",
+        "S-5": f"SELECT term,aliases FROM brief_term WHERE brief_id={brief}.id AND kind='industry'",
+        "S-6": f"SELECT {brief}.location AS term,json_array() AS aliases WHERE length(trim({brief}.location))>0",
+        "S-8": f"SELECT term,aliases FROM brief_credential WHERE brief_id={brief}.id",
+    }
+    return sources[signal_id]
+
+
+def _signal_manifest_invalid(signal_id: str, brief: str) -> str:
+    path = f"'$.\"{signal_id}\"'"
+    source = _signal_source(signal_id, brief)
+    return f"""
+json_type({brief}.scoring_inputs,{path})<>'array'
+OR EXISTS (
+  SELECT 1 FROM json_each({brief}.scoring_inputs,{path}) item
+  WHERE json_type(item.value)<>'object'
+    OR (SELECT count(*) FROM json_each(item.value))<>3
+    OR json_type(item.value,'$.display')<>'text'
+    OR length(json_extract(item.value,'$.display'))=0
+    OR NOT (json_extract(item.value,'$.display')=
+            '{SCORING_DISPLAY_CANONICAL_SENTINEL}'
+              COLLATE scoring_display_canonical_v1)
+    OR json_type(item.value,'$.term')<>'text'
+    OR NOT (json_extract(item.value,'$.term')=
+            '{SCORING_CANONICAL_SENTINEL}' COLLATE scoring_canonical_v1)
+    OR json_type(item.value,'$.aliases')<>'array'
+    OR EXISTS (SELECT 1 FROM json_each(json_extract(item.value,'$.aliases')) alias
+      WHERE alias.type<>'text' OR NOT (
+        alias.value='{SCORING_CANONICAL_SENTINEL}' COLLATE scoring_canonical_v1))
+    OR EXISTS (SELECT 1 FROM json_each(json_extract(item.value,'$.aliases')) current
+      JOIN json_each(json_extract(item.value,'$.aliases')) previous
+        ON cast(previous.key AS INTEGER)=cast(current.key AS INTEGER)-1
+      WHERE previous.value>=current.value)
+    OR EXISTS (SELECT 1 FROM json_each({brief}.scoring_inputs,{path}) primary_item,
+                            json_each(json_extract(item.value,'$.aliases')) alias
+      WHERE json_extract(primary_item.value,'$.term')=alias.value)
+    OR NOT (json_extract(item.value,'$.display')=(
+      SELECT min(display_source.term COLLATE scoring_display_v1)
+      FROM ({source}) display_source
+      WHERE display_source.term=json_extract(item.value,'$.term')
+        COLLATE scoring_normalized_v1
+    ) COLLATE scoring_display_v1))
+OR EXISTS (
+  SELECT 1 FROM json_each({brief}.scoring_inputs,{path}) current
+  JOIN json_each({brief}.scoring_inputs,{path}) previous
+    ON cast(previous.key AS INTEGER)=cast(current.key AS INTEGER)-1
+  WHERE json_extract(previous.value,'$.term')>=json_extract(current.value,'$.term'))
+OR json_array_length({brief}.scoring_inputs,{path})<>(
+  SELECT count(DISTINCT source.term COLLATE scoring_normalized_v1)
+  FROM ({source}) source)
+OR EXISTS (SELECT 1 FROM ({source}) source WHERE NOT EXISTS (
+  SELECT 1 FROM json_each({brief}.scoring_inputs,{path}) item
+  WHERE json_extract(item.value,'$.term')=source.term COLLATE scoring_normalized_v1))
+OR EXISTS (SELECT 1 FROM json_each({brief}.scoring_inputs,{path}) item WHERE NOT EXISTS (
+  SELECT 1 FROM ({source}) source
+  WHERE source.term=json_extract(item.value,'$.term') COLLATE scoring_normalized_v1))
+OR EXISTS (
+  SELECT 1 FROM json_each({brief}.scoring_inputs,{path}) item,
+                json_each(json_extract(item.value,'$.aliases')) manifest_alias
+  WHERE NOT EXISTS (
+    SELECT 1 FROM ({source}) source,json_each(source.aliases) raw_alias
+    WHERE source.term=json_extract(item.value,'$.term') COLLATE scoring_normalized_v1
+      AND raw_alias.value=manifest_alias.value COLLATE scoring_normalized_v1)
+  OR EXISTS (SELECT 1 FROM ({source}) primary_source
+    WHERE primary_source.term=manifest_alias.value COLLATE scoring_normalized_v1)
+  OR NOT (json_extract(item.value,'$.term')=(
+    SELECT min(owner.term COLLATE scoring_normalized_v1)
+    FROM ({source}) owner,json_each(owner.aliases) owner_alias
+    WHERE owner_alias.value=manifest_alias.value COLLATE scoring_normalized_v1
+  ) COLLATE scoring_normalized_v1))
+OR EXISTS (
+  SELECT 1 FROM ({source}) source,json_each(source.aliases) raw_alias
+  WHERE NOT EXISTS (SELECT 1 FROM ({source}) primary_source
+    WHERE primary_source.term=raw_alias.value COLLATE scoring_normalized_v1)
+    AND source.term=(
+      SELECT min(owner.term COLLATE scoring_normalized_v1)
+      FROM ({source}) owner,json_each(owner.aliases) owner_alias
+      WHERE owner_alias.value=raw_alias.value COLLATE scoring_normalized_v1
+    ) COLLATE scoring_normalized_v1
+    AND NOT EXISTS (
+      SELECT 1 FROM json_each({brief}.scoring_inputs,{path}) item,
+                    json_each(json_extract(item.value,'$.aliases')) manifest_alias
+      WHERE json_extract(item.value,'$.term')=source.term COLLATE scoring_normalized_v1
+        AND manifest_alias.value=raw_alias.value COLLATE scoring_normalized_v1))
+"""
+
+
+def _manifest_invalid(brief: str) -> str:
+    signals = "\nOR ".join(
+        f"({_signal_manifest_invalid(signal_id, brief)})" for signal_id in SIGNAL_IDS
+    )
+    allowed = ",".join(f"'{item}'" for item in (*SIGNAL_IDS, "matcher_version"))
+    return f"""
+json_valid({brief}.scoring_inputs)<>1
+OR json_type({brief}.scoring_inputs)<>'object'
+OR json_extract({brief}.scoring_inputs,'$.matcher_version')<>'scoring-v1'
+OR (SELECT count(*) FROM json_each({brief}.scoring_inputs))<>8
+OR EXISTS (SELECT 1 FROM json_each({brief}.scoring_inputs) item
+           WHERE item.key NOT IN ({allowed}))
+OR {signals}
+"""
+
 
 _EXPECTED_TERMS = """
 (SELECT json_group_array(term_key) FROM (
@@ -24,7 +141,7 @@ _EXPECTED_TERMS = """
 
 _EXPECTED_ALIASES = """
 (SELECT json_group_array(alias_key) FROM (
-  SELECT alias.value AS alias_key
+  SELECT DISTINCT alias.value AS alias_key
   FROM json_each(rb.scoring_inputs,'$."' || ss.signal_id || '"') input,
        json_each(json_extract(input.value,'$.aliases')) alias
   WHERE ss.signal_id NOT IN ('S-1','S-2','S-8')
@@ -52,39 +169,36 @@ _CLAIM_IS_BRIEF_BOUND = """
  OR (ss.signal_id='S-6' AND claim.claim_key='S-6:location-fit'
    AND json_array_length(rb.scoring_inputs,'$."S-6"')=1)
  OR (ss.signal_id='S-3' AND claim.claim_key='S-3:experience-depth'
-   AND json_array_length(rb.scoring_inputs,'$."S-3"')>0))
+   AND coalesce(rb.required_experience_months,0)>0))
 """
 
 _COVERAGE_SHAPE_INVALID = """
 json_type(coverage.normalized_terms)<>'array'
 OR json_array_length(coverage.normalized_terms)=0
 OR EXISTS (SELECT 1 FROM json_each(coverage.normalized_terms) term
-  WHERE term.type<>'text' OR length(term.value)=0)
+  WHERE term.type<>'text' OR NOT (
+    term.value='__linkedin_dashboard_scoring_v1_canonical__'
+      COLLATE scoring_canonical_v1))
+OR EXISTS (SELECT 1 FROM json_each(coverage.normalized_terms) current
+  JOIN json_each(coverage.normalized_terms) previous
+    ON cast(previous.key AS INTEGER)=cast(current.key AS INTEGER)-1
+  WHERE previous.value>=current.value)
 OR json_type(coverage.aliases)<>'array'
 OR EXISTS (SELECT 1 FROM json_each(coverage.aliases) alias
-  WHERE alias.type<>'text' OR length(alias.value)=0)
+  WHERE alias.type<>'text' OR NOT (
+    alias.value='__linkedin_dashboard_scoring_v1_canonical__'
+      COLLATE scoring_canonical_v1))
 OR EXISTS (SELECT 1 FROM json_each(coverage.aliases) current
   JOIN json_each(coverage.aliases) previous
     ON cast(previous.key AS INTEGER)=cast(current.key AS INTEGER)-1
-  WHERE previous.value>current.value)
+  WHERE previous.value>=current.value)
+OR EXISTS (SELECT 1 FROM json_each(coverage.aliases) alias,
+                         json_each(coverage.normalized_terms) term
+  WHERE alias.value=term.value)
 OR coverage.matcher_version<>'scoring-v1'
 """
 
-_BRIEF_MANIFEST_INVALID = """
-json_valid(rb.scoring_inputs)<>1
-OR json_type(rb.scoring_inputs)<>'object'
-OR json_extract(rb.scoring_inputs,'$.matcher_version')<>'scoring-v1'
-OR json_type(rb.scoring_inputs,'$."' || ss.signal_id || '"')<>'array'
-OR EXISTS (
-  SELECT 1 FROM json_each(rb.scoring_inputs,'$."' || ss.signal_id || '"') input
-  WHERE json_type(input.value,'$.display')<>'text'
-    OR length(json_extract(input.value,'$.display'))=0
-    OR json_type(input.value,'$.term')<>'text'
-    OR length(json_extract(input.value,'$.term'))=0
-    OR json_type(input.value,'$.aliases')<>'array'
-    OR EXISTS (SELECT 1 FROM json_each(json_extract(input.value,'$.aliases')) alias
-               WHERE alias.type<>'text' OR length(alias.value)=0))
-"""
+_BRIEF_MANIFEST_INVALID = _manifest_invalid("rb")
 
 _FINALIZED_SIGNAL_INVALID = """
 json_valid(s.source_snapshot)<>1
@@ -134,6 +248,8 @@ _LATEST_ROOTED_ERROR_REASON = (
 
 TRIGGER_NAMES = (
     "role_brief_append_only",
+    "role_brief_scoring_insert_v25",
+    "role_brief_scoring_seal_v25",
     "score_claim_finalize_v25",
     "score_finalize_signal_set_v25",
     "signal_coverage_shape_v25",
@@ -141,6 +257,15 @@ TRIGGER_NAMES = (
 )
 
 STATEMENTS = (
+    f"""CREATE TRIGGER role_brief_scoring_insert_v25
+       BEFORE INSERT ON role_brief FOR EACH ROW
+       WHEN NEW.sealed_at IS NOT NULL AND ({_manifest_invalid("NEW")})
+       BEGIN SELECT RAISE(ABORT, 'role brief scoring inputs are not canonical'); END""",
+    f"""CREATE TRIGGER role_brief_scoring_seal_v25
+       BEFORE UPDATE OF sealed_at ON role_brief FOR EACH ROW
+       WHEN OLD.sealed_at IS NULL AND NEW.sealed_at IS NOT NULL
+         AND ({_manifest_invalid("NEW")})
+       BEGIN SELECT RAISE(ABORT, 'role brief scoring inputs are not canonical'); END""",
     """CREATE TRIGGER role_brief_append_only BEFORE UPDATE ON role_brief
        FOR EACH ROW WHEN NEW.id IS NOT OLD.id OR NEW.session_id IS NOT OLD.session_id
          OR NEW.version IS NOT OLD.version OR NEW.created_at IS NOT OLD.created_at
@@ -167,7 +292,15 @@ STATEMENTS = (
        BEGIN SELECT RAISE(ABORT, 'absence coverage is not canonical'); END""",
     f"""CREATE TRIGGER score_claim_finalize_v25
        BEFORE INSERT ON score_claim FOR EACH ROW WHEN
-         (NEW.verdict IN ('matched','contradicted') AND EXISTS (
+         (EXISTS (SELECT 1 FROM score_signal inactive
+                  WHERE inactive.id=NEW.score_signal_id
+                    AND inactive.signal_id='S-3')
+          AND NOT EXISTS (
+            SELECT 1 FROM score_signal active JOIN score s ON s.id=active.score_id
+            JOIN role_brief rb ON rb.id=s.brief_id
+            WHERE active.id=NEW.score_signal_id
+              AND coalesce(rb.required_experience_months,0)>0))
+         OR (NEW.verdict IN ('matched','contradicted') AND EXISTS (
            SELECT 1 FROM evidence e WHERE e.evidence_set_id=NEW.evidence_set_id
              AND ((NEW.verdict='matched' AND e.polarity<>'supporting')
                OR (NEW.verdict='contradicted' AND e.polarity<>'contradicting'))))
@@ -268,12 +401,6 @@ STATEMENTS = (
 )
 
 
-def _normalize(value: str) -> str:
-    compatibility = unicodedata.normalize("NFKC", value)
-    caseless = unicodedata.normalize("NFKC", compatibility.casefold())
-    return " ".join(caseless.split())
-
-
 def _array(value: Any) -> list[str]:
     decoded = json.loads(value) if isinstance(value, str) else value
     if not isinstance(decoded, list) or not all(
@@ -283,57 +410,45 @@ def _array(value: Any) -> list[str]:
     return decoded
 
 
-def _entry(term: str, aliases: Iterable[str]) -> dict[str, object]:
-    return {
-        "display": term,
-        "term": _normalize(term),
-        "aliases": sorted(
-            normalized for alias in aliases if (normalized := _normalize(alias))
-        ),
-    }
-
-
 def _brief_manifest(
     connection: Connection, brief_id: str, location: str
 ) -> dict[str, object]:
-    skills: dict[str, list[dict[str, object]]] = {"required": [], "optional": []}
+    skills: dict[str, list[tuple[str, list[str]]]] = {
+        "required": [],
+        "optional": [],
+    }
     for term, kind, aliases in connection.exec_driver_sql(
         "SELECT term,kind,aliases FROM brief_skill WHERE brief_id=? "
         "ORDER BY position,id",
         (brief_id,),
     ):
-        skills[str(kind)].append(_entry(str(term), _array(aliases)))
-    terms: dict[str, list[dict[str, object]]] = {"target_title": [], "industry": []}
+        skills[str(kind)].append((str(term), _array(aliases)))
+    terms: dict[str, list[tuple[str, list[str]]]] = {
+        "target_title": [],
+        "industry": [],
+    }
     for term, kind, aliases in connection.exec_driver_sql(
         "SELECT term,kind,aliases FROM brief_term WHERE brief_id=? "
         "ORDER BY position,id",
         (brief_id,),
     ):
-        terms[str(kind)].append(_entry(str(term), _array(aliases)))
+        terms[str(kind)].append((str(term), _array(aliases)))
     credentials = [
-        _entry(str(term), _array(aliases))
+        (str(term), _array(aliases))
         for term, aliases in connection.exec_driver_sql(
             "SELECT term,aliases FROM brief_credential WHERE brief_id=? "
             "ORDER BY position,id",
             (brief_id,),
         )
     ]
-    normalized_location = _normalize(location)
-    location_entries = (
-        [{"display": location, "term": normalized_location, "aliases": []}]
-        if normalized_location
-        else []
+    return build_manifest(
+        required_skills=skills["required"],
+        optional_skills=skills["optional"],
+        target_titles=terms["target_title"],
+        industries=terms["industry"],
+        location=location,
+        required_credentials=credentials,
     )
-    return {
-        "matcher_version": "scoring-v1",
-        "S-1": skills["required"],
-        "S-2": skills["optional"],
-        "S-3": [*terms["target_title"], *skills["required"]],
-        "S-4": terms["target_title"],
-        "S-5": terms["industry"],
-        "S-6": location_entries,
-        "S-8": credentials,
-    }
 
 
 def _prepare_brief_manifests(connection: Connection) -> None:

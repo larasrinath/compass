@@ -17,6 +17,7 @@ from linkedin_dashboard.db.migrations import (
     v0023_m4_scoring,
     v0024_m4_integrity_upgrade,
     v0025_m4_semantic_integrity,
+    v0026_m4_manifest_convergence,
 )
 from linkedin_dashboard.db.session import Database
 from linkedin_dashboard.db.unicode_identity import register_sqlite_unicode_casefold
@@ -311,7 +312,7 @@ def test_migrated_v22_score_signal_is_immutable_until_session_purge(
     legacy = Database(path)
     try:
         with monkeypatch.context() as patch:
-            patch.setattr(db_session, "_MIGRATION_MODULES", modules[:-3])
+            patch.setattr(db_session, "_MIGRATION_MODULES", modules[:-4])
             legacy.initialize()
             with legacy.engine.begin() as connection:
                 connection.exec_driver_sql(
@@ -423,7 +424,7 @@ def _initialize_v23_database(
     database = Database(path)
     try:
         with monkeypatch.context() as patch:
-            patch.setattr(db_session, "_MIGRATION_MODULES", modules[:-2])
+            patch.setattr(db_session, "_MIGRATION_MODULES", modules[:-3])
             database.initialize()
             if populated:
                 with database.engine.begin() as connection:
@@ -447,10 +448,52 @@ def _initialize_v23_database(
                         "('v23-brief','v23-session',1,'now','job','[]','','[]',"
                         "'[]','[]','plain','1')"
                     )
+                    for row in (
+                        (
+                            "v23-skill-python",
+                            "Python",
+                            "required",
+                            '["Shared"]',
+                            2,
+                        ),
+                        (
+                            "v23-skill-go",
+                            "Go",
+                            "required",
+                            '["Golang"]',
+                            9,
+                        ),
+                    ):
+                        connection.exec_driver_sql(
+                            "INSERT INTO brief_skill "
+                            "(id,brief_id,term,kind,aliases,position) "
+                            "VALUES (?,'v23-brief',?,?,?,?)",
+                            row,
+                        )
+                    for row in (
+                        (
+                            "v23-title-zelda",
+                            "Zelda",
+                            "zelda",
+                            '["shared"]',
+                            1,
+                        ),
+                        ("v23-title-alpha", "Alpha", "alpha", '["A"]', 8),
+                    ):
+                        connection.exec_driver_sql(
+                            "INSERT INTO brief_term "
+                            "(id,brief_id,kind,term,term_key,aliases,position) "
+                            "VALUES (?,'v23-brief','target_title',?,?,?,?)",
+                            row,
+                        )
+                    connection.exec_driver_sql(
+                        "UPDATE role_brief SET sealed_at=created_at "
+                        "WHERE id='v23-brief'"
+                    )
                     connection.exec_driver_sql(
                         "INSERT INTO scoring_config VALUES "
                         "('v23-config','v23-session',1,'now',"
-                        '\'{"S-1":0,"S-2":0,"S-3":0,"S-4":0,'
+                        '\'{"S-1":1,"S-2":0,"S-3":1,"S-4":1,'
                         '"S-5":0,"S-6":0,"S-8":0}\',\'{}\',NULL)'
                     )
                     connection.exec_driver_sql(
@@ -530,10 +573,14 @@ def test_exact_v23_database_upgrades_through_v25_without_data_loss(
     with _maintenance_connect(path) as connection:
         assert connection.execute(
             "SELECT count(*) FROM schema_migration"
-        ).fetchone() == (25,)
+        ).fetchone() == (26,)
         assert connection.execute(
             "SELECT 1 FROM schema_migration WHERE version=?",
             (v0024_m4_integrity_upgrade.VERSION,),
+        ).fetchone() == (1,)
+        assert connection.execute(
+            "SELECT 1 FROM schema_migration WHERE version=?",
+            (v0026_m4_manifest_convergence.VERSION,),
         ).fetchone() == (1,)
         assert connection.execute(
             "SELECT 1 FROM schema_migration WHERE version=?",
@@ -636,7 +683,7 @@ def _initialize_exact_v24_database(
     database = Database(path)
     try:
         with monkeypatch.context() as patch:
-            patch.setattr(db_session, "_MIGRATION_MODULES", modules[:-1])
+            patch.setattr(db_session, "_MIGRATION_MODULES", modules[:-2])
             database.initialize()
             with database.engine.connect() as connection:
                 assert (
@@ -689,10 +736,14 @@ def test_exact_v24_database_upgrades_to_v25_atomically(
     with _maintenance_connect(path) as connection:
         assert connection.execute(
             "SELECT count(*) FROM schema_migration"
-        ).fetchone() == (25,)
+        ).fetchone() == (26,)
         assert connection.execute(
             "SELECT 1 FROM schema_migration WHERE version=?",
             (v0025_m4_semantic_integrity.VERSION,),
+        ).fetchone() == (1,)
+        assert connection.execute(
+            "SELECT 1 FROM schema_migration WHERE version=?",
+            (v0026_m4_manifest_convergence.VERSION,),
         ).fetchone() == (1,)
         for table, rows in before.items():
             assert connection.execute(f'SELECT * FROM "{table}"').fetchall() == rows
@@ -707,7 +758,18 @@ def test_exact_v24_database_upgrades_to_v25_atomically(
                 ).fetchone()[0]
             )
             assert manifest["matcher_version"] == "scoring-v1"
-            assert manifest["S-1"] == []
+            assert [item["term"] for item in manifest["S-1"]] == ["go", "python"]
+            assert [item["term"] for item in manifest["S-3"]] == [
+                "alpha",
+                "go",
+                "python",
+                "zelda",
+            ]
+            assert [alias for item in manifest["S-3"] for alias in item["aliases"]] == [
+                "a",
+                "golang",
+                "shared",
+            ]
         for name in v0025_m4_semantic_integrity.TRIGGER_NAMES:
             assert connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?", (name,)
@@ -781,6 +843,200 @@ def test_v25_failure_rolls_back_exact_v24_and_retry_succeeds(
     retry = Database(path)
     retry.initialize()
     retry.dispose()
+
+
+def _initialize_rejected_v25_database(
+    path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _initialize_exact_v24_database(path, monkeypatch, populated=True)
+    modules = db_session._MIGRATION_MODULES
+    db_session._expected_schema.cache_clear()
+    database = Database(path)
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(db_session, "_MIGRATION_MODULES", modules[:-1])
+            database.initialize()
+            with database.engine.connect() as connection:
+                assert (
+                    connection.exec_driver_sql(
+                        "SELECT count(*) FROM schema_migration"
+                    ).scalar_one()
+                    == 25
+                )
+    finally:
+        database.dispose()
+        db_session._expected_schema.cache_clear()
+
+    rejected_manifest = {
+        "matcher_version": "scoring-v1",
+        "S-1": [
+            {"display": "Python", "term": "python", "aliases": ["shared"]},
+            {"display": "Go", "term": "go", "aliases": ["golang"]},
+        ],
+        "S-2": [],
+        "S-3": [
+            {"display": "Zelda", "term": "zelda", "aliases": ["shared"]},
+            {"display": "Alpha", "term": "alpha", "aliases": ["a"]},
+            {"display": "Python", "term": "python", "aliases": ["shared"]},
+            {"display": "Go", "term": "go", "aliases": ["golang"]},
+        ],
+        "S-4": [
+            {"display": "Zelda", "term": "zelda", "aliases": ["shared"]},
+            {"display": "Alpha", "term": "alpha", "aliases": ["a"]},
+        ],
+        "S-5": [],
+        "S-6": [],
+        "S-8": [],
+    }
+    with _maintenance_connect(path) as connection:
+        append_sql = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='trigger' "
+            "AND name='role_brief_append_only'"
+        ).fetchone()[0]
+        connection.execute("DROP TRIGGER role_brief_append_only")
+        connection.execute("DROP TRIGGER role_brief_scoring_insert_v25")
+        connection.execute("DROP TRIGGER role_brief_scoring_seal_v25")
+        connection.execute(
+            "UPDATE role_brief SET scoring_inputs=? WHERE id='v23-brief'",
+            (json.dumps(rejected_manifest, separators=(",", ":")),),
+        )
+        connection.execute(append_sql)
+
+
+def test_v26_converges_recorded_rejected_v25_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "rejected-v25.db"
+    _initialize_rejected_v25_database(path, monkeypatch)
+    with _maintenance_connect(path) as connection:
+        before = {
+            table: connection.execute(f'SELECT * FROM "{table}"').fetchall()
+            for table in (
+                "session",
+                "candidate",
+                "brief_skill",
+                "brief_term",
+                "score",
+                "score_signal",
+                "evidence",
+                "message_draft",
+                "phase_gate",
+            )
+        }
+
+    upgraded = Database(path)
+    upgraded.initialize()
+    upgraded.dispose()
+
+    with _maintenance_connect(path) as connection:
+        assert connection.execute(
+            "SELECT count(*) FROM schema_migration"
+        ).fetchone() == (26,)
+        manifest = json.loads(
+            connection.execute(
+                "SELECT scoring_inputs FROM role_brief WHERE id='v23-brief'"
+            ).fetchone()[0]
+        )
+        assert [item["term"] for item in manifest["S-1"]] == ["go", "python"]
+        assert [item["term"] for item in manifest["S-3"]] == [
+            "alpha",
+            "go",
+            "python",
+            "zelda",
+        ]
+        assert [alias for item in manifest["S-3"] for alias in item["aliases"]] == [
+            "a",
+            "golang",
+            "shared",
+        ]
+        for table, rows in before.items():
+            assert connection.execute(f'SELECT * FROM "{table}"').fetchall() == rows
+        for name in v0025_m4_semantic_integrity.TRIGGER_NAMES:
+            assert connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?", (name,)
+            ).fetchone() == (1,)
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+
+
+def test_v26_failure_rolls_back_rejected_v25_and_retry_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "v26-interrupted.db"
+    _initialize_rejected_v25_database(path, monkeypatch)
+    baseline_schema = _schema_objects(path)
+    with _maintenance_connect(path) as connection:
+        baseline_data = connection.execute(
+            "SELECT id,scoring_inputs FROM role_brief ORDER BY id"
+        ).fetchall()
+
+    original_apply = v0026_m4_manifest_convergence.apply
+
+    def interrupted_apply(connection) -> None:
+        connection.exec_driver_sql("DROP TRIGGER role_brief_append_only")
+        v0026_m4_manifest_convergence._converge_rejected_manifests(connection)
+        raise RuntimeError("interrupted during v26")
+
+    monkeypatch.setattr(v0026_m4_manifest_convergence, "apply", interrupted_apply)
+    failed = Database(path)
+    with pytest.raises(RuntimeError, match="interrupted during v26"):
+        failed.initialize()
+    failed.dispose()
+
+    assert _schema_objects(path) == baseline_schema
+    with _maintenance_connect(path) as connection:
+        assert (
+            connection.execute(
+                "SELECT id,scoring_inputs FROM role_brief ORDER BY id"
+            ).fetchall()
+            == baseline_data
+        )
+        assert (
+            connection.execute(
+                "SELECT 1 FROM schema_migration WHERE version=?",
+                (v0026_m4_manifest_convergence.VERSION,),
+            ).fetchone()
+            is None
+        )
+
+    monkeypatch.setattr(v0026_m4_manifest_convergence, "apply", original_apply)
+    retry = Database(path)
+    retry.initialize()
+    retry.dispose()
+
+
+def test_v26_rejects_unknown_manifest_without_rewriting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "v26-unknown-manifest.db"
+    _initialize_rejected_v25_database(path, monkeypatch)
+    with _maintenance_connect(path) as connection:
+        append_sql = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='trigger' "
+            "AND name='role_brief_append_only'"
+        ).fetchone()[0]
+        connection.execute("DROP TRIGGER role_brief_append_only")
+        connection.execute(
+            "UPDATE role_brief SET scoring_inputs='{}' WHERE id='v23-brief'"
+        )
+        connection.execute(append_sql)
+
+    failed = Database(path)
+    with pytest.raises(RuntimeError, match="neither the rejected v25 shape"):
+        failed.initialize()
+    failed.dispose()
+
+    with _maintenance_connect(path) as connection:
+        assert connection.execute(
+            "SELECT scoring_inputs FROM role_brief WHERE id='v23-brief'"
+        ).fetchone() == ("{}",)
+        assert (
+            connection.execute(
+                "SELECT 1 FROM schema_migration WHERE version=?",
+                (v0026_m4_manifest_convergence.VERSION,),
+            ).fetchone()
+            is None
+        )
 
 
 @pytest.mark.parametrize("recursive_triggers", ["ON", "OFF"])

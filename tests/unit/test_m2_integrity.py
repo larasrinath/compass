@@ -7,6 +7,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from linkedin_dashboard.db.scoring_manifest import build_manifest
 from linkedin_dashboard.db.session import Database
 from linkedin_dashboard.db.unicode_identity import register_sqlite_unicode_casefold
 
@@ -31,8 +32,9 @@ def _database(tmp_path: Path) -> Path:
                 "INSERT INTO role_brief "
                 "(id, session_id, version, created_at, sealed_at, superseded_at, "
                 "job_description, target_titles, location, industries, "
-                "positive_keywords, negative_keywords, message_tone, weights_version) "
-                "VALUES (?, ?, 1, ?, NULL, NULL, ?, ?, '', ?, ?, ?, '', 'v1')",
+                "positive_keywords, negative_keywords, message_tone, weights_version, "
+                "scoring_inputs) VALUES "
+                "(?, ?, 1, ?, NULL, NULL, ?, ?, '', ?, ?, ?, '', 'v1', ?)",
                 (
                     f"brief-{suffix}",
                     f"session-{suffix}",
@@ -42,6 +44,17 @@ def _database(tmp_path: Path) -> Path:
                     json.dumps(["Software"]),
                     json.dumps(["platform"]),
                     json.dumps([]),
+                    json.dumps(
+                        build_manifest(
+                            required_skills=(("Python", ()),),
+                            optional_skills=(),
+                            target_titles=(("Engineer", ()),),
+                            industries=(),
+                            location="",
+                            required_credentials=(),
+                        ),
+                        separators=(",", ":"),
+                    ),
                 ),
             )
             connection.execute(

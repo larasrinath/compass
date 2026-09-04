@@ -18,8 +18,8 @@ from linkedin_dashboard.db.models import (
     DashboardSession,
     RoleBrief,
 )
+from linkedin_dashboard.db.scoring_manifest import build_manifest
 from linkedin_dashboard.db.session import Database
-from linkedin_dashboard.services.scoring.matching import MATCHER_VERSION
 from linkedin_dashboard.services.scoring.normalization import normalize_text
 
 if TYPE_CHECKING:
@@ -150,44 +150,16 @@ def normalize_brief(value: BriefValue) -> BriefValue:
 
 def scoring_inputs(value: BriefValue) -> dict[str, object]:
     """Freeze the exact normalized terms used by absence provenance."""
-
-    def entry(item: TermValue) -> dict[str, object]:
-        return {
-            "display": item.term,
-            "term": normalize_text(item.term),
-            "aliases": sorted(
-                normalized
-                for alias in item.aliases
-                if (normalized := normalize_text(alias))
-            ),
-        }
-
-    required = [entry(item) for item in value.required_skills]
-    optional = [entry(item) for item in value.optional_skills]
-    titles = [entry(item) for item in value.target_titles]
-    industries = [entry(item) for item in value.industries]
-    credentials = [entry(item) for item in value.required_credentials]
-    location = (
-        [
-            {
-                "display": value.location,
-                "term": normalize_text(value.location),
-                "aliases": [],
-            }
-        ]
-        if normalize_text(value.location)
-        else []
+    return build_manifest(
+        required_skills=((item.term, item.aliases) for item in value.required_skills),
+        optional_skills=((item.term, item.aliases) for item in value.optional_skills),
+        target_titles=((item.term, item.aliases) for item in value.target_titles),
+        industries=((item.term, item.aliases) for item in value.industries),
+        location=value.location,
+        required_credentials=(
+            (item.term, item.aliases) for item in value.required_credentials
+        ),
     )
-    return {
-        "matcher_version": MATCHER_VERSION,
-        "S-1": required,
-        "S-2": optional,
-        "S-3": [*titles, *required],
-        "S-4": titles,
-        "S-5": industries,
-        "S-6": location,
-        "S-8": credentials,
-    }
 
 
 def contains_protected_criterion(entered: str) -> bool:

@@ -17,6 +17,7 @@ from linkedin_dashboard.db.migrations import (
     v0023_m4_scoring,
     v0024_m4_integrity_upgrade,
     v0025_m4_semantic_integrity,
+    v0026_m4_manifest_convergence,
 )
 from linkedin_dashboard.db.models import (
     BriefCredential,
@@ -151,6 +152,8 @@ def _downgrade_v25_schema_to_v24(connection: sqlite3.Connection) -> None:
         "signal_coverage_shape_v25",
         "phase_gate_manifest_insert",
         "role_brief_append_only",
+        "role_brief_scoring_insert_v25",
+        "role_brief_scoring_seal_v25",
     ):
         connection.execute(f'DROP TRIGGER "{name}"')
     connection.execute("DROP INDEX score_signal_identity_v25")
@@ -170,8 +173,11 @@ def _downgrade_v25_schema_to_v24(connection: sqlite3.Connection) -> None:
         )
     )
     connection.execute(
-        "DELETE FROM schema_migration WHERE version=?",
-        (v0025_m4_semantic_integrity.VERSION,),
+        "DELETE FROM schema_migration WHERE version IN (?,?)",
+        (
+            v0025_m4_semantic_integrity.VERSION,
+            v0026_m4_manifest_convergence.VERSION,
+        ),
     )
 
 
@@ -376,17 +382,21 @@ def test_or_replace_cannot_rewrite_config_or_credential(
                     "WHERE id=?",
                     (brief_id,),
                 )
-            with pytest.raises(sqlite3.IntegrityError, match="version already exists"):
+            with pytest.raises(
+                sqlite3.IntegrityError,
+                match=r"version already exists|scoring inputs are not canonical",
+            ):
                 connection.execute(
                     "INSERT OR REPLACE INTO role_brief "
                     "(id,session_id,version,created_at,sealed_at,superseded_at,"
                     "job_description,target_titles,location,industries,"
                     "positive_keywords,negative_keywords,message_tone,"
-                    "required_experience_months,weights_version) "
+                    "required_experience_months,weights_version,scoring_inputs) "
                     "SELECT 'replacement-brief',session_id,version+1,'now',"
                     "'now',NULL,job_description,target_titles,location,industries,"
                     "positive_keywords,negative_keywords,message_tone,"
-                    "required_experience_months,weights_version FROM role_brief "
+                    "required_experience_months,weights_version,scoring_inputs "
+                    "FROM role_brief "
                     "WHERE id=?",
                     (brief_id,),
                 )
@@ -796,6 +806,7 @@ def test_raw_claims_require_polarity_and_canonical_coverage(
         score_id = detail["score"]["score_id"]
 
         with sqlite3.connect(app.state.database.path) as connection:
+            register_sqlite_unicode_casefold(connection)
             connection.execute("PRAGMA foreign_keys=ON")
             connection.execute(f"PRAGMA recursive_triggers={recursive}")
             immutable_sql = connection.execute(
@@ -833,22 +844,49 @@ def test_raw_claims_require_polarity_and_canonical_coverage(
                 "('forged-coverage',?,?, '[\"skills\"]')",
                 (candidate_id, signal_id),
             )
-            for row_id, terms, matcher in (
-                ("empty-terms", "[]", "scoring-v1"),
-                ("unknown-matcher", '["python"]', "unknown-v9"),
+            for row_id, terms, aliases, matcher in (
+                ("empty-terms", "[]", "[]", "scoring-v1"),
+                ("unknown-matcher", '["python"]', "[]", "unknown-v9"),
+                ("duplicate-terms", '["python","python"]', "[]", "scoring-v1"),
+                ("unsorted-terms", '["rust","python"]', "[]", "scoring-v1"),
+                (
+                    "noncanonical-term",
+                    '["\\uff30ython"]',
+                    "[]",
+                    "scoring-v1",
+                ),
+                (
+                    "duplicate-aliases",
+                    '["python"]',
+                    '["py","py"]',
+                    "scoring-v1",
+                ),
+                (
+                    "unsorted-aliases",
+                    '["python"]',
+                    '["python3","py"]',
+                    "scoring-v1",
+                ),
+                (
+                    "overlapping-alias",
+                    '["python"]',
+                    '["python"]',
+                    "scoring-v1",
+                ),
             ):
                 with pytest.raises(
                     sqlite3.IntegrityError,
                     match="absence coverage is not canonical",
                 ):
                     connection.execute(
-                        "INSERT INTO signal_coverage VALUES (?,?,?,?,?,'[]',?)",
+                        "INSERT INTO signal_coverage VALUES (?,?,?,?,?,?,?)",
                         (
                             row_id,
                             "forged-coverage",
                             section_id,
                             content_hash,
                             terms,
+                            aliases,
                             matcher,
                         ),
                     )
@@ -867,6 +905,48 @@ def test_raw_claims_require_polarity_and_canonical_coverage(
                     "('wrong-coverage',?,'S-1:python','Python','not_matched',NULL,"
                     "'forged-coverage',NULL)",
                     (signal_id,),
+                )
+            connection.execute(
+                "INSERT INTO candidate "
+                "(id,session_id,username,profile_url,first_seen_at,stage,"
+                "retrieval_status) SELECT 'inactive-s3-candidate',session_id,"
+                "'inactive-s3','https://www.linkedin.com/in/inactive-s3/',"
+                "'now','discovered','pending' FROM candidate WHERE id=?",
+                (candidate_id,),
+            )
+            connection.execute(
+                "INSERT INTO score "
+                "SELECT 'inactive-s3-score','inactive-s3-candidate',brief_id,"
+                "weights_version,"
+                "scoring_config_id,stage,NULL,NULL,NULL,0,NULL,'unknown',1,0,"
+                "'c' || substr(input_fingerprint,2),"
+                '\'{"active_signal_ids":["S-3"]}\',computed_at,NULL,0 '
+                "FROM score WHERE id=?",
+                (score_id,),
+            )
+            connection.execute(
+                "INSERT INTO score_signal "
+                "(id,score_id,signal_id,weight,verdict,rollup,raw_subscore,"
+                "contribution,availability,note) SELECT "
+                "'inactive-s3-signal','inactive-s3-score','S-3',"
+                "json_extract(cfg.weights,'$.\"S-3\"'),'unknown','unknown',0,0,0,NULL "
+                "FROM scoring_config cfg JOIN score s "
+                "ON s.scoring_config_id=cfg.id WHERE s.id='inactive-s3-score'"
+            )
+            connection.execute(
+                "INSERT INTO missing_set VALUES "
+                "('inactive-s3-missing','inactive-s3-candidate',"
+                "'inactive-s3-signal')"
+            )
+            with pytest.raises(
+                sqlite3.IntegrityError,
+                match="score claim semantics do not match brief",
+            ):
+                connection.execute(
+                    "INSERT INTO score_claim VALUES "
+                    "('inactive-s3-claim','inactive-s3-signal',"
+                    "'S-3:experience-depth','experience','unknown',NULL,NULL,"
+                    "'inactive-s3-missing')"
                 )
             connection.execute(
                 "INSERT INTO evidence_set VALUES ('mixed-set',?,?)",
@@ -1376,6 +1456,70 @@ def test_unparseable_round_trip_requires_consumed_exact_section(tmp_path: Path) 
                     section_error_id=None,
                 )
             )
+
+
+def test_s3_cross_category_coverage_is_globally_canonical(tmp_path: Path) -> None:
+    executor = SequenceExecutor(
+        [
+            _search_result(),
+            _profile_result(
+                experience="Experience\nCOBOL Operator\nJan 2018 - Dec 2023"
+            ),
+        ]
+    )
+    app = create_app(_settings(tmp_path / "s3-canonical.db"), queue_executor=executor)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        session_id = client.post("/api/session", json={"label": "s3"}).json()["id"]
+        brief = client.post(
+            "/api/briefs",
+            json=_brief(
+                session_id,
+                required_skills=[
+                    {"term": "Python", "aliases": ["Shared"]},
+                    {"term": "Go", "aliases": ["Golang"]},
+                ],
+                target_titles=[{"term": "Zelda", "aliases": ["shared", "Go"]}],
+                required_credentials=[],
+                required_experience_months=60,
+            ),
+        ).json()
+        assert brief["id"]
+        search = client.post(
+            "/api/searches",
+            json={
+                "session_id": session_id,
+                "brief_id": brief["id"],
+                "keywords": "platform",
+            },
+        ).json()
+        assert _wait(app, search["job_id"]).state == "done"
+        candidate_id = client.get(
+            "/api/candidate-pool", params={"session_id": session_id}
+        ).json()[0]["id"]
+        assert (
+            client.post("/api/session/gates/A", json={"note": "reviewed"}).status_code
+            == 201
+        )
+        enrichment = client.post(
+            f"/api/candidates/{candidate_id}/enrich",
+            json={"sections": ["experience"]},
+        ).json()
+        assert _wait(app, enrichment["job_id"]).state == "done"
+
+        with app.state.database.engine.connect() as connection:
+            coverage = connection.exec_driver_sql(
+                "SELECT coverage.normalized_terms,coverage.aliases,"
+                "coverage.matcher_version FROM signal_coverage coverage "
+                "JOIN coverage_set cs ON cs.id=coverage.coverage_set_id "
+                "JOIN score_signal ss ON ss.id=cs.score_signal_id "
+                "JOIN score s ON s.id=ss.score_id "
+                "WHERE s.candidate_id=? AND s.is_current=1 "
+                "AND ss.signal_id='S-3'",
+                (candidate_id,),
+            ).one()
+        assert json.loads(coverage.normalized_terms) == ["go", "python", "zelda"]
+        assert json.loads(coverage.aliases) == ["golang", "shared"]
+        assert coverage.matcher_version == "scoring-v1"
 
 
 @pytest.mark.parametrize("error_type", ("parse_error", "unparseable"))

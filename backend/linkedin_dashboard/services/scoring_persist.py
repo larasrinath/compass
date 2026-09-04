@@ -43,9 +43,13 @@ from linkedin_dashboard.db.models import (
 from linkedin_dashboard.db.models import (
     ScoreSignal as ScoreSignalRow,
 )
+from linkedin_dashboard.db.scoring_manifest import (
+    MATCHER_VERSION,
+    canonical_coverage_values,
+    coverage_values,
+)
 from linkedin_dashboard.parsing.verify import verify_substring
 from linkedin_dashboard.services.scoring.aggregate import calculate_score
-from linkedin_dashboard.services.scoring.matching import MATCHER_VERSION
 from linkedin_dashboard.services.scoring.normalization import normalize_text
 from linkedin_dashboard.services.scoring.signals import active_signal_ids
 from linkedin_dashboard.services.scoring.types import (
@@ -581,77 +585,33 @@ def _expected_absence_coverage(
     signal_id: str,
     display_term: str,
 ) -> tuple[tuple[str, ...], tuple[str, ...], str]:
-    skills = list(
-        session.scalars(
-            select(BriefSkill)
-            .where(BriefSkill.brief_id == brief.id)
-            .order_by(BriefSkill.position, BriefSkill.id)
-        )
-    )
-    terms = list(
-        session.scalars(
-            select(BriefTerm)
-            .where(BriefTerm.brief_id == brief.id)
-            .order_by(BriefTerm.position, BriefTerm.id)
-        )
-    )
-    credentials = list(
-        session.scalars(
-            select(BriefCredential)
-            .where(BriefCredential.brief_id == brief.id)
-            .order_by(BriefCredential.position, BriefCredential.id)
-        )
-    )
-
-    selected: list[tuple[str, list[str]]]
+    del session
+    manifest = brief.scoring_inputs
+    if not isinstance(manifest, dict):
+        raise ValueError("brief scoring inputs are unavailable")
     claim_key: str
     if signal_id in {"S-1", "S-2"}:
-        kind = "required" if signal_id == "S-1" else "optional"
         key = normalize_text(display_term)
-        selected = [
-            (item.term, item.aliases)
-            for item in skills
-            if item.kind == kind and normalize_text(item.term) == key
-        ]
         claim_key = f"{signal_id}:{key}"
+        normalized_terms, aliases = coverage_values(manifest, signal_id, term_key=key)
     elif signal_id == "S-8":
         key = normalize_text(display_term)
-        selected = [
-            (item.term, item.aliases) for item in credentials if item.term_key == key
-        ]
         claim_key = f"S-8:{key}"
+        normalized_terms, aliases = coverage_values(manifest, signal_id, term_key=key)
     elif signal_id == "S-4":
-        selected = [
-            (item.term, item.aliases) for item in terms if item.kind == "target_title"
-        ]
         claim_key = "S-4:title-similarity"
+        normalized_terms, aliases = coverage_values(manifest, signal_id)
     elif signal_id == "S-5":
-        selected = [
-            (item.term, item.aliases) for item in terms if item.kind == "industry"
-        ]
         claim_key = "S-5:industry-relevance"
+        normalized_terms, aliases = coverage_values(manifest, signal_id)
     elif signal_id == "S-6":
-        selected = [(brief.location, [])]
         claim_key = "S-6:location-fit"
+        normalized_terms, aliases = coverage_values(manifest, signal_id)
     elif signal_id == "S-3":
-        selected = [
-            (item.term, item.aliases) for item in terms if item.kind == "target_title"
-        ] + [(item.term, item.aliases) for item in skills if item.kind == "required"]
         claim_key = "S-3:experience-depth"
+        normalized_terms, aliases = coverage_values(manifest, signal_id)
     else:
         raise ValueError("absence coverage uses an unsupported signal")
-
-    normalized_terms = tuple(normalize_text(term) for term, _ in selected)
-    aliases = tuple(
-        sorted(
-            normalized
-            for _, raw_aliases in selected
-            for alias in raw_aliases
-            if (normalized := normalize_text(alias))
-        )
-    )
-    if not normalized_terms or any(not term for term in normalized_terms):
-        raise ValueError("absence coverage requires canonical search terms")
     return normalized_terms, aliases, claim_key
 
 
@@ -716,15 +676,14 @@ def _persist_claim(
         if claim.claim_key != expected_claim_key:
             raise ValueError("absence coverage claim does not match its brief input")
         for entry in claim.provenance.entries:
+            actual_terms, actual_aliases = canonical_coverage_values(
+                entry.normalized_terms, entry.aliases
+            )
             if (
-                not entry.normalized_terms
-                or entry.normalized_terms != expected_terms
-                or entry.aliases != expected_aliases
+                not actual_terms
+                or actual_terms != expected_terms
+                or actual_aliases != expected_aliases
                 or entry.matcher_version != MATCHER_VERSION
-                or any(
-                    normalize_text(value) != value for value in entry.normalized_terms
-                )
-                or any(normalize_text(value) != value for value in entry.aliases)
             ):
                 raise ValueError("absence coverage does not match its brief input")
         coverage_set_id = set_id
@@ -745,8 +704,8 @@ def _persist_claim(
                     coverage_set_id=set_id,
                     profile_section_id=str(entry.profile_section_id),
                     content_sha256=entry.content_sha256,
-                    normalized_terms=list(entry.normalized_terms),
-                    aliases=list(entry.aliases),
+                    normalized_terms=list(expected_terms),
+                    aliases=list(expected_aliases),
                     matcher_version=entry.matcher_version,
                 )
             )
