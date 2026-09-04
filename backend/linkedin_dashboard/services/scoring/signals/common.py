@@ -76,15 +76,18 @@ def coverage_set(
     names: tuple[str, ...],
     terms: tuple[Term, ...],
 ) -> CoverageSet:
-    normalized_terms = tuple(normalize_text(item.term) for item in terms)
-    aliases = tuple(
+    normalized_terms = tuple(
         sorted(
-            normalize_text(alias)
-            for item in terms
-            for alias in item.aliases
-            if normalize_text(alias)
+            {normalized for item in terms if (normalized := normalize_text(item.term))}
         )
     )
+    alias_values = {
+        normalized
+        for item in terms
+        for alias in item.aliases
+        if (normalized := normalize_text(alias))
+    }
+    aliases = tuple(sorted(alias_values.difference(normalized_terms)))
     entries: list[AbsenceCoverage] = []
     for section in required_sections(snapshot, names):
         if section is None or section.state is not SectionState.COMPLETE:

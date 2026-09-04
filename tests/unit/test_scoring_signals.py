@@ -230,6 +230,56 @@ def test_experience_not_matched_without_relevant_roles() -> None:
 
 
 @pytest.mark.parametrize(
+    ("titles", "skills", "normalized_terms", "aliases"),
+    (
+        (
+            (Term("Zulu Architect"),),
+            (Term("Alpha Strategist"),),
+            ("alpha strategist", "zulu architect"),
+            (),
+        ),
+        (
+            (Term("Same Role"),),
+            (Term("same role"),),
+            ("same role",),
+            (),
+        ),
+        (
+            (Term("Designer", ("shared alias",)),),
+            (Term("Rust", ("Shared Alias",)),),
+            ("designer", "rust"),
+            ("shared alias",),
+        ),
+        (
+            (Term("Designer", ("rust",)),),
+            (Term("Rust"),),
+            ("designer", "rust"),
+            (),
+        ),
+    ),
+)
+def test_explicit_experience_absence_canonicalizes_combined_vocabulary(
+    titles: tuple[Term, ...],
+    skills: tuple[Term, ...],
+    normalized_terms: tuple[str, ...],
+    aliases: tuple[str, ...],
+) -> None:
+    signal = relevant_experience(
+        BriefInput(
+            required_experience_months=60,
+            target_titles=titles,
+            required_skills=skills,
+        ),
+        rich_snapshot(),
+    )
+    assert signal.claims[0].verdict is Verdict.NOT_MATCHED
+    provenance = signal.claims[0].provenance
+    assert isinstance(provenance, CoverageSet)
+    assert {item.normalized_terms for item in provenance.entries} == {normalized_terms}
+    assert {item.aliases for item in provenance.entries} == {aliases}
+
+
+@pytest.mark.parametrize(
     ("months", "verdict", "polarity"),
     (
         (72, Verdict.MATCHED, Polarity.SUPPORTING),
