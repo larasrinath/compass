@@ -852,6 +852,36 @@ footer strong {
   padding: 12px;
 }
 .context-panel dd { margin: 5px 0 0; color: var(--ink-soft); }
+
+/* API text can be arbitrary. Every nested flex/grid item in candidate scoring,
+   evidence, claims, provenance, and context must be allowed to shrink and wrap. */
+.compact-intro,
+.compact-intro :where(*),
+.ranked-candidate,
+.ranked-candidate :where(*),
+.candidate-score-summary,
+.candidate-score-summary :where(*),
+.score-history,
+.score-history :where(*),
+.evidence-panel,
+.evidence-panel :where(*),
+.context-panel,
+.context-panel :where(*),
+.parsed-panel,
+.parsed-panel :where(*),
+.raw-placeholder,
+.raw-placeholder :where(*),
+.section-selector,
+.section-selector :where(*),
+.inline-error,
+.inline-error :where(*) {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.signal-table {
+  table-layout: fixed;
+}
 .status-dot {
   width: 8px;
   height: 8px;

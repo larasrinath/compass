@@ -61,7 +61,7 @@ const session = {
 }
 const queue = {
   state: 'active', pause_reason: null, resume_at: null, counts: {}, jobs: [],
-  connected: true, revision: 0, lastEventAt: null,
+  connected: true, revision: 0, scoringRevision: 0, lastEventAt: null,
 }
 const config = {
   version: 'v3',
@@ -245,6 +245,90 @@ test('Gate B posts only the separately verified exact evidence ids', async () =>
   await user.keyboard('{Enter}')
   await waitFor(() => assert.equal(payload.evidence_ids.length, 10))
   assert.deepEqual(new Set(payload.evidence_ids), new Set(verified.keys()))
+})
+
+test('verification sink reconciles only a complete unfiltered two-candidate dataset', async () => {
+  const first = ranked({
+    id: 'first', score_id: 'score-first', input_fingerprint: 'fingerprint-first',
+    username: 'first', display_name: 'First Candidate',
+  })
+  const second = ranked({
+    id: 'second', score_id: 'score-second', input_fingerprint: 'fingerprint-second',
+    username: 'second', display_name: 'Second Candidate',
+  })
+  const initial = new Map([
+    ['evidence-first', {
+      evidenceId: 'evidence-first', sessionId: 'session', scoreId: 'score-first',
+      inputFingerprint: 'fingerprint-first',
+    }],
+    ['evidence-second', {
+      evidenceId: 'evidence-second', sessionId: 'session', scoreId: 'score-second',
+      inputFingerprint: 'fingerprint-second',
+    }],
+    ['stale-evidence', {
+      evidenceId: 'stale-evidence', sessionId: 'session', scoreId: 'old-score',
+      inputFingerprint: 'old-fingerprint',
+    }],
+  ])
+  const requested = []
+  let releaseComplete
+  const pendingComplete = new Promise((resolve) => {
+    releaseComplete = () => resolve(new Response(JSON.stringify([first, second]), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }))
+  })
+  globalThis.fetch = (input) => {
+    const path = String(input)
+    if (path === '/api/weights') return json(config)
+    if (path.startsWith('/api/candidates?')) {
+      requested.push(path)
+      const params = new URL(path, 'http://local').searchParams
+      if (params.get('confidence') === 'high') return json([first])
+      if (params.get('confidence') === 'low') return json({ detail: 'failed' }, 500)
+      return pendingComplete
+    }
+    throw new Error(`unexpected fetch ${path}`)
+  }
+  let sink = initial
+  const sinkSnapshots = []
+  function Harness() {
+    const [verified, setVerified] = React.useState(initial)
+    return React.createElement(CandidatesPage, {
+      session,
+      verifiedEvidence: verified,
+      onEvidenceReconciled(values) {
+        sink = values
+        sinkSnapshots.push(new Map(values))
+        setVerified(values)
+      },
+      onScoresChanged() {},
+      onCandidateOpen() {},
+    })
+  }
+
+  const user = userEvent.setup({ document: dom.window.document })
+  render(wrapper(React.createElement(Harness)))
+  await screen.findByText('Calculating ranked evidence…')
+  assert.equal(sinkSnapshots.length, 0, 'pending data cannot reach the sink')
+  releaseComplete()
+  await screen.findByText('First Candidate')
+  await waitFor(() => assert.equal(sink.size, 2))
+  assert.deepEqual(new Set(sink.keys()), new Set(['evidence-first', 'evidence-second']))
+  assert.equal(screen.getByText('2 / 10').textContent.includes('2 / 10'), true)
+  const completeSinkCalls = sinkSnapshots.length
+
+  await user.selectOptions(screen.getByLabelText('Confidence'), 'high')
+  await waitFor(() => assert.equal(requested.at(-1).includes('confidence=high'), true))
+  await screen.findByText('First Candidate')
+  assert.equal(screen.queryByText('Second Candidate'), null)
+  assert.equal(sinkSnapshots.length, completeSinkCalls)
+  assert.equal(sink.size, 2, 'a filtered subset cannot prune a valid second selection')
+
+  await user.selectOptions(screen.getByLabelText('Confidence'), 'low')
+  await screen.findByRole('alert')
+  assert.equal(sinkSnapshots.length, completeSinkCalls)
+  assert.equal(sink.size, 2, 'an error response cannot become reconciliation input')
 })
 
 test('weights save uses the loaded optimistic version and never offers S-7 input', async () => {

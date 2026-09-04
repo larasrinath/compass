@@ -31,6 +31,8 @@ export function CandidatesPage({
   const [confidence, setConfidence] = useState('')
   const [minimum, setMinimum] = useState('')
   const [sort, setSort] = useState('score_desc')
+  const [hasReconciledCompleteDataset, setHasReconciledCompleteDataset] =
+    useState(false)
   const [gateNote, setGateNote] = useState('Exact evidence spans spot-checked against stored raw text.')
   const candidates = useQuery({
     queryKey: ['ranked-candidates', session.id, stage, confidence, minimum, sort],
@@ -44,8 +46,11 @@ export function CandidatesPage({
       }),
     enabled: Boolean(session.phase_gates?.A),
   })
+  const isUnfiltered = stage === '' && confidence === '' && minimum === ''
+  const hasCompleteIdentityDataset =
+    isUnfiltered && candidates.isSuccess && !candidates.isFetching
   const currentScoreIdentities = new Set(
-    (candidates.data ?? []).map((candidate) =>
+    (hasCompleteIdentityDataset ? candidates.data : []).map((candidate) =>
       scoreIdentityKey({
         sessionId: session.id,
         scoreId: candidate.score_id,
@@ -53,16 +58,27 @@ export function CandidatesPage({
       }),
     ),
   )
-  const eligibleEvidence = reconcileEvidenceVerifications(
-    verifiedEvidence,
-    currentScoreIdentities,
+  const eligibleEvidence = hasCompleteIdentityDataset
+    ? reconcileEvidenceVerifications(verifiedEvidence, currentScoreIdentities)
+    : new Map(verifiedEvidence)
+  const scoreIdentitySignature = JSON.stringify(
+    [...currentScoreIdentities].sort(),
   )
-  const scoreIdentitySignature = [...currentScoreIdentities].sort().join('|')
+  const verificationSignature = JSON.stringify(
+    [...verifiedEvidence]
+      .map(([evidenceId, verification]) => [
+        evidenceId,
+        scoreIdentityKey(verification),
+      ])
+      .sort(([left], [right]) => left.localeCompare(right)),
+  )
   useEffect(() => {
+    if (!hasCompleteIdentityDataset) return
     onEvidenceReconciled(eligibleEvidence)
-    // The signature represents the complete current score set; callbacks are state sinks.
+    setHasReconciledCompleteDataset(true)
+    // These signatures bind the sink to a successful, idle, unfiltered identity set.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scoreIdentitySignature])
+  }, [hasCompleteIdentityDataset, scoreIdentitySignature, verificationSignature])
   const gateB = useMutation({
     mutationFn: () => acceptPhaseGateB([...eligibleEvidence.keys()], gateNote),
     onSuccess: async () => client.invalidateQueries({ queryKey: ['session'] }),
@@ -185,7 +201,16 @@ export function CandidatesPage({
               <span>Verification note</span>
               <textarea onChange={(event) => setGateNote(event.target.value)} rows={2} value={gateNote} />
             </label>
-            <button className="primary-action" disabled={eligibleEvidence.size < 10 || gateB.isPending} type="submit">
+            <button
+              className="primary-action"
+              disabled={
+                eligibleEvidence.size < 10 ||
+                gateB.isPending ||
+                !hasReconciledCompleteDataset ||
+                (isUnfiltered && !hasCompleteIdentityDataset)
+              }
+              type="submit"
+            >
               {gateB.isPending ? 'Recording…' : 'Accept Gate B'}
             </button>
             {gateB.isError ? <p className="field-error" role="alert">{gateB.error.message}</p> : null}

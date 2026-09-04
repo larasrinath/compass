@@ -1,3 +1,5 @@
+import { useEffect, useRef } from 'react'
+
 export interface ScoreIdentity {
   sessionId: string
   scoreId: string
@@ -21,4 +23,20 @@ export function reconcileEvidenceVerifications(
       currentScoreIdentities.has(scoreIdentityKey(verification)),
     ),
   )
+}
+
+export function useNewRevisionEffect(
+  revision: number,
+  onNewRevision: () => void,
+): void {
+  const lastSeen = useRef(revision)
+  const callback = useRef(onNewRevision)
+  useEffect(() => {
+    callback.current = onNewRevision
+  }, [onNewRevision])
+  useEffect(() => {
+    const previous = lastSeen.current
+    lastSeen.current = revision
+    if (revision > previous) callback.current()
+  }, [revision])
 }

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { parseAppRoute, pathForRoute } from '../src/routing.ts'
+import { isScoringMutationEvent } from '../src/hooks/useJobEvents.ts'
 import {
   reconcileEvidenceVerifications,
   scoreIdentityKey,
@@ -30,4 +31,19 @@ test('v1 evidence verification cannot survive a v2 score identity', () => {
   })])
   assert.equal(reconcileEvidenceVerifications(verified, v1).size, 1)
   assert.equal(reconcileEvidenceVerifications(verified, v2).size, 0)
+})
+
+test('only a completed profile read is a scoring queue mutation', () => {
+  assert.equal(
+    isScoringMutationEvent({ kind: 'get_person_profile', state: 'done' }),
+    true,
+  )
+  assert.equal(
+    isScoringMutationEvent({ kind: 'get_person_profile', state: 'running' }),
+    false,
+  )
+  assert.equal(
+    isScoringMutationEvent({ kind: 'search_people', state: 'done' }),
+    false,
+  )
 })

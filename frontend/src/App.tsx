@@ -13,7 +13,10 @@ import { CandidateDetailPage } from './pages/CandidateDetailPage'
 import { CandidatesPage } from './pages/CandidatesPage'
 import { SearchPage } from './pages/SearchPage'
 import { parseAppRoute, pathForRoute, type AppRoute } from './routing'
-import type { EvidenceVerification } from './scoreVerification'
+import {
+  useNewRevisionEffect,
+  type EvidenceVerification,
+} from './scoreVerification'
 import './App.css'
 
 function StatusDot({ healthy }: { healthy: boolean }) {
@@ -59,6 +62,13 @@ function App() {
   const clearEvidenceVerifications = useCallback(() => {
     setVerificationState({ scope: verificationScope, values: new Map() })
   }, [verificationScope])
+  const reconcileEvidenceVerifications = useCallback(
+    (values: Map<string, EvidenceVerification>) => {
+      setVerificationState({ scope: verificationScope, values })
+    },
+    [verificationScope],
+  )
+  useNewRevisionEffect(queue.scoringRevision, clearEvidenceVerifications)
   const navigate = useCallback((next: AppRoute, replace = false) => {
     const path = pathForRoute(next)
     if (replace) window.history.replaceState(null, '', path)
@@ -198,8 +208,14 @@ function App() {
             />
           ) : view === 'candidate' && candidateId ? (
             <CandidateDetailPage
+              backDestination={rankingUnlocked ? 'candidates' : 'search'}
               candidateId={candidateId}
-              onBack={() => navigate({ view: 'ranked', candidateId: null })}
+              onBack={() =>
+                navigate({
+                  view: rankingUnlocked ? 'ranked' : 'search',
+                  candidateId: null,
+                })
+              }
               onEvidenceVerified={(verification, verified) =>
                 setVerificationState((current) => {
                   const values =
@@ -219,9 +235,7 @@ function App() {
             />
           ) : view === 'ranked' ? (
             <CandidatesPage
-              onEvidenceReconciled={(values) =>
-                setVerificationState({ scope: verificationScope, values })
-              }
+              onEvidenceReconciled={reconcileEvidenceVerifications}
               onCandidateOpen={(id) => {
                 navigate({ view: 'candidate', candidateId: id })
               }}

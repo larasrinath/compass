@@ -18,6 +18,7 @@ import type { EvidenceVerification } from '../scoreVerification'
 export function CandidateDetailPage({
   candidateId,
   onBack,
+  backDestination,
   queue,
   rankingUnlocked,
   sessionId,
@@ -27,6 +28,7 @@ export function CandidateDetailPage({
 }: {
   candidateId: string
   onBack: () => void
+  backDestination: 'search' | 'candidates'
   queue: ReturnTypeOfJobEvents
   rankingUnlocked: boolean
   sessionId: string
@@ -39,6 +41,7 @@ export function CandidateDetailPage({
 }) {
   const queryClient = useQueryClient()
   const enrichmentErrorRef = useRef<HTMLParagraphElement>(null)
+  const lastQueueRevision = useRef(queue.revision)
   const [selected, setSelected] = useState<string[]>([
     'education',
     'skills',
@@ -79,16 +82,16 @@ export function CandidateDetailPage({
   })
 
   useEffect(() => {
-    if (queue.revision > 0) {
-      onScoreInputsChanged()
-      void queryClient.invalidateQueries({
-        queryKey: ['candidate', candidateId],
-      })
-      void queryClient.invalidateQueries({
-        queryKey: ['candidate-section', candidateId],
-      })
-    }
-  }, [candidateId, onScoreInputsChanged, queryClient, queue.revision])
+    const previous = lastQueueRevision.current
+    lastQueueRevision.current = queue.revision
+    if (queue.revision <= previous) return
+    void queryClient.invalidateQueries({
+      queryKey: ['candidate', candidateId],
+    })
+    void queryClient.invalidateQueries({
+      queryKey: ['candidate-section', candidateId],
+    })
+  }, [candidateId, queryClient, queue.revision])
 
   if (detail.isPending) return <p aria-live="polite">Opening stored profile…</p>
   if (detail.isError || !detail.data) {
@@ -133,7 +136,7 @@ export function CandidateDetailPage({
   return (
     <section aria-labelledby="candidate-title" className="workspace-page">
       <button className="quiet-action back-action" onClick={onBack} type="button">
-        ← Back to candidates
+        ← Back to {backDestination}
       </button>
       <div className="page-intro compact-intro">
         <div>
