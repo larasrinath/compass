@@ -7,6 +7,10 @@ from dataclasses import dataclass
 
 from linkedin_dashboard.parsing.spans import VerifiedSpan
 from linkedin_dashboard.parsing.verify import verify_substring
+from linkedin_dashboard.services.scoring.normalization import (
+    caseless_nfkc,
+    normalize_text,
+)
 from linkedin_dashboard.services.scoring.types import Matcher, Term
 
 MATCHER_VERSION = "scoring-v1"
@@ -37,11 +41,6 @@ class _WordSpan:
     text: str
     start: int
     end: int
-
-
-def normalize_text(value: str) -> str:
-    """Canonical comparison form; never used as displayed evidence."""
-    return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
 
 
 def _is_hangul_lead(value: str) -> bool:
@@ -110,7 +109,7 @@ def _cluster_normalize(value: str) -> _IndexedText:
     ends: list[int] = []
     for start, index in _source_clusters(value):
         cluster = value[start:index]
-        normalized = unicodedata.normalize("NFKC", cluster).casefold()
+        normalized = caseless_nfkc(cluster)
         for character in normalized:
             output.append(character)
             starts.append(start)
@@ -124,7 +123,7 @@ def _prefix_normalize(value: str) -> _IndexedText:
     starts: list[int] = []
     ends: list[int] = []
     for source_end in range(1, len(value) + 1):
-        current = unicodedata.normalize("NFKC", value[:source_end]).casefold()
+        current = caseless_nfkc(value[:source_end])
         common = 0
         limit = min(len(previous), len(current))
         while common < limit and previous[common] == current[common]:
@@ -165,7 +164,7 @@ def _collapse_whitespace(indexed: _IndexedText) -> _IndexedText:
 
 def _indexed_normalize(value: str) -> _IndexedText:
     indexed = _cluster_normalize(value)
-    whole = unicodedata.normalize("NFKC", value).casefold()
+    whole = caseless_nfkc(value)
     if indexed.text != whole:
         indexed = _prefix_normalize(value)
     if indexed.text != whole:

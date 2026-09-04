@@ -433,6 +433,21 @@ def test_normalized_matches_require_complete_source_expansions() -> None:
         assert normalize_text(matches[0].span.snippet) == normalize_text(term.term)
 
 
+def test_caseless_normalization_is_idempotent_and_cluster_equivalent() -> None:
+    raw = "ß\u0301"
+    normalized = normalize_text(raw)
+    assert normalized == "sś"
+    assert normalize_text(normalized) == normalized
+
+    matches = find_term_matches(raw, Term("sś"))
+    assert len(matches) == 1
+    assert matches[0].span.snippet == raw
+    assert normalize_text(matches[0].span.snippet) == normalize_text("sś")
+
+    brief = BriefInput(required_skills=(Term(raw), Term("sś")))
+    assert len(brief.required_skills) == 1
+
+
 def test_normalized_matching_handles_marks_stems_repeats_and_regions() -> None:
     stem = find_term_matches("İstanbuls", Term("İstanbul"))
     assert len(stem) == 1

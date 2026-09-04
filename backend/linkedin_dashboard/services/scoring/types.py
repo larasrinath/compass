@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import unicodedata
 from dataclasses import dataclass
 from decimal import Decimal, DecimalException
 from enum import StrEnum
 from typing import Literal
 
 from linkedin_dashboard.parsing.spans import VerifiedSpan
+from linkedin_dashboard.services.scoring.normalization import normalize_text
 
 
 class SignalId(StrEnum):
@@ -101,7 +101,7 @@ def _decimal_value(value: object, field: str) -> Decimal:
 
 
 def _normal(value: str) -> str:
-    return " ".join(unicodedata.normalize("NFKC", value).strip().split()).casefold()
+    return normalize_text(value)
 
 
 def _canonical_strings(values: tuple[str, ...]) -> tuple[str, ...]:
