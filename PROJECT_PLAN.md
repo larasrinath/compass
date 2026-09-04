@@ -1,6 +1,6 @@
 # PROJECT_PLAN.md — Local Sourcing Dashboard (companion to `linkedin-mcp-server`)
 
-**Status:** Draft for approval · **Date:** 2026-09-02
+**Status:** Current delivery scope clarified 2026-09-04; original plan retained below · **Original date:** 2026-09-02
 **Target repo under inspection:** `https://github.com/stickerdaniel/linkedin-mcp-server` @ `main` (`4.23.3`)
 **Companion app codename:** `linkedin-dashboard`
 
@@ -10,7 +10,48 @@
 
 ---
 
+## Current delivery scope — superseding decision, 2026-09-04
+
+The operator has resumed this project as **on-demand LinkedIn MCP downloads → locally
+saved data → local analysis, explainable rankings and an evidence dashboard**. Saved work
+must remain usable with MCP disconnected and after the dashboard restarts. Retrieval needs
+MCP availability; saved browsing and local rescoring do not require a persistent connection
+or connectivity. The existing startup `tools/list` status probe may still attempt a connection;
+a failed status probe must not block saved work.
+
+**Shortlisting, drafting and sending are outside this delivery.** This decision supersedes
+conflicting scope, sequencing and completion gates in the original executive summary,
+requirements and M5–M8 outreach roadmap, including §20.5's live-send exercise and §25's
+whole-project definition of done. Those records remain historical/future requirements, not
+additional gates for finishing the current dashboard. Applicable security, privacy,
+provenance, scoring, migration and data-integrity requirements remain in force.
+
+### Current offline acceptance
+
+These are required demonstrations, not a claim that acceptance has already passed:
+
+1. Download through a fake MCP into a temporary persistent database, then restart the app
+   against that same database with MCP unavailable. Saved sessions, search results, rankings,
+   candidate details and raw evidence remain accessible, subject to the existing Gate A.
+2. Record Gate A locally from a completed saved search and a non-empty operator review note
+   while offline; verify that it survives restart and unlocks saved rankings. An already
+   recorded Gate A must also survive restart. This is the existing saved-search review gate,
+   not a requirement for a fresh live search or a live connection.
+3. Edit local weights and scoring brief inputs, then rescore saved profiles without retrieval;
+   preserve version history and evidence integrity. An unavailable MCP status must not block
+   browsing, and an explicitly requested download that fails must preserve saved data.
+4. Retain Gate B's implemented validation: Gate A plus ≥10 distinct, current, same-session
+   exact profile-span evidence ids; reject coverage, missing metadata and search context.
+   Exercise these checks locally; no live Gate A/B acceptance is claimed or required this run.
+
+Live MCP integration is **not exercised in this run**. Fake/offline checks establish the local
+workflow only; they do not establish real LinkedIn retrieval compatibility or live acceptance.
+
+---
+
 ## 1. Executive summary
+
+*Original broader roadmap; current delivery is governed by the superseding scope above.*
 
 We build a **single-operator, local-only dashboard** that drives the existing LinkedIn MCP
 server over loopback streamable HTTP to run one sourcing session: search → collect candidate
@@ -47,6 +88,12 @@ be quietly undone by a later change. Reversing one requires editing this section
 saying why; §29's checklist is run against this table at every milestone acceptance.
 
 ### Architecture decisions approved
+
+**SCOPE-01 — approved 2026-09-04:** On-demand MCP retrieval with durable local saved data
+and offline analysis is the current delivery boundary. No persistent MCP connection is
+required. Shortlisting, drafting and sending are deferred outside this delivery. The current
+offline acceptance above is the guard for this decision; historical live/outreach milestones
+do not expand it. This changes scope, not the security or data-correctness invariants below.
 
 | ID | Decision | Locked outcome |
 |----|----------|----------------|
@@ -147,7 +194,7 @@ but has not started**.
 
 | ID | Assumption | Basis | If wrong |
 |----|-----------|-------|----------|
-| A-01 | A valid login profile exists at `~/.linkedin-mcp/profile/` before the dashboard starts | `AGENTS.md` § Verifying Bug Reports; `DEFAULT_USER_DATA_DIR` `config/schema.py:82` | Dashboard shows a blocking "session required" screen with the `--login` command; never attempts login itself |
+| A-01 | A valid login profile exists at `~/.linkedin-mcp/profile/` before an operator requests LinkedIn retrieval; it is not a dashboard startup or saved-data prerequisite | `AGENTS.md` § Verifying Bug Reports; `DEFAULT_USER_DATA_DIR` `config/schema.py:82`; SCOPE-01 | Report retrieval unavailability with the `--login` guidance; never attempt login automatically. Saved browsing and local rescoring remain available |
 | A-02 | The MCP server runs as a **direct** server on `127.0.0.1:8000/mcp` | `ServerConfig` defaults `config/schema.py:432-434` | Operator sets host/port in settings; nothing else changes |
 | A-03 | A direct streamable-HTTP server requires **no bearer token** (settled by **D-08**, locked) | `create_mcp_server(..., auth_token=...)` refuses a token unless `role is ServerRole.OWNER` (`server.py:177-184`) | If a daemon owner is used instead, the client must present its token; see D-08 |
 | A-04 | Host/Origin protection is on and loopback Hosts are always served | `mcp.run(..., host_origin_protection=True)` `cli_main.py:609`; `tests/test_transport_security.py:177` | Backend must send `Host: 127.0.0.1:8000` and no `Origin`, which a server-side HTTP client does by default |
@@ -1899,6 +1946,9 @@ tools against public profiles.
 
 ## 21. Ordered implementation milestones
 
+*Historical broader roadmap. SCOPE-01 controls current delivery completion; M5–M8 outreach
+and live acceptance below are not current completion gates.*
+
 | # | Milestone | Gate to enter | Outcome |
 |---|-----------|---------------|---------|
 | **M0** | Foundations | — | Repo, tooling, DB, health, MCP reachability |
@@ -1913,7 +1963,8 @@ tools against public profiles.
 
 **Phase gates are hard blocks, enforced in code (FR-081, NFR-012):**
 - **Gate A — discovery accepted.** Operator confirms candidate extraction and dedupe are correct
-  on a completed real search and supplies a non-empty note. Until recorded, `/api/candidates`
+  on a completed saved search and supplies a non-empty note. The review and its persisted
+  acceptance work offline (SCOPE-01). Until recorded, `/api/candidates`
   scoring UI is hidden; `/api/candidate-pool?session_id=…` remains available.
 - **Gate B — matching accepted.** Operator spot-checks ≥ 10 evidence links and confirms each
   points at exact profile text. The request names ≥10 distinct evidence ids, and the insert
@@ -2325,6 +2376,10 @@ B counts ≥10 distinct exact profile-span evidence links from current same-sess
 manually verified and transactionally revalidated; absence coverage, missing-section metadata,
 search context and messageability hints never count.
 
+*The live G-A.1/G-B.1 exercise above is retained as historical planning, not accepted by this
+scope change and not required this run. Current delivery uses SCOPE-01's offline acceptance;
+the implemented Gate A restriction and Gate B integrity checks remain unchanged.*
+
 ### M5 — Review and shortlist
 
 **T-5.1 · Decision model and API** — FR-052. Append-only `shortlist_decision`; latest wins.
@@ -2508,6 +2563,9 @@ T-4.1 → T-4.2 → T-4.3 → T-4.4 → T-4.7b → T-5.1 → [Gate B] → T-6.2 
 
 ## 24. Acceptance criteria per milestone
 
+*Historical milestone criteria below remain recorded. SCOPE-01 supersedes live/outreach
+completion requirements for this delivery; applicable technical integrity checks still apply.*
+
 | Milestone | Accepted when |
 |---|---|
 | **M0** | Backend and frontend start on loopback only; DB migrates on a clean machine; `one_live_send_per_candidate` rejects a second live row; the audit log refuses UPDATE/DELETE; a crafted `runtime` block never reaches an API response. |
@@ -2523,6 +2581,10 @@ T-4.1 → T-4.2 → T-4.3 → T-4.4 → T-4.7b → T-5.1 → [Gate B] → T-6.2 
 ---
 
 ## 25. Definition of done
+
+*The original task/project definitions below describe the broader roadmap. Current delivery
+completion follows SCOPE-01 and its offline acceptance, with applicable technical checks;
+it does not require outreach, live Gate A/B acceptance, a send exercise or a merge.*
 
 A task is done when:
 
