@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import unicodedata
 from dataclasses import dataclass
 
@@ -11,7 +10,6 @@ from linkedin_dashboard.parsing.verify import verify_substring
 from linkedin_dashboard.services.scoring.types import Matcher, Term
 
 MATCHER_VERSION = "scoring-v1"
-_WORD = re.compile(r"[^\W_]+", re.UNICODE)
 _STEM_EQUIVALENTS = {
     "engineer": "engineer",
     "engineering": "engineer",
@@ -34,6 +32,13 @@ class _IndexedText:
     ends: tuple[int, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _WordSpan:
+    text: str
+    start: int
+    end: int
+
+
 def normalize_text(value: str) -> str:
     """Canonical comparison form; never used as displayed evidence."""
     return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
@@ -54,21 +59,56 @@ def _is_hangul_tail(value: str) -> bool:
     return 0x11A8 <= codepoint <= 0x11FF or 0xD7CB <= codepoint <= 0xD7FB
 
 
-def _cluster_normalize(value: str) -> _IndexedText:
-    output: list[str] = []
-    starts: list[int] = []
-    ends: list[int] = []
+def _hangul_kind(value: str) -> str:
+    if _is_hangul_lead(value):
+        return "L"
+    if _is_hangul_vowel(value):
+        return "V"
+    if _is_hangul_tail(value):
+        return "T"
+    codepoint = ord(value)
+    if 0xAC00 <= codepoint <= 0xD7A3:
+        return "LV" if (codepoint - 0xAC00) % 28 == 0 else "LVT"
+    return ""
+
+
+def _hangul_continues(current: str, following: str) -> bool:
+    return (
+        (current == "L" and following in {"L", "V", "LV", "LVT"})
+        or (current in {"LV", "V"} and following in {"V", "T"})
+        or (current in {"LVT", "T"} and following == "T")
+    )
+
+
+def _is_mark(value: str) -> bool:
+    """Treat every Unicode mark category as a continuation of its base."""
+    return unicodedata.category(value).startswith("M")
+
+
+def _source_clusters(value: str) -> tuple[tuple[int, int], ...]:
+    clusters: list[tuple[int, int]] = []
     index = 0
     while index < len(value):
         start = index
         index += 1
-        if _is_hangul_lead(value[start]) and index < len(value):
-            if _is_hangul_vowel(value[index]):
-                index += 1
-                if index < len(value) and _is_hangul_tail(value[index]):
-                    index += 1
-        while index < len(value) and unicodedata.combining(value[index]):
+        hangul_kind = _hangul_kind(value[start])
+        while index < len(value):
+            following_kind = _hangul_kind(value[index])
+            if not _hangul_continues(hangul_kind, following_kind):
+                break
+            hangul_kind = following_kind
             index += 1
+        while index < len(value) and _is_mark(value[index]):
+            index += 1
+        clusters.append((start, index))
+    return tuple(clusters)
+
+
+def _cluster_normalize(value: str) -> _IndexedText:
+    output: list[str] = []
+    starts: list[int] = []
+    ends: list[int] = []
+    for start, index in _source_clusters(value):
         cluster = value[start:index]
         normalized = unicodedata.normalize("NFKC", cluster).casefold()
         for character in normalized:
@@ -134,7 +174,54 @@ def _indexed_normalize(value: str) -> _IndexedText:
 
 
 def _is_word(value: str) -> bool:
-    return value.isalnum()
+    return value.isalnum() or _is_mark(value)
+
+
+def _word_spans(value: str) -> tuple[_WordSpan, ...]:
+    """Return alphanumeric words with Unicode marks attached to their base."""
+    words: list[_WordSpan] = []
+    index = 0
+    while index < len(value):
+        if not value[index].isalnum():
+            index += 1
+            continue
+        start = index
+        index += 1
+        while index < len(value) and _is_word(value[index]):
+            index += 1
+        words.append(_WordSpan(value[start:index], start, index))
+    return tuple(words)
+
+
+def _complete_raw_span(
+    raw_text: str,
+    indexed: _IndexedText,
+    normalized_start: int,
+    normalized_end: int,
+    *,
+    raw_offset: int,
+) -> tuple[int, int] | None:
+    """Map a normalized hit only when it consumes complete source expansions."""
+    if normalized_start < 0 or normalized_end <= normalized_start:
+        return None
+    if normalized_end > len(indexed.text):
+        return None
+    if normalized_start and (
+        indexed.starts[normalized_start - 1],
+        indexed.ends[normalized_start - 1],
+    ) == (indexed.starts[normalized_start], indexed.ends[normalized_start]):
+        return None
+    if normalized_end < len(indexed.text) and (
+        indexed.starts[normalized_end - 1],
+        indexed.ends[normalized_end - 1],
+    ) == (indexed.starts[normalized_end], indexed.ends[normalized_end]):
+        return None
+    start = raw_offset + indexed.starts[normalized_start]
+    end = raw_offset + indexed.ends[normalized_end - 1]
+    normalized_hit = indexed.text[normalized_start:normalized_end]
+    if normalize_text(raw_text[start:end]) != normalized_hit:
+        return None
+    return start, end
 
 
 def _whole_term(haystack: str, start: int, needle: str) -> bool:
@@ -168,8 +255,16 @@ def _literal_matches(
         cursor = found + 1
         if not _whole_term(indexed.text, found, needle):
             continue
-        start = region_start + indexed.starts[found]
-        end = region_start + indexed.ends[found + len(needle) - 1]
+        raw_span = _complete_raw_span(
+            raw_text,
+            indexed,
+            found,
+            found + len(needle),
+            raw_offset=region_start,
+        )
+        if raw_span is None:
+            continue
+        start, end = raw_span
         span = verify_substring(raw_text, raw_text[start:end], start_hint=start)
         if span is not None:
             matches.append(TermMatch(raw_text[start:end], matcher, span))
@@ -195,25 +290,33 @@ def _stem_matches(
     raw_text: str, entered: str, *, region_start: int, region_end: int
 ) -> list[TermMatch]:
     normalized_entered = normalize_text(entered)
-    entered_words = tuple(item.group() for item in _WORD.finditer(normalized_entered))
-    if " ".join(entered_words) != normalized_entered:
+    entered_words = _word_spans(normalized_entered)
+    if " ".join(item.text for item in entered_words) != normalized_entered:
         return []
-    needle_tokens = tuple(_stem(item) for item in entered_words)
+    needle_tokens = tuple(_stem(item.text) for item in entered_words)
     if not needle_tokens:
         return []
     region = raw_text[region_start:region_end]
     indexed = _indexed_normalize(region)
-    words = tuple(_WORD.finditer(indexed.text))
+    words = _word_spans(indexed.text)
     matches: list[TermMatch] = []
     width = len(needle_tokens)
     for offset in range(0, len(words) - width + 1):
         window = words[offset : offset + width]
-        if tuple(_stem(item.group()) for item in window) != needle_tokens:
+        if tuple(_stem(item.text) for item in window) != needle_tokens:
             continue
-        normalized_start = window[0].start()
-        normalized_end = window[-1].end()
-        start = region_start + indexed.starts[normalized_start]
-        end = region_start + indexed.ends[normalized_end - 1]
+        normalized_start = window[0].start
+        normalized_end = window[-1].end
+        raw_span = _complete_raw_span(
+            raw_text,
+            indexed,
+            normalized_start,
+            normalized_end,
+            raw_offset=region_start,
+        )
+        if raw_span is None:
+            continue
+        start, end = raw_span
         span = verify_substring(raw_text, raw_text[start:end], start_hint=start)
         if span is not None:
             matches.append(TermMatch(raw_text[start:end], Matcher.STEM, span))
@@ -231,6 +334,14 @@ def find_term_matches(
     end = len(raw_text) if region_end is None else region_end
     if region_start < 0 or end < region_start or end > len(raw_text):
         raise ValueError("invalid matching region")
+    cluster_boundaries = {0, len(raw_text)}
+    cluster_boundaries.update(
+        boundary
+        for start, stop in _source_clusters(raw_text)
+        for boundary in (start, stop)
+    )
+    if region_start not in cluster_boundaries or end not in cluster_boundaries:
+        return ()
     candidates = _literal_matches(
         raw_text,
         term.term,
@@ -282,4 +393,4 @@ def term_is_present(value: str, term: Term) -> bool:
 
 
 def word_tokens(value: str) -> tuple[str, ...]:
-    return tuple(item.group() for item in _WORD.finditer(normalize_text(value)))
+    return tuple(item.text for item in _word_spans(normalize_text(value)))

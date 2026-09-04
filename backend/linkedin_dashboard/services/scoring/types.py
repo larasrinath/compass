@@ -290,16 +290,20 @@ class ProfileSection:
 
     def __post_init__(self) -> None:
         state = SectionState(self.state)
+        missing_reason = (
+            None if self.missing_reason is None else MissingReason(self.missing_reason)
+        )
         object.__setattr__(self, "state", state)
+        object.__setattr__(self, "missing_reason", missing_reason)
         if state is SectionState.COMPLETE:
-            if self.missing_reason is not None:
+            if missing_reason is not None:
                 raise ValueError("a completed section cannot have a missing reason")
             if not self.content_sha256:
                 raise ValueError("a completed section requires a content hash")
         else:
             if self.raw_text or self.content_sha256:
                 raise ValueError("a missing section cannot carry retrieved content")
-            if self.missing_reason is None:
+            if missing_reason is None:
                 raise ValueError("a missing section requires a reason")
 
 
@@ -520,6 +524,9 @@ class MissingSection:
     section_name: str
     reason: MissingReason
     section_error_id: int | str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "reason", MissingReason(self.reason))
 
 
 @dataclass(frozen=True, slots=True)

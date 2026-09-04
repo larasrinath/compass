@@ -70,6 +70,11 @@ _PACKAGE = (
     / "services"
     / "scoring"
 )
+_PARSING_DEPENDENCIES = (
+    _PACKAGE.parents[1] / "parsing" / "spans.py",
+    _PACKAGE.parents[1] / "parsing" / "verify.py",
+)
+_SCORING_IMPORT = "linkedin_dashboard.services.scoring"
 _ALLOWED_IMPORTS = frozenset(
     {
         "__future__",
@@ -85,35 +90,62 @@ _ALLOWED_IMPORTS = frozenset(
 )
 
 
-def test_kernel_import_graph_is_pure() -> None:
-    for path in _PACKAGE.rglob("*.py"):
-        tree = ast.parse(path.read_text())
-        imports = [
-            node.module or ""
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom)
-        ] + [
-            alias.name
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Import)
-            for alias in node.names
-        ]
-        assert all(
-            imported in _ALLOWED_IMPORTS
-            or imported.startswith("linkedin_dashboard.services.scoring")
-            for imported in imports
-        ), f"non-pure import in {path}: {imports}"
-        calls = [node.func for node in ast.walk(tree) if isinstance(node, ast.Call)]
-        assert not any(
-            isinstance(call, ast.Name)
-            and call.id in {"open", "input", "print", "eval", "exec", "__import__"}
-            for call in calls
-        )
-        assert not any(
-            isinstance(call, ast.Attribute)
-            and call.attr in {"urandom", "urlopen", "request"}
-            for call in calls
-        )
+def _is_allowed_import(imported: str) -> bool:
+    return (
+        imported in _ALLOWED_IMPORTS
+        or imported == _SCORING_IMPORT
+        or imported.startswith(f"{_SCORING_IMPORT}.")
+    )
+
+
+def _purity_violations(source: str) -> tuple[str, ...]:
+    tree = ast.parse(source)
+    imports = [
+        node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+    ] + [
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    ]
+    violations = [
+        f"import:{imported}" for imported in imports if not _is_allowed_import(imported)
+    ]
+    calls = [node.func for node in ast.walk(tree) if isinstance(node, ast.Call)]
+    violations.extend(
+        f"call:{call.id}"
+        for call in calls
+        if isinstance(call, ast.Name)
+        and call.id in {"open", "input", "print", "eval", "exec", "__import__"}
+    )
+    violations.extend(
+        f"call:{call.attr}"
+        for call in calls
+        if isinstance(call, ast.Attribute)
+        and call.attr in {"urandom", "urlopen", "request"}
+    )
+    return tuple(violations)
+
+
+def test_kernel_import_graph_is_pure_and_dependencies_are_guarded() -> None:
+    for path in (*_PACKAGE.rglob("*.py"), *_PARSING_DEPENDENCIES):
+        violations = _purity_violations(path.read_text())
+        assert not violations, f"non-pure dependency in {path}: {violations}"
+
+
+@pytest.mark.parametrize(
+    "mutated_import",
+    (
+        "linkedin_dashboard.services.scoring_persist",
+        "linkedin_dashboard.services.scoring_network",
+        "linkedin_dashboard.services.scoringevil.types",
+    ),
+)
+def test_kernel_import_guard_rejects_prefix_collision_mutations(
+    mutated_import: str,
+) -> None:
+    source = f"from {mutated_import} import mutate\n"
+    assert _purity_violations(source) == (f"import:{mutated_import}",)
 
 
 def test_kernel_definitions_exclude_sensitive_and_display_only_inputs() -> None:

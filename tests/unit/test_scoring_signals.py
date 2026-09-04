@@ -15,6 +15,7 @@ from linkedin_dashboard.services.scoring import (
     Matcher,
     MetroEquivalence,
     MissingReason,
+    MissingSection,
     MissingSet,
     MonthsDerivation,
     Polarity,
@@ -31,6 +32,7 @@ from linkedin_dashboard.services.scoring import (
     active_signal_ids,
     evaluate_signals,
     find_term_matches,
+    normalize_text,
 )
 from linkedin_dashboard.services.scoring.signals.experience import relevant_experience
 from linkedin_dashboard.services.scoring.signals.location import location_fit
@@ -409,6 +411,82 @@ def test_nfkc_mapping_preserves_hangul_sharp_s_and_nonoverlap() -> None:
         Term("unmatched", ("machine", "machine learning")),
     )
     assert [item.span.snippet for item in longest_alias] == ["machine learning"]
+
+
+def test_normalized_matches_require_complete_source_expansions() -> None:
+    assert not find_term_matches("İ", Term("i"))
+    assert not find_term_matches("İstanbul", Term("i"))
+    assert not find_term_matches("½", Term("1"))
+
+    cases = (
+        ("İ", Term("i\u0307"), "İ"),
+        ("한", Term("한"), "한"),
+        ("한", Term("한"), "한"),
+        ("한", Term("한"), "한"),
+        ("Straße", Term("STRASSE"), "Straße"),
+        ("𐐀", Term("𐐨"), "𐐀"),
+    )
+    for raw, term, snippet in cases:
+        matches = find_term_matches(raw, term)
+        assert len(matches) == 1
+        assert matches[0].span.snippet == snippet
+        assert normalize_text(matches[0].span.snippet) == normalize_text(term.term)
+
+
+def test_normalized_matching_handles_marks_stems_repeats_and_regions() -> None:
+    stem = find_term_matches("İstanbuls", Term("İstanbul"))
+    assert len(stem) == 1
+    assert stem[0].matcher is Matcher.STEM
+    assert stem[0].span.snippet == "İstanbuls"
+
+    raw = "outside İ and İ inside"
+    start = raw.rindex("İ")
+    matches = find_term_matches(
+        raw,
+        Term("i\u0307"),
+        region_start=start,
+        region_end=start + 1,
+    )
+    assert [(item.span.start, item.span.end) for item in matches] == [
+        (start, start + 1)
+    ]
+    assert not find_term_matches(
+        "i\u0307",
+        Term("i"),
+        region_start=0,
+        region_end=1,
+    )
+    assert not find_term_matches("한", Term("하"), region_end=1)
+
+
+@pytest.mark.parametrize("reason", tuple(MissingReason))
+def test_missing_reason_strings_normalize_and_score_unknown(
+    reason: MissingReason,
+) -> None:
+    section = ProfileSection(
+        30,
+        "skills",
+        cast(SectionState, SectionState.MISSING.value),
+        missing_reason=cast(MissingReason, reason.value),
+    )
+    missing = MissingSection("skills", cast(MissingReason, reason.value))
+    assert section.missing_reason is reason
+    assert missing.reason is reason
+    signal = required_skills((Term("Kubernetes"),), ProfileSnapshot((section,)))
+    assert signal.rollup is Rollup.UNKNOWN
+    assert signal.claims[0].verdict is Verdict.UNKNOWN
+
+
+def test_invalid_missing_reason_strings_fail_at_construction() -> None:
+    with pytest.raises(ValueError):
+        ProfileSection(
+            31,
+            "skills",
+            SectionState.MISSING,
+            missing_reason=cast(MissingReason, "network_timeout"),
+        )
+    with pytest.raises(ValueError):
+        MissingSection("skills", cast(MissingReason, "network_timeout"))
 
 
 def test_title_alias_exact_match_is_deterministic_alias_evidence() -> None:
