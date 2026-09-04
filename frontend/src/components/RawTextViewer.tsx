@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import type { CandidateSection } from '../api/client'
 
 export function RawTextViewer({
@@ -7,7 +8,15 @@ export function RawTextViewer({
   section: CandidateSection
   selectedFieldId: string | null
 }) {
+  const viewerRef = useRef<HTMLPreElement>(null)
+  const markRef = useRef<HTMLElement>(null)
   const selected = section.spans.find((span) => span.id === selectedFieldId)
+  useEffect(() => {
+    if (selected?.provenance_available) {
+      markRef.current?.scrollIntoView?.({ block: 'center', inline: 'nearest' })
+      viewerRef.current?.focus()
+    }
+  }, [selected])
   if (selected && !selected.provenance_available) {
     return (
       <div className="provenance-withheld" role="status">
@@ -31,11 +40,15 @@ export function RawTextViewer({
     end > start &&
     end <= points.length
   return (
-    <pre aria-label={`Raw ${section.section_name.replaceAll('_', ' ')} profile text`}>
+    <pre
+      aria-label={`Raw ${section.section_name.replaceAll('_', ' ')} profile text`}
+      ref={viewerRef}
+      tabIndex={hasHighlight ? -1 : undefined}
+    >
       {hasHighlight ? (
         <>
           {points.slice(0, start).join('')}
-          <mark>{points.slice(start, end).join('')}</mark>
+          <mark ref={markRef}>{points.slice(start, end).join('')}</mark>
           {points.slice(end).join('')}
         </>
       ) : (

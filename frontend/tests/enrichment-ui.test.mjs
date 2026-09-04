@@ -11,9 +11,9 @@ const sections = readFileSync(
   'utf8',
 )
 
-test('candidate detail uses explicit staged retrieval without scoring actions', () => {
+test('candidate detail preserves explicit staged retrieval alongside evidence', () => {
   assert.match(detail, /Retrieve up to three more sections/)
-  assert.match(detail, /No score or\s+shortlist decision exists/)
+  assert.match(detail, /Opening evidence does not mark it verified/)
   assert.match(detail, /selected\.length >= 3/)
   assert.match(detail, /getProfileSections/)
   assert.match(detail, /section !== 'experience'/)

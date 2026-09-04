@@ -1,15 +1,21 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  acceptPhaseGateA,
   enrichCandidate,
   getCompanyLookup,
   getSearch,
-  listCandidates,
+  listCandidatePool,
   listSearches,
   runSearch,
   startCompanyLookup,
 } from '../api/client'
-import type { BriefRecord, SessionRecord } from '../api/client'
+import type {
+  BriefRecord,
+  SearchRun,
+  SearchRunStatus,
+  SessionRecord,
+} from '../api/client'
 import { QueueStatus } from '../components/QueueStatus'
 import type { ReturnTypeOfJobEvents } from '../hooks/useJobEvents'
 
@@ -19,15 +25,50 @@ const NETWORKS = [
   { value: 'O', label: '3rd-degree and beyond' },
 ] as const
 
+const GATE_A_ELIGIBLE_STATUSES = new Set<SearchRunStatus>([
+  'ok',
+  'partial',
+  'rate_limited',
+])
+
+function gateAEligibilityMessage(searchRuns: SearchRun[]): string {
+  if (searchRuns.some((run) => GATE_A_ELIGIBLE_STATUSES.has(run.status))) {
+    return 'An eligible persisted search result is ready for inspection.'
+  }
+  if (!searchRuns.length) {
+    return 'Gate A remains locked until a search persists an eligible result.'
+  }
+  const explanations: Record<
+    Exclude<SearchRunStatus, 'ok' | 'partial' | 'rate_limited'>,
+    string
+  > = {
+    queued: 'queued searches have not started',
+    running: 'running searches have not finished',
+    failed: 'failed searches produced no eligible result',
+    interrupted: 'interrupted searches did not persist an eligible result',
+    cancelled: 'cancelled searches did not persist an eligible result',
+  }
+  const reasons = [
+    ...new Set(
+      searchRuns.map(
+        (run) => explanations[run.status as keyof typeof explanations],
+      ),
+    ),
+  ]
+  return `Gate A remains locked: ${reasons.join('; ')}. Eligible persisted statuses are ok, partial, or rate limited.`
+}
+
 export function SearchPage({
   session,
   brief,
   onCandidateOpen,
+  onGateAChanged,
   queue,
 }: {
   session: SessionRecord
   brief: BriefRecord | null | undefined
   onCandidateOpen: (candidateId: string) => void
+  onGateAChanged?: () => void
   queue: ReturnTypeOfJobEvents
 }) {
   const client = useQueryClient()
@@ -44,11 +85,12 @@ export function SearchPage({
       : '',
   )
   const [location, setLocation] = useState(() => brief?.location ?? '')
-  const [network, setNetwork] = useState<string[]>([])
+  const [network, setNetwork] = useState<string[]>(['F', 'S'])
   const [companyId, setCompanyId] = useState('')
   const [companySlug, setCompanySlug] = useState('')
   const [lookupId, setLookupId] = useState<string | null>(null)
   const [selectedRun, setSelectedRun] = useState<string | null>(null)
+  const [gateNote, setGateNote] = useState('Candidate extraction and dedupe inspected.')
 
   const runs = useQuery({
     queryKey: ['searches', session.id],
@@ -56,7 +98,7 @@ export function SearchPage({
   })
   const candidates = useQuery({
     queryKey: ['candidates', session.id],
-    queryFn: () => listCandidates(session.id),
+    queryFn: () => listCandidatePool(session.id),
   })
   const detail = useQuery({
     queryKey: ['search', selectedRun],
@@ -103,6 +145,18 @@ export function SearchPage({
     onError: () =>
       requestAnimationFrame(() => enrichmentErrorRef.current?.focus()),
   })
+  const gateA = useMutation({
+    mutationFn: () => acceptPhaseGateA(gateNote),
+    onSuccess: async () => {
+      await client.invalidateQueries({ queryKey: ['session'] })
+      onGateAChanged?.()
+    },
+    onError: () => requestAnimationFrame(() => errorRef.current?.focus()),
+  })
+  const gateAEligible = Boolean(
+    runs.data?.some((run) => GATE_A_ELIGIBLE_STATUSES.has(run.status)),
+  )
+  const gateAEligibility = gateAEligibilityMessage(runs.data ?? [])
 
   function queuePosition(jobId: string): string | null {
     const job = queue.jobs.find((item) => item.id === jobId)
@@ -210,8 +264,8 @@ export function SearchPage({
                 </label>
               ))}
               <p className="field-help">
-                This filter is retained as provenance. The dashboard does not infer
-                connection degree from profile details.
+                F and S are selected by default. Only F is reliably messageable. This
+                search context is retained as provenance and never affects a score.
               </p>
             </fieldset>
             <button className="primary-action" disabled={search.isPending} type="submit">
@@ -487,6 +541,54 @@ export function SearchPage({
             <p>A zero-person run still keeps its raw text and reference breakdown above.</p>
           </div>
         )}
+        <div className="phase-gate-card panel">
+          <div>
+            <p className="eyebrow">Phase Gate A · discovery</p>
+            <h3>Confirm extraction and dedupe before ranking</h3>
+            <p>
+              Inspect names, source searches, and repeated profiles above. Ranking stays
+              unavailable until you explicitly accept this pool.
+            </p>
+          </div>
+          {session.phase_gates?.A ? (
+            <p className="gate-accepted" role="status">
+              ✓ Gate A accepted · ranking unlocked
+            </p>
+          ) : (
+            <form
+              onSubmit={(event) => {
+                event.preventDefault()
+                gateA.mutate()
+              }}
+            >
+              <label className="field">
+                <span>Inspection note</span>
+                <textarea
+                  onChange={(event) => setGateNote(event.target.value)}
+                  required
+                  rows={2}
+                  value={gateNote}
+                />
+              </label>
+              <button
+                aria-describedby="gate-a-eligibility"
+                className="primary-action"
+                disabled={gateA.isPending || !gateAEligible}
+                type="submit"
+              >
+                {gateA.isPending ? 'Recording…' : 'Accept Gate A and unlock ranking'}
+              </button>
+              <p id="gate-a-eligibility" role="status">
+                {gateAEligibility}
+              </p>
+              {gateA.isError ? (
+                <p className="field-error" role="alert">
+                  {gateA.error.message}
+                </p>
+              ) : null}
+            </form>
+          )}
+        </div>
       </section>
     </section>
   )

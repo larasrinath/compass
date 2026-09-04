@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   createSession,
@@ -10,10 +10,14 @@ import {
 import { useJobEvents } from './hooks/useJobEvents'
 import { BriefPage } from './pages/BriefPage'
 import { CandidateDetailPage } from './pages/CandidateDetailPage'
+import { CandidatesPage } from './pages/CandidatesPage'
 import { SearchPage } from './pages/SearchPage'
+import { parseAppRoute, pathForRoute, type AppRoute } from './routing'
+import {
+  useNewRevisionEffect,
+  type EvidenceVerification,
+} from './scoreVerification'
 import './App.css'
-
-type View = 'brief' | 'search' | 'candidate'
 
 function StatusDot({ healthy }: { healthy: boolean }) {
   return (
@@ -26,11 +30,14 @@ function StatusDot({ healthy }: { healthy: boolean }) {
 
 function App() {
   const queryClient = useQueryClient()
-  const [view, setView] = useState<View>(() =>
-    window.location.pathname === '/search' ? 'search' : 'brief',
+  const [route, setRoute] = useState<AppRoute>(() =>
+    parseAppRoute(window.location.pathname),
   )
   const [sessionLabel, setSessionLabel] = useState('Focused candidate search')
-  const [candidateId, setCandidateId] = useState<string | null>(null)
+  const [verificationState, setVerificationState] = useState<{
+    scope: string
+    values: Map<string, EvidenceVerification>
+  }>(() => ({ scope: '', values: new Map() }))
   const health = useQuery({ queryKey: ['health'], queryFn: getHealth })
   const mcp = useQuery({
     queryKey: ['mcp-status'],
@@ -44,6 +51,30 @@ function App() {
     enabled: Boolean(session.data?.id),
   })
   const queue = useJobEvents()
+  const view = route.view
+  const candidateId = route.candidateId
+  const rankingUnlocked = Boolean(session.data?.phase_gates?.A)
+  const verificationScope = `${session.data?.id ?? ''}:${brief.data?.id ?? ''}:${brief.data?.version ?? ''}`
+  const verifiedEvidence =
+    verificationState.scope === verificationScope
+      ? verificationState.values
+      : new Map<string, EvidenceVerification>()
+  const clearEvidenceVerifications = useCallback(() => {
+    setVerificationState({ scope: verificationScope, values: new Map() })
+  }, [verificationScope])
+  const reconcileEvidenceVerifications = useCallback(
+    (values: Map<string, EvidenceVerification>) => {
+      setVerificationState({ scope: verificationScope, values })
+    },
+    [verificationScope],
+  )
+  useNewRevisionEffect(queue.scoringRevision, clearEvidenceVerifications)
+  const navigate = useCallback((next: AppRoute, replace = false) => {
+    const path = pathForRoute(next)
+    if (replace) window.history.replaceState(null, '', path)
+    else window.history.pushState(null, '', path)
+    setRoute(next)
+  }, [])
   const start = useMutation({
     mutationFn: createSession,
     onSuccess: async () => {
@@ -52,17 +83,20 @@ function App() {
   })
 
   useEffect(() => {
+    const onPopState = () => setRoute(parseAppRoute(window.location.pathname))
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [])
+
+  useEffect(() => {
     document.title =
       view === 'brief'
         ? 'Role brief · LinkedIn Dashboard'
         : view === 'candidate'
           ? 'Candidate detail · LinkedIn Dashboard'
-          : 'Find candidates · LinkedIn Dashboard'
-    const path =
-      view === 'brief' ? '/brief' : view === 'candidate' ? '/candidate' : '/search'
-    if (window.location.pathname !== path) {
-      window.history.replaceState(null, '', path)
-    }
+          : view === 'ranked'
+            ? 'Ranked evidence · LinkedIn Dashboard'
+            : 'Find candidates · LinkedIn Dashboard'
   }, [view])
 
   return (
@@ -100,18 +134,26 @@ function App() {
       <nav aria-label="Sourcing workflow" className="workflow-nav">
         <button
           aria-current={view === 'brief' ? 'page' : undefined}
-          onClick={() => setView('brief')}
+          onClick={() => navigate({ view: 'brief', candidateId: null })}
           type="button"
         >
           <span>01</span> Role brief
         </button>
         <button
-          aria-current={view !== 'brief' ? 'page' : undefined}
+          aria-current={view === 'search' ? 'page' : undefined}
           disabled={!brief.data}
-          onClick={() => setView('search')}
+          onClick={() => navigate({ view: 'search', candidateId: null })}
           type="button"
         >
           <span>02</span> Find candidates
+        </button>
+        <button
+          aria-current={view === 'ranked' || view === 'candidate' ? 'page' : undefined}
+          disabled={!rankingUnlocked}
+          onClick={() => navigate({ view: 'ranked', candidateId: null })}
+          type="button"
+        >
+          <span>03</span> Ranked evidence
         </button>
       </nav>
 
@@ -166,17 +208,48 @@ function App() {
             />
           ) : view === 'candidate' && candidateId ? (
             <CandidateDetailPage
+              backDestination={rankingUnlocked ? 'candidates' : 'search'}
               candidateId={candidateId}
-              onBack={() => setView('search')}
+              onBack={() =>
+                navigate({
+                  view: rankingUnlocked ? 'ranked' : 'search',
+                  candidateId: null,
+                })
+              }
+              onEvidenceVerified={(verification, verified) =>
+                setVerificationState((current) => {
+                  const values =
+                    current.scope === verificationScope
+                      ? new Map(current.values)
+                      : new Map<string, EvidenceVerification>()
+                  if (verified) values.set(verification.evidenceId, verification)
+                  else values.delete(verification.evidenceId)
+                  return { scope: verificationScope, values }
+                })
+              }
+              onScoreInputsChanged={clearEvidenceVerifications}
               queue={queue}
+              rankingUnlocked={rankingUnlocked}
+              sessionId={session.data.id}
+              verifiedEvidence={verifiedEvidence}
+            />
+          ) : view === 'ranked' ? (
+            <CandidatesPage
+              onEvidenceReconciled={reconcileEvidenceVerifications}
+              onCandidateOpen={(id) => {
+                navigate({ view: 'candidate', candidateId: id })
+              }}
+              onScoresChanged={clearEvidenceVerifications}
+              session={session.data}
+              verifiedEvidence={verifiedEvidence}
             />
           ) : (
             <SearchPage
               brief={brief.data}
               onCandidateOpen={(id) => {
-                setCandidateId(id)
-                setView('candidate')
+                navigate({ view: 'candidate', candidateId: id })
               }}
+              onGateAChanged={() => navigate({ view: 'ranked', candidateId: null })}
               queue={queue}
               session={session.data}
             />
@@ -187,6 +260,7 @@ function App() {
       </main>
 
       <footer>
+        <strong>Scores rank retrieved evidence, not people.</strong>
         <span>Single operator</span>
         <span>Loopback only</span>
         <span>Send gate: off</span>

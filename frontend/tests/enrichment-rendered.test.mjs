@@ -40,6 +40,9 @@ const { RawTextViewer } = await vite.ssrLoadModule(
 const { CandidateDetailPage } = await vite.ssrLoadModule(
   '/src/pages/CandidateDetailPage.tsx',
 )
+const { useNewRevisionEffect } = await vite.ssrLoadModule(
+  '/src/scoreVerification.ts',
+)
 const { SearchPage } = await vite.ssrLoadModule('/src/pages/SearchPage.tsx')
 await vite.close()
 
@@ -74,6 +77,7 @@ const queue = {
   jobs: [],
   connected: true,
   revision: 0,
+  scoringRevision: 0,
   lastEventAt: null,
 }
 
@@ -180,7 +184,10 @@ test('candidate detail opens zero-field sections and exact field evidence', asyn
   }
   const user = userEvent.setup({ document: dom.window.document })
   render(wrapper(React.createElement(CandidateDetailPage, {
-    candidateId: 'candidate', onBack() {}, queue,
+    backDestination: 'candidates', candidateId: 'candidate', onBack() {}, queue,
+    rankingUnlocked: true,
+    sessionId: 'session', verifiedEvidence: new Map(),
+    onEvidenceVerified() {}, onScoreInputsChanged() {},
   })))
   const honorsButton = await screen.findByRole('button', { name: 'honors' })
   honorsButton.focus()
@@ -194,6 +201,115 @@ test('candidate detail opens zero-field sections and exact field evidence', asyn
   await waitFor(() => assert.equal(document.querySelector('mark')?.textContent, '🚀 Alpha'))
 })
 
+test('historical queue revisions and candidate remounts preserve score-bound verifications', async () => {
+  function scoredDetail(id, name) {
+    const evidenceId = `evidence-${id}`
+    return {
+      id,
+      username: id,
+      profile_url: `/in/${id}`,
+      display_name: name,
+      profile_urn: null,
+      profile_urn_is_scored: false,
+      profile_urn_quarantined: false,
+      profile_urn_routing_allowed: false,
+      profile_contract_error: null,
+      stage: 'stage1',
+      retrieval_status: 'ok',
+      active_job_id: null,
+      available_sections: {},
+      fields: [], fetches: [], errors: [], score_history: [], non_scoring_hints: [],
+      score: {
+        id, score_id: `score-${id}`, input_fingerprint: `fingerprint-${id}`,
+        username: id, profile_url: `/in/${id}`, display_name: name, headline: null,
+        stage: 'provisional', score: 80, score_lower: 70, score_upper: 90,
+        previous_score: null, delta: null, confidence: 0.8, confidence_band: 'high',
+        calculation_status: 'scored', active_signal_count: 1,
+        all_inert_attested: false, weights_version: 'v1', top_signals: [],
+        non_scoring_hints: [],
+      },
+      signals: [{
+        id: `signal-${id}`, signal_id: 'S-1', label: 'Required skills',
+        rollup: 'matched', weight: 1, raw_subscore: 1, contribution: 1,
+        availability: 1, claims: [{
+          id: `claim-${id}`, claim_key: `required:${id}`, display_term: name,
+          verdict: 'matched', coverage: [], missing_sections: [], evidence: [{
+            id: evidenceId, section_name: 'experience', profile_section_id: `section-${id}`,
+            span_start: 0, span_end: 4, snippet: name, matched_term: name,
+            matcher: 'exact', polarity: 'supporting', availability: { state: 'available' },
+          }],
+        }],
+      }],
+    }
+  }
+
+  const details = {
+    first: scoredDetail('first', 'First Candidate'),
+    second: scoredDetail('second', 'Second Candidate'),
+  }
+  globalThis.fetch = (input) => {
+    const path = String(input)
+    if (path === '/api/profile-sections') return json(['experience'])
+    if (path === '/api/candidates/first') return json(details.first)
+    if (path === '/api/candidates/second') return json(details.second)
+    throw new Error(`unexpected fetch ${path}`)
+  }
+  const verified = new Map([
+    ['evidence-first', {
+      evidenceId: 'evidence-first', sessionId: 'session', scoreId: 'score-first',
+      inputFingerprint: 'fingerprint-first',
+    }],
+    ['evidence-second', {
+      evidenceId: 'evidence-second', sessionId: 'session', scoreId: 'score-second',
+      inputFingerprint: 'fingerprint-second',
+    }],
+  ])
+  const historicalQueue = { ...queue, revision: 7, scoringRevision: 3 }
+  let scoreChanges = 0
+  function Harness({ candidateId, detailKey, currentQueue }) {
+    const [currentVerified, setCurrentVerified] = React.useState(verified)
+    useNewRevisionEffect(currentQueue.scoringRevision, () => {
+      scoreChanges += 1
+      setCurrentVerified(new Map())
+    })
+    return React.createElement(CandidateDetailPage, {
+      key: detailKey,
+      backDestination: 'candidates', candidateId, onBack() {}, queue: currentQueue,
+      rankingUnlocked: true, sessionId: 'session', verifiedEvidence: currentVerified,
+      onEvidenceVerified() {}, onScoreInputsChanged() {},
+    })
+  }
+
+  const rendered = render(wrapper(React.createElement(Harness, {
+    candidateId: 'first', detailKey: 'detail', currentQueue: historicalQueue,
+  })))
+  await screen.findByRole('heading', { name: 'First Candidate' })
+  assert.equal(screen.getByRole('checkbox', { name: /^I verified this exact source span for/ }).checked, true)
+  assert.equal(scoreChanges, 0, 'preexisting revision 7 must be the observation baseline')
+
+  rendered.rerender(wrapper(React.createElement(Harness, {
+    candidateId: 'second', detailKey: 'detail', currentQueue: historicalQueue,
+  })))
+  await screen.findByRole('heading', { name: 'Second Candidate' })
+  assert.equal(screen.getByRole('checkbox', { name: /^I verified this exact source span for/ }).checked, true)
+  assert.equal(scoreChanges, 0, 'opening a second candidate is not a score mutation')
+
+  rendered.rerender(wrapper(React.createElement(Harness, {
+    candidateId: 'second', detailKey: 'uncached-remount', currentQueue: historicalQueue,
+  })))
+  await screen.findByRole('heading', { name: 'Second Candidate' })
+  assert.equal(screen.getByRole('checkbox', { name: /^I verified this exact source span for/ }).checked, true)
+  assert.equal(scoreChanges, 0, 'an uncached remount must retain the historical baseline')
+
+  rendered.rerender(wrapper(React.createElement(Harness, {
+    candidateId: 'second',
+    detailKey: 'uncached-remount',
+    currentQueue: { ...historicalQueue, revision: 8, scoringRevision: 4 },
+  })))
+  await waitFor(() => assert.equal(scoreChanges, 1))
+  assert.equal(screen.getByRole('checkbox', { name: /^I verified this exact source span for/ }).checked, false)
+})
+
 test('candidate pool renders queued, failed, and focused enqueue errors', { timeout: 5000 }, async () => {
   const candidates = [
     { id: 'queued', username: 'queued', profile_url: '/in/queued', display_name: 'Queued', stage: 'discovered', retrieval_status: 'pending', profile_urn: null, profile_urn_is_scored: false, profile_urn_quarantined: false, profile_urn_routing_allowed: false, profile_contract_error: null, active_job_id: 'job', source_count: 0, sources: [] },
@@ -203,7 +319,7 @@ test('candidate pool renders queued, failed, and focused enqueue errors', { time
   globalThis.fetch = (input, init) => {
     const path = String(input)
     if (path.startsWith('/api/searches?')) return json([])
-    if (path.startsWith('/api/candidates?')) return json(candidates)
+    if (path.startsWith('/api/candidate-pool?')) return json(candidates)
     if (path === '/api/candidates/ready/enrich' && init?.method === 'POST') {
       return json({ detail: 'candidate already has a queued or running fetch' }, 409)
     }

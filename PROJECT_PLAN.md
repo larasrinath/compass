@@ -794,7 +794,7 @@ signal_coverage(id PK, coverage_set_id FK, profile_section_id FK,
 missing_set(id PK, candidate_id FK)
 
 signal_missing_section(id PK, missing_set_id FK, section_name TEXT,
-                       reason CHECK(reason IN ('not_requested','rate_limit','fetch_error')),
+                       reason CHECK(reason IN ('not_requested','rate_limit','fetch_error','unparseable')),
                        section_error_id FK NULL)
 -- Used only for `unknown`; stores availability provenance, never profile evidence.
 
@@ -1099,9 +1099,12 @@ Each section gets a parser producing `(field_key, value, span)` tuples. All pars
 | `certifications` | `{name, issuer, issued, expires}` | Block split. |
 | `projects` | `{name, dates, description}` | Block split. |
 
-Every parser is **total**: it never raises; unparseable content becomes zero fields plus a
-`parse_note` recording the fact. A section that parses to nothing still keeps its raw text and
-still counts as *retrieved* (which matters for confidence, §14.4).
+Every parser is **total**: it never raises. Reliably parsed content with no relevant value
+produces zero relevant fields, keeps its raw text, receives full retrieved availability, and is
+eligible for deterministic `not_matched`. Content marked unreliable by a `parse_note` also
+produces zero fields and keeps its raw text, but produces canonical `unparseable` missing
+provenance and reduced availability. It never produces absence coverage or `not_matched`, and
+is never coerced to `fetch_error` (§14.4).
 
 ### 13.3 LLM-assisted extraction (optional, never authoritative)
 
@@ -1228,9 +1231,15 @@ Penalties (applied after normalization, not weighted):
   signal may therefore contain matched, not-matched and unknown claims concurrently.
 - **S-3:** when `required_experience_months > 0`,
   `min(1.0, relevant_months / required_experience_months)`, where a role counts as relevant when
-  its title or description matches a target title or a required skill. Roles whose date range
-  does not parse contribute to a separate `unparsed_roles` count and push availability toward
-  0.5. When the input is `null` or `0`, S-3 is inactive and excluded from every denominator.
+  its title or description matches a normalized target-title or required-skill term. If there
+  are no normalized target-title or required-skill terms, every parsed role is relevant; an
+  empty relevance-filter term set never creates absence coverage. Optional skills, positive
+  keywords and job-description prose are not S-3 relevance filters. Only relevant roles whose
+  duration does not parse contribute to `unparsed_roles` and reduce availability; an
+  unparseable duration on an irrelevant role does neither. If no roles parse reliably, the S-3
+  claim is `unknown` with canonical `unparseable` missing provenance, never absence coverage or
+  `not_matched`. When the input is `null` or `0`, S-3 is inactive and excluded from every
+  denominator.
 - **S-4:** when input-active, best-match over target titles using token overlap of head nouns (e.g. "Staff Backend
   Engineer" vs "Backend Engineer" → 0.8). Exact 1.0, no match 0.0.
 - **S-5:** when input-active, fraction of brief industries evidenced by employer names or description text.
@@ -1336,11 +1345,13 @@ confidence = y / W        ∈ [0,1]
 band = low (<0.5) | medium (0.5–0.8) | high (≥0.8)
 ```
 
-`availability_i` is `1.0` if every section the signal needs was retrieved successfully,
-`0.5` if some were, `0.0` if none. A section that was retrieved but parsed to nothing counts
-as retrieved (availability 1.0) with sub-score 0 and a `not_matched` scalar claim — because we
-*did* look and did not find it. A section that errored contributes missing-section provenance
-and reduces availability.
+`availability_i` is `1.0` if every section the signal needs was retrieved successfully and can
+be parsed reliably, `0.5` if some were, `0.0` if none. A section that was retrieved and parsed
+reliably but contained no relevant value counts as retrieved (availability 1.0) with sub-score 0
+and a `not_matched` scalar claim — because we *did* look and did not find it. A section that
+errored, or that was retrieved but cannot be parsed reliably, contributes missing-section
+provenance (`fetch_error` or `unparseable`, respectively) and reduces availability. An
+`unparseable` section is never coerced to `fetch_error` or `not_matched`.
 
 When `I≠∅` and `y=0` because no effective signal has retrieved availability, confidence is
 exactly 0 and `confidence_band` is null. When `I=∅`, confidence is also 0 but the explicit API/UI
@@ -1388,7 +1399,7 @@ AbsenceCoverage {
 MissingSection {
   verdict        : unknown
   section_name   : "skills"
-  reason         : not_requested | rate_limit | fetch_error
+  reason         : not_requested | rate_limit | fetch_error | unparseable
   section_error_id : 7 | null
 }
 ```
@@ -1415,8 +1426,9 @@ The candidate detail view renders, for every signal:
   purged the UI says *"raw text purged on {date}"*.
 - **What did not match** — deterministic absence results, listed with the exact successfully
   retrieved sections and searched normalized terms/aliases; never as quoted snippets.
-- **What was unavailable** — claims with verdict `unknown`, each naming the section that
-  was not retrieved and *why* (`rate_limit`, not requested, fetch error).
+- **What was unavailable** — claims with verdict `unknown`, each naming the section that was
+  unavailable for reliable scoring and *why*: not requested, rate limited, fetch failed, or
+  **"retrieved, but could not be parsed reliably"** (`unparseable`).
 - **Provisional or enriched** — the stage badge, plus "N of 6 sections retrieved".
 
 Copy rule, enforced in one shared component: `unknown` always renders as
@@ -2160,8 +2172,13 @@ WP2/WP3 integration boundary. No file or named test target is shared between wor
   calculation, permanently weight 0. The §14.1 activity derivation runs before signal creation;
   every inert signal emits no aggregate, claim or provenance child.
 - *Acceptance:* each active signal has fixtures for every valid verdict; S-3 covers
-  `required_experience_months` null/0/positive, S-6 covers empty and populated equivalence
-  tables, and S-8 covers empty credentials plus exact/alias requirements. S-1/S-2 fixtures
+  `required_experience_months` null/0/positive and a months-only brief with no normalized target
+  titles or required skills, where every parsed role is relevant. Its mutation test must fail if
+  optional skills, positive keywords or job-description prose become relevance filters, if an
+  irrelevant role's unparseable duration reduces availability, if an empty relevance-filter term
+  set creates absence coverage, or if no parseable roles yields anything except
+  `unknown`/`unparseable`. S-6 covers empty and populated equivalence tables, and S-8 covers empty
+  credentials plus exact/alias requirements. S-1/S-2 fixtures
   produce matched + not-matched + unknown claims in one aggregate whose rollup is `mixed`;
   scalar signals emit exactly one claim. An executable matrix independently empties S-1 required
   skills, S-2 optional skills, S-3 months, S-4 titles, S-5 industries, S-6 location and S-8
