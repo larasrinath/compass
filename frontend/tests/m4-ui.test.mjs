@@ -12,6 +12,8 @@ const candidates = read('pages/CandidatesPage.tsx')
 const evidence = read('components/EvidencePanel.tsx')
 const copy = read('components/scoringCopy.ts')
 const weights = read('components/WeightsEditor.tsx')
+const detail = read('pages/CandidateDetailPage.tsx')
+const routing = read('routing.ts')
 
 test('Gate A structurally separates candidate pool from ranking', () => {
   assert.match(api, /\/api\/candidate-pool\?session_id=/)
@@ -19,6 +21,9 @@ test('Gate A structurally separates candidate pool from ranking', () => {
   assert.match(candidates, /enabled: Boolean\(session\.phase_gates\?\.A\)/)
   assert.match(candidates, /Inspect the candidate pool before ranking/)
   assert.match(search, /Accept Gate A and unlock ranking/)
+  assert.match(detail, /rankingUnlocked && \(candidate\.score \|\| candidate\.signals\)/)
+  assert.match(detail, /rankingUnlocked && candidate\.score_history/)
+  assert.match(routing, /\/candidates\/\$\{encodeURIComponent/)
 })
 
 test('M4 keeps context outside scoring and sending outside the UI', () => {
@@ -35,6 +40,6 @@ test('evidence copy and Gate B controls preserve human verification', () => {
   assert.match(evidence, /Opening is not verification/)
   assert.match(evidence, /I verified this exact source span/)
   assert.match(evidence, /Evidence withheld/)
-  assert.match(candidates, /verifiedEvidenceIds\.size < 10/)
+  assert.match(candidates, /eligibleEvidence\.size < 10/)
   assert.match(app, /Scores rank retrieved evidence, not people\./)
 })

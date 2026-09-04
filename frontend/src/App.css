@@ -108,6 +108,15 @@ main {
   display: grid;
   gap: 24px;
 }
+.workspace-page,
+.workspace-page > *,
+.evidence-panel,
+.signal-table-wrap,
+.detail-columns,
+.detail-columns > * {
+  min-width: 0;
+  max-width: 100%;
+}
 .page-intro,
 .section-heading,
 .pause-banner,
@@ -651,6 +660,11 @@ footer strong {
   color: var(--ink-soft);
   font-size: 12px;
 }
+.ranked-identity > .candidate-headline {
+  margin: 4px 0;
+  color: var(--ink);
+  font-size: 14px;
+}
 .ranked-badges,
 .non-scoring-hints,
 .top-signals {
@@ -813,6 +827,19 @@ footer strong {
   color: var(--ink-soft);
   font-size: 12px;
 }
+.missing-evidence .unknown-explanation {
+  color: var(--ink);
+  font-weight: 700;
+}
+.raw-purged {
+  display: grid;
+  gap: 6px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 12px;
+  padding: 16px;
+  background: #f0eee8;
+}
+.raw-purged span { color: var(--ink-soft); }
 .verification-count strong { font-size: 24px; color: var(--ink); }
 .context-panel dl {
   display: grid;

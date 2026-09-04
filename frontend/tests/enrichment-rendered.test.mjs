@@ -180,7 +180,9 @@ test('candidate detail opens zero-field sections and exact field evidence', asyn
   }
   const user = userEvent.setup({ document: dom.window.document })
   render(wrapper(React.createElement(CandidateDetailPage, {
-    candidateId: 'candidate', onBack() {}, queue,
+    candidateId: 'candidate', onBack() {}, queue, rankingUnlocked: true,
+    sessionId: 'session', verifiedEvidence: new Map(),
+    onEvidenceVerified() {}, onScoreInputsChanged() {},
   })))
   const honorsButton = await screen.findByRole('button', { name: 'honors' })
   honorsButton.focus()

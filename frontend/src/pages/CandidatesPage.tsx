@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   acceptPhaseGateB,
@@ -7,15 +7,24 @@ import {
 } from '../api/client'
 import { CandidateRow } from '../components/CandidateRow'
 import { WeightsEditor } from '../components/WeightsEditor'
+import {
+  reconcileEvidenceVerifications,
+  scoreIdentityKey,
+  type EvidenceVerification,
+} from '../scoreVerification'
 
 export function CandidatesPage({
   session,
   onCandidateOpen,
-  verifiedEvidenceIds,
+  verifiedEvidence,
+  onEvidenceReconciled,
+  onScoresChanged,
 }: {
   session: SessionRecord
   onCandidateOpen: (candidateId: string) => void
-  verifiedEvidenceIds: Set<string>
+  verifiedEvidence: ReadonlyMap<string, EvidenceVerification>
+  onEvidenceReconciled: (values: Map<string, EvidenceVerification>) => void
+  onScoresChanged: () => void
 }) {
   const client = useQueryClient()
   const [stage, setStage] = useState('')
@@ -35,8 +44,27 @@ export function CandidatesPage({
       }),
     enabled: Boolean(session.phase_gates?.A),
   })
+  const currentScoreIdentities = new Set(
+    (candidates.data ?? []).map((candidate) =>
+      scoreIdentityKey({
+        sessionId: session.id,
+        scoreId: candidate.score_id,
+        inputFingerprint: candidate.input_fingerprint,
+      }),
+    ),
+  )
+  const eligibleEvidence = reconcileEvidenceVerifications(
+    verifiedEvidence,
+    currentScoreIdentities,
+  )
+  const scoreIdentitySignature = [...currentScoreIdentities].sort().join('|')
+  useEffect(() => {
+    onEvidenceReconciled(eligibleEvidence)
+    // The signature represents the complete current score set; callbacks are state sinks.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scoreIdentitySignature])
   const gateB = useMutation({
-    mutationFn: () => acceptPhaseGateB([...verifiedEvidenceIds], gateNote),
+    mutationFn: () => acceptPhaseGateB([...eligibleEvidence.keys()], gateNote),
     onSuccess: async () => client.invalidateQueries({ queryKey: ['session'] }),
   })
   const orderedCandidates = orderCandidates(candidates.data ?? [], sort)
@@ -70,7 +98,7 @@ export function CandidatesPage({
         </div>
       </div>
 
-      <WeightsEditor />
+      <WeightsEditor onScoresChanged={onScoresChanged} />
 
       <form className="ranking-filters panel" onSubmit={(event) => event.preventDefault()}>
         <p className="eyebrow">Filter and sort</p>
@@ -151,13 +179,13 @@ export function CandidatesPage({
             }}
           >
             <p className="verification-count" aria-live="polite">
-              <strong>{verifiedEvidenceIds.size} / 10</strong> exact spans verified
+              <strong>{eligibleEvidence.size} / 10</strong> exact spans verified for current scores
             </p>
             <label className="field">
               <span>Verification note</span>
               <textarea onChange={(event) => setGateNote(event.target.value)} rows={2} value={gateNote} />
             </label>
-            <button className="primary-action" disabled={verifiedEvidenceIds.size < 10 || gateB.isPending} type="submit">
+            <button className="primary-action" disabled={eligibleEvidence.size < 10 || gateB.isPending} type="submit">
               {gateB.isPending ? 'Recording…' : 'Accept Gate B'}
             </button>
             {gateB.isError ? <p className="field-error" role="alert">{gateB.error.message}</p> : null}

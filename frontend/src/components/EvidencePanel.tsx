@@ -54,8 +54,10 @@ export function EvidencePanel({
                   {claim.verdict === 'unknown' ? (
                     <div
                       className="missing-evidence"
-                      title="This does not mean the candidate lacks this qualification."
                     >
+                      <span className="unknown-explanation">
+                        This does not mean the candidate lacks this qualification.
+                      </span>
                       {claim.missing_sections.map((missing) => (
                         <span key={`${missing.section_name}-${missing.reason}`}>
                           {missing.section_name.replaceAll('_', ' ')} · {missing.reason.replaceAll('_', ' ')}
@@ -74,7 +76,7 @@ export function EvidencePanel({
                   ) : (
                     <div className="profile-evidence-list">
                       {claim.evidence.map((evidence) =>
-                        evidence.provenance_available ? (
+                        evidence.availability.state === 'available' ? (
                           <div className="profile-evidence" key={evidence.id}>
                             <button
                               className="evidence-link"
@@ -95,10 +97,18 @@ export function EvidencePanel({
                               I verified this exact source span
                             </label>
                           </div>
-                        ) : (
+                        ) : evidence.availability.state === 'masked' ? (
                           <div className="provenance-withheld" key={evidence.id} role="status">
                             <strong>Evidence withheld</strong>
-                            <span>Source span overlaps masked diagnostic material and cannot be opened or verified.</span>
+                            <span>{evidence.availability.reason} It cannot be opened or verified.</span>
+                          </div>
+                        ) : (
+                          <div className="raw-purged" key={evidence.id} role="status">
+                            <strong>
+                              Raw text purged on{' '}
+                              {new Date(evidence.availability.purged_at).toLocaleString()}
+                            </strong>
+                            <span>{evidence.availability.reason} This evidence cannot be opened or verified.</span>
                           </div>
                         ),
                       )}

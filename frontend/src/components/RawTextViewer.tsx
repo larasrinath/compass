@@ -9,10 +9,11 @@ export function RawTextViewer({
   selectedFieldId: string | null
 }) {
   const viewerRef = useRef<HTMLPreElement>(null)
+  const markRef = useRef<HTMLElement>(null)
   const selected = section.spans.find((span) => span.id === selectedFieldId)
   useEffect(() => {
     if (selected?.provenance_available) {
-      viewerRef.current?.scrollIntoView?.({ block: 'nearest' })
+      markRef.current?.scrollIntoView?.({ block: 'center', inline: 'nearest' })
       viewerRef.current?.focus()
     }
   }, [selected])
@@ -47,7 +48,7 @@ export function RawTextViewer({
       {hasHighlight ? (
         <>
           {points.slice(0, start).join('')}
-          <mark>{points.slice(start, end).join('')}</mark>
+          <mark ref={markRef}>{points.slice(start, end).join('')}</mark>
           {points.slice(end).join('')}
         </>
       ) : (

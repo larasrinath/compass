@@ -2,8 +2,10 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   getScoringConfig,
+  SCORING_WEIGHT_KEYS,
   updateScoringConfig,
   type ScoringConfigRecord,
+  type ScoringWeightKey,
 } from '../api/client'
 
 const SIGNAL_LABELS: Record<string, string> = {
@@ -16,7 +18,11 @@ const SIGNAL_LABELS: Record<string, string> = {
   'S-8': 'Required credentials',
 }
 
-export function WeightsEditor() {
+export function WeightsEditor({
+  onScoresChanged,
+}: {
+  onScoresChanged: () => void
+}) {
   const config = useQuery({ queryKey: ['weights'], queryFn: getScoringConfig })
   return (
     <details className="weights-editor panel">
@@ -28,12 +34,17 @@ export function WeightsEditor() {
         <span>Edit</span>
       </summary>
       {config.isError ? (
-        <p role="alert">Scoring configuration could not be loaded.</p>
+        <p role="alert">
+          {config.error instanceof Error
+            ? config.error.message
+            : 'Scoring configuration could not be loaded.'}
+        </p>
       ) : config.data ? (
         <LoadedWeightsEditor
           config={config.data}
           key={config.data.version}
           onRefresh={() => config.refetch()}
+          onScoresChanged={onScoresChanged}
         />
       ) : (
         <p aria-live="polite">Loading weights…</p>
@@ -45,12 +56,16 @@ export function WeightsEditor() {
 function LoadedWeightsEditor({
   config,
   onRefresh,
+  onScoresChanged,
 }: {
   config: ScoringConfigRecord
   onRefresh: () => void
+  onScoresChanged: () => void
 }) {
   const client = useQueryClient()
-  const [weights, setWeights] = useState<Record<string, number>>(config.weights)
+  const [weights, setWeights] = useState<Record<ScoringWeightKey, number>>(
+    config.weights,
+  )
   const [metroText, setMetroText] = useState(() =>
     JSON.stringify(config.metro_region_equivalences, null, 2),
   )
@@ -64,9 +79,11 @@ function LoadedWeightsEditor({
       })
     },
     onSuccess: async () => {
+      onScoresChanged()
       await Promise.all([
         client.invalidateQueries({ queryKey: ['weights'] }),
         client.invalidateQueries({ queryKey: ['ranked-candidates'] }),
+        client.invalidateQueries({ queryKey: ['candidate'] }),
       ])
     },
   })
@@ -78,7 +95,7 @@ function LoadedWeightsEditor({
           }}
         >
           <div className="weight-grid">
-            {Object.entries(config.weights).map(([signalId]) => {
+            {SCORING_WEIGHT_KEYS.map((signalId) => {
               const inert = config.inert_reasons[signalId]
               const credentialDisabled = signalId === 'S-8' && Boolean(inert)
               return (

@@ -23,15 +23,19 @@ export function CandidateRow({
           <ConfidenceBand candidate={candidate} />
         </div>
         <h3>{candidate.display_name || candidate.username}</h3>
+        <p className="candidate-headline">
+          {candidate.headline || 'Headline not found in the retrieved data'}
+        </p>
         <p>
-          Config {candidate.weights_version} · {candidate.active_signal_count} active signals
+          {candidate.calculation_status === 'scored' ? 'Scored' : 'Not calculated'} · config{' '}
+          {candidate.weights_version} · {candidate.active_signal_count} active signals
           {candidate.previous_score === null
             ? ' · no prior score'
             : ` · previous ${candidate.previous_score.toFixed(1)} · change ${delta !== null && delta >= 0 ? '+' : ''}${delta?.toFixed(1) ?? '—'}`}
         </p>
         {candidate.top_signals.length ? (
           <ul className="top-signals" aria-label="Top scoring signals">
-            {candidate.top_signals.map((signal) => (
+            {candidate.top_signals.slice(0, 3).map((signal) => (
               <li key={signal.signal_id}>
                 {signal.label} <strong>+{signal.contribution.toFixed(1)}</strong>
               </li>

@@ -13,19 +13,29 @@ import { RawTextViewer } from '../components/RawTextViewer'
 import { ScoreBadge } from '../components/ScoreBadge'
 import { SectionAvailabilityMap } from '../components/SectionAvailabilityMap'
 import type { ReturnTypeOfJobEvents } from '../hooks/useJobEvents'
+import type { EvidenceVerification } from '../scoreVerification'
 
 export function CandidateDetailPage({
   candidateId,
   onBack,
   queue,
-  verifiedEvidenceIds = new Set<string>(),
-  onEvidenceVerified = () => undefined,
+  rankingUnlocked,
+  sessionId,
+  verifiedEvidence,
+  onEvidenceVerified,
+  onScoreInputsChanged,
 }: {
   candidateId: string
   onBack: () => void
   queue: ReturnTypeOfJobEvents
-  verifiedEvidenceIds?: Set<string>
-  onEvidenceVerified?: (evidenceId: string, verified: boolean) => void
+  rankingUnlocked: boolean
+  sessionId: string
+  verifiedEvidence: ReadonlyMap<string, EvidenceVerification>
+  onEvidenceVerified: (
+    verification: EvidenceVerification,
+    verified: boolean,
+  ) => void
+  onScoreInputsChanged: () => void
 }) {
   const queryClient = useQueryClient()
   const enrichmentErrorRef = useRef<HTMLParagraphElement>(null)
@@ -59,6 +69,7 @@ export function CandidateDetailPage({
   const enrich = useMutation({
     mutationFn: (sections: string[]) => enrichCandidate(candidateId, sections),
     onSuccess: async () => {
+      onScoreInputsChanged()
       await queryClient.invalidateQueries({
         queryKey: ['candidate', candidateId],
       })
@@ -69,6 +80,7 @@ export function CandidateDetailPage({
 
   useEffect(() => {
     if (queue.revision > 0) {
+      onScoreInputsChanged()
       void queryClient.invalidateQueries({
         queryKey: ['candidate', candidateId],
       })
@@ -76,7 +88,7 @@ export function CandidateDetailPage({
         queryKey: ['candidate-section', candidateId],
       })
     }
-  }, [candidateId, queryClient, queue.revision])
+  }, [candidateId, onScoreInputsChanged, queryClient, queue.revision])
 
   if (detail.isPending) return <p aria-live="polite">Opening stored profile…</p>
   if (detail.isError || !detail.data) {
@@ -87,6 +99,24 @@ export function CandidateDetailPage({
     )
   }
   const candidate = detail.data
+  const currentScoreIdentity =
+    rankingUnlocked && candidate.score
+      ? {
+          sessionId,
+          scoreId: candidate.score.score_id,
+          inputFingerprint: candidate.score.input_fingerprint,
+        }
+      : null
+  const verifiedEvidenceIds = new Set(
+    [...verifiedEvidence].flatMap(([evidenceId, verification]) =>
+      currentScoreIdentity &&
+      verification.sessionId === currentScoreIdentity.sessionId &&
+      verification.scoreId === currentScoreIdentity.scoreId &&
+      verification.inputFingerprint === currentScoreIdentity.inputFingerprint
+        ? [evidenceId]
+        : [],
+    ),
+  )
   const contextHints = [...(candidate.non_scoring_hints ?? [])]
   if (
     candidate.profile_urn &&
@@ -116,7 +146,7 @@ export function CandidateDetailPage({
             Opening evidence does not mark it verified.
           </p>
         </div>
-        {candidate.score ? (
+        {rankingUnlocked && candidate.score ? (
           <div className="candidate-score-summary">
             <ScoreBadge candidate={candidate.score} />
             <ConfidenceBand candidate={candidate.score} />
@@ -164,20 +194,27 @@ export function CandidateDetailPage({
 
       <SectionAvailabilityMap available={candidate.available_sections} />
 
-      {candidate.score || candidate.signals ? (
+      {rankingUnlocked && (candidate.score || candidate.signals) ? (
         <EvidencePanel
           allInert={candidate.score?.all_inert_attested ?? false}
           onEvidenceOpen={(sectionName, evidenceId) => {
             setSelectedSectionName(sectionName)
             setSelectedFieldId(evidenceId)
           }}
-          onEvidenceVerified={onEvidenceVerified}
+          onEvidenceVerified={(evidenceId, verified) => {
+            if (currentScoreIdentity) {
+              onEvidenceVerified(
+                { evidenceId, ...currentScoreIdentity },
+                verified,
+              )
+            }
+          }}
           signals={candidate.signals ?? []}
           verifiedEvidenceIds={verifiedEvidenceIds}
         />
       ) : null}
 
-      {candidate.score_history?.length ? (
+      {rankingUnlocked && candidate.score_history?.length ? (
         <section className="panel score-history" aria-labelledby="score-history-title">
           <p className="eyebrow">Immutable history</p>
           <h2 id="score-history-title">Current and previous scores</h2>

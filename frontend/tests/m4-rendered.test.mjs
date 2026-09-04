@@ -72,12 +72,19 @@ const config = {
 }
 function ranked(overrides) {
   return {
-    id: 'numeric', username: 'numeric', profile_url: '/in/numeric', display_name: 'Numeric',
+    id: 'numeric', score_id: 'score-v1', input_fingerprint: 'fingerprint-v1',
+    username: 'numeric', profile_url: '/in/numeric', display_name: 'Numeric',
+    headline: 'Platform leader',
     stage: 'provisional', score: 82.5, score_lower: 71, score_upper: 89,
     previous_score: 80, delta: 2.5, confidence: 0.75, confidence_band: 'high',
     calculation_status: 'scored', active_signal_count: 4, all_inert_attested: false,
     weights_version: 'v3',
-    top_signals: [{ signal_id: 'S-1', label: 'Required skills', contribution: 27, rollup: 'matched' }],
+    top_signals: [
+      { signal_id: 'S-1', label: 'Required skills', contribution: 27, rollup: 'matched' },
+      { signal_id: 'S-2', label: 'Optional skills', contribution: 8, rollup: 'matched' },
+      { signal_id: 'S-3', label: 'Experience', contribution: 7, rollup: 'matched' },
+      { signal_id: 'S-4', label: 'Fourth hidden signal', contribution: 6, rollup: 'matched' },
+    ],
     non_scoring_hints: [{ kind: 'network', label: 'Search network', value: 'F/S' }],
     ...overrides,
   }
@@ -137,7 +144,7 @@ test('ranked list distinguishes stage and both null-score forms without color', 
   const user = userEvent.setup({ document: dom.window.document })
   render(wrapper(React.createElement(CandidatesPage, {
     session,
-    verifiedEvidenceIds: new Set(),
+    verifiedEvidence: new Map(), onEvidenceReconciled() {}, onScoresChanged() {},
     onCandidateOpen(id) { opened = id },
   })))
   const list = await screen.findByLabelText('Ranked candidates')
@@ -151,6 +158,7 @@ test('ranked list distinguishes stage and both null-score forms without color', 
   assert.equal(inertCard.textContent.includes('Not scored — no active scoring criteria'), true)
   assert.equal(inertCard.textContent.includes('Low confidence (0%)'), true)
   assert.equal(numericCard.textContent.includes('Search network: F/S · non-scoring'), true)
+  assert.equal(numericCard.textContent.includes('Fourth hidden signal'), false)
   assert.equal(cards[0], numericCard, 'numeric scores sort before both null-score forms')
   const open = within(numericCard).getByRole('button', { name: /Open evidence/ })
   open.focus()
@@ -169,14 +177,19 @@ test('evidence opening and verification are separate; unknown and masked states 
       { id: 'match', claim_key: 'required:go', display_term: 'Go', verdict: 'matched',
         evidence: [{ id: 'e1', section_name: 'experience', profile_section_id: 'p1',
           span_start: 9, span_end: 16, snippet: '🚀 Alpha', matched_term: 'Alpha', matcher: 'exact',
-          polarity: 'supporting', provenance_available: true, provenance_label: 'Exact stored text' }],
+          polarity: 'supporting', availability: { state: 'available' } }],
         coverage: [], missing_sections: [] },
       { id: 'unknown', claim_key: 'required:rust', display_term: 'Rust', verdict: 'unknown',
         evidence: [], coverage: [], missing_sections: [{ section_name: 'skills', reason: 'not_requested' }] },
       { id: 'masked', claim_key: 'required:masked', display_term: 'Masked', verdict: 'matched',
         evidence: [{ id: 'masked-e', section_name: 'experience', profile_section_id: 'p1',
           span_start: 1, span_end: 4, snippet: 'secret', matched_term: 'secret', matcher: 'exact',
-          polarity: 'supporting', provenance_available: false, provenance_label: 'Withheld' }],
+          polarity: 'supporting', availability: { state: 'masked', reason: 'Masked diagnostic overlap.' } }],
+        coverage: [], missing_sections: [] },
+      { id: 'purged', claim_key: 'required:purged', display_term: 'Purged', verdict: 'matched',
+        evidence: [{ id: 'purged-e', section_name: 'experience', profile_section_id: 'p1',
+          span_start: 1, span_end: 4, snippet: 'gone', matched_term: 'gone', matcher: 'exact',
+          polarity: 'supporting', availability: { state: 'raw_purged', reason: 'Session raw text was manually purged.', purged_at: '2026-01-02T03:04:05Z' } }],
         coverage: [], missing_sections: [] },
     ],
   }]
@@ -190,6 +203,9 @@ test('evidence opening and verification are separate; unknown and masked states 
   }))
   assert.equal(screen.getByText('not found in the retrieved data', { exact: false }).textContent.includes('not found in the retrieved data'), true)
   assert.equal(screen.getByText(/Evidence withheld/).textContent, 'Evidence withheld')
+  assert.equal(screen.getByText(/Raw text purged on/).textContent.includes('Raw text purged on'), true)
+  assert.equal(screen.getByText(/Session raw text was manually purged/).textContent.includes('manually purged'), true)
+  assert.equal(screen.getByText('This does not mean the candidate lacks this qualification.').textContent.length > 0, true)
   assert.equal(screen.queryByRole('button', { name: /secret/ }), null)
   const evidence = screen.getByRole('button', { name: /🚀 Alpha/ })
   evidence.focus()
@@ -202,11 +218,14 @@ test('evidence opening and verification are separate; unknown and masked states 
 })
 
 test('Gate B posts only the separately verified exact evidence ids', async () => {
-  const verified = new Set(Array.from({ length: 10 }, (_, index) => `e${index}`))
+  const verified = new Map(Array.from({ length: 10 }, (_, index) => [
+    `e${index}`,
+    { evidenceId: `e${index}`, sessionId: 'session', scoreId: 'score-v1', inputFingerprint: 'fingerprint-v1' },
+  ]))
   let payload = null
   globalThis.fetch = (input, init) => {
     const path = String(input)
-    if (path.startsWith('/api/candidates?')) return json([])
+    if (path.startsWith('/api/candidates?')) return json([ranked({})])
     if (path === '/api/weights') return json(config)
     if (path === '/api/session/gates/B') {
       payload = JSON.parse(init.body)
@@ -217,18 +236,20 @@ test('Gate B posts only the separately verified exact evidence ids', async () =>
   const user = userEvent.setup({ document: dom.window.document })
   render(wrapper(React.createElement(CandidatesPage, {
     session,
-    verifiedEvidenceIds: verified,
+    verifiedEvidence: verified, onEvidenceReconciled() {}, onScoresChanged() {},
     onCandidateOpen() {},
   })))
   const button = await screen.findByRole('button', { name: 'Accept Gate B' })
+  await waitFor(() => assert.equal(button.disabled, false))
   button.focus()
   await user.keyboard('{Enter}')
   await waitFor(() => assert.equal(payload.evidence_ids.length, 10))
-  assert.deepEqual(new Set(payload.evidence_ids), verified)
+  assert.deepEqual(new Set(payload.evidence_ids), new Set(verified.keys()))
 })
 
 test('weights save uses the loaded optimistic version and never offers S-7 input', async () => {
   let payload = null
+  let scoresChanged = 0
   globalThis.fetch = (input, init) => {
     const path = String(input)
     if (path === '/api/weights' && !init?.method) return json(config)
@@ -239,7 +260,9 @@ test('weights save uses the loaded optimistic version and never offers S-7 input
     throw new Error(`unexpected fetch ${path}`)
   }
   const user = userEvent.setup({ document: dom.window.document })
-  render(wrapper(React.createElement(WeightsEditor)))
+  render(wrapper(React.createElement(WeightsEditor, {
+    onScoresChanged() { scoresChanged += 1 },
+  })))
   await user.click(await screen.findByText('Scoring weights'))
   const required = screen.getByLabelText('Required skills weight')
   await user.clear(required)
@@ -247,6 +270,24 @@ test('weights save uses the loaded optimistic version and never offers S-7 input
   await user.click(screen.getByRole('button', { name: 'Save from v3' }))
   await waitFor(() => assert.equal(payload.expected_version, 'v3'))
   assert.equal(payload.weights['S-1'], 31)
+  assert.equal(scoresChanged, 1)
   assert.equal(screen.queryByLabelText(/Network context weight/), null)
   assert.equal(screen.getByText('Search only — not a scoring criterion.').textContent.length > 0, true)
+})
+
+test('hostile unexpected weight key is a contract error and never reaches PUT', async () => {
+  let writes = 0
+  globalThis.fetch = (input, init) => {
+    const path = String(input)
+    if (path === '/api/weights' && !init?.method) {
+      return json({ ...config, weights: { ...config.weights, 'S-7': 99 } })
+    }
+    if (init?.method === 'PUT') writes += 1
+    throw new Error(`unexpected fetch ${path}`)
+  }
+  render(wrapper(React.createElement(WeightsEditor, { onScoresChanged() {} })))
+  const alert = await screen.findByRole('alert')
+  assert.equal(alert.textContent.includes('unexpected weight keys S-7'), true)
+  assert.equal(writes, 0)
+  assert.equal(screen.queryByRole('button', { name: /Save from/ }), null)
 })
