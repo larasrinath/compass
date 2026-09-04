@@ -35,6 +35,8 @@ def _role_evidence(
     brief: BriefInput,
 ) -> tuple[ProfileEvidence, ...]:
     terms = (*brief.target_titles, *brief.required_skills)
+    if not terms:
+        return (evidence_for_source(role.title),)
     values = (
         (role.title,) if role.description is None else (role.title, role.description)
     )
@@ -94,16 +96,30 @@ def relevant_experience(brief: BriefInput, snapshot: ProfileSnapshot) -> ScoreSi
 
     verified_evidence: list[ProfileEvidence] = []
     relevant_months = 0
-    unparsed_roles = sum(role.months is None for role in snapshot.experience_roles)
+    unparsed_roles = 0
+    if not snapshot.experience_roles:
+        claim = ScoreClaim(
+            claim_key="S-3:experience-depth",
+            display_term=f"{required} months relevant experience",
+            verdict=Verdict.UNKNOWN,
+            provenance=unparseable_set("experience"),
+        )
+        return ScoreSignal(
+            SignalId.EXPERIENCE,
+            Rollup.UNKNOWN,
+            Decimal(0),
+            Decimal("0.5"),
+            (claim,),
+        )
     for role in snapshot.experience_roles:
         role_evidence = _role_evidence(snapshot, role, brief)
         if not role_evidence:
             continue
         if role.months is None:
+            unparsed_roles += 1
             continue
-        else:
-            relevant_months += role.months
-            verified_evidence.extend((*role_evidence, *_duration_evidence(role)))
+        relevant_months += role.months
+        verified_evidence.extend((*role_evidence, *_duration_evidence(role)))
 
     score = min(Decimal(1), Decimal(relevant_months) / Decimal(required))
     display = f"{required} months relevant experience"

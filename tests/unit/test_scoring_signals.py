@@ -224,7 +224,124 @@ def test_experience_not_matched_without_relevant_roles() -> None:
     )
     signal = relevant_experience(brief, rich_snapshot())
     assert signal.claims[0].verdict is Verdict.NOT_MATCHED
-    assert isinstance(signal.claims[0].provenance, CoverageSet)
+    provenance = signal.claims[0].provenance
+    assert isinstance(provenance, CoverageSet)
+    assert all(item.normalized_terms for item in provenance.entries)
+
+
+@pytest.mark.parametrize(
+    ("titles", "skills", "normalized_terms", "aliases"),
+    (
+        (
+            (Term("Zulu Architect"),),
+            (Term("Alpha Strategist"),),
+            ("alpha strategist", "zulu architect"),
+            (),
+        ),
+        (
+            (Term("Same Role"),),
+            (Term("same role"),),
+            ("same role",),
+            (),
+        ),
+        (
+            (Term("Designer", ("shared alias",)),),
+            (Term("Rust", ("Shared Alias",)),),
+            ("designer", "rust"),
+            ("shared alias",),
+        ),
+        (
+            (Term("Designer", ("rust",)),),
+            (Term("Rust"),),
+            ("designer", "rust"),
+            (),
+        ),
+    ),
+)
+def test_explicit_experience_absence_canonicalizes_combined_vocabulary(
+    titles: tuple[Term, ...],
+    skills: tuple[Term, ...],
+    normalized_terms: tuple[str, ...],
+    aliases: tuple[str, ...],
+) -> None:
+    signal = relevant_experience(
+        BriefInput(
+            required_experience_months=60,
+            target_titles=titles,
+            required_skills=skills,
+        ),
+        rich_snapshot(),
+    )
+    assert signal.claims[0].verdict is Verdict.NOT_MATCHED
+    provenance = signal.claims[0].provenance
+    assert isinstance(provenance, CoverageSet)
+    assert {item.normalized_terms for item in provenance.entries} == {normalized_terms}
+    assert {item.aliases for item in provenance.entries} == {aliases}
+
+
+@pytest.mark.parametrize(
+    ("months", "verdict", "polarity"),
+    (
+        (72, Verdict.MATCHED, Polarity.SUPPORTING),
+        (12, Verdict.CONTRADICTED, Polarity.CONTRADICTING),
+    ),
+)
+def test_months_only_experience_uses_all_roles_with_exact_evidence(
+    months: int,
+    verdict: Verdict,
+    polarity: Polarity,
+) -> None:
+    brief = BriefInput(
+        required_experience_months=60,
+        optional_skills=(Term("Rust"),),
+        positive_keywords=("unrelated prose",),
+    )
+    signal = relevant_experience(brief, rich_snapshot(months=months))
+    assert signal.claims[0].verdict is verdict
+    provenance = signal.claims[0].provenance
+    assert isinstance(provenance, EvidenceSet)
+    assert {item.span.snippet for item in provenance.entries} == {
+        "Backend Engineer",
+        "Jan 2018 - Dec 2023",
+    }
+    assert {item.matcher for item in provenance.entries} == {Matcher.EXACT}
+    assert {item.polarity for item in provenance.entries} == {polarity}
+
+
+def test_months_only_partial_duration_is_unknown_without_coverage() -> None:
+    experience = complete_section(
+        "experience",
+        "Backend Engineer\nJan 2022 - Dec 2023\nDesigner\nDates unavailable",
+        40,
+    )
+    known = ExperienceRole(
+        sourced(experience, "Backend Engineer"),
+        date_range=sourced(experience, "Jan 2022 - Dec 2023"),
+        months=24,
+        months_derivation=MonthsDerivation.DATE_RANGE,
+    )
+    unknown = ExperienceRole(sourced(experience, "Designer"))
+    signal = relevant_experience(
+        BriefInput(required_experience_months=60),
+        ProfileSnapshot((experience,), experience_roles=(known, unknown)),
+    )
+    assert signal.claims[0].verdict is Verdict.UNKNOWN
+    assert signal.raw_subscore == Decimal("0.4")
+    assert signal.availability == Decimal("0.5")
+    assert isinstance(signal.claims[0].provenance, MissingSet)
+    assert not isinstance(signal.claims[0].provenance, CoverageSet)
+
+
+def test_months_only_no_parsed_roles_is_unknown_not_absent() -> None:
+    experience = complete_section("experience", "Unparseable role text", 41)
+    signal = relevant_experience(
+        BriefInput(required_experience_months=60),
+        ProfileSnapshot((experience,)),
+    )
+    assert signal.claims[0].verdict is Verdict.UNKNOWN
+    assert signal.raw_subscore == 0
+    assert signal.availability == Decimal("0.5")
+    assert isinstance(signal.claims[0].provenance, MissingSet)
 
 
 def test_scalar_title_and_industry_signals_have_one_claim() -> None:
