@@ -41,7 +41,7 @@ export function TermEditor({
     >
       <strong id={`${field}-label`}>{label}</strong>
       <p className="field-help">
-        Add each term, then optional aliases. Aliases are comma separated.
+        Press Enter or Add term to add an item.
       </p>
       {values.map((value, index) => (
         <div className="term-row" key={`term-${index}`}>

@@ -153,7 +153,7 @@ export function CandidateDetailPage({
             {candidate.display_name || candidate.username}
           </h1>
           <p>
-            Parsed claims and score evidence stay linked to exact stored profile text.
+            Check profile details against the original text below.
             Opening evidence does not mark it verified.
           </p>
         </div>
@@ -203,7 +203,7 @@ export function CandidateDetailPage({
         </p>
       ) : null}
 
-      <SectionAvailabilityMap available={candidate.available_sections} />
+      <details className="simple-options"><summary>Downloaded sections <span>{Object.keys(candidate.available_sections).length} saved</span></summary><SectionAvailabilityMap available={candidate.available_sections} /></details>
 
       {rankingUnlocked && (hasScoreSignals || allInert) ? (
         <EvidencePanel
@@ -238,7 +238,7 @@ export function CandidateDetailPage({
       ) : null}
 
       {rankingUnlocked && candidate.score_history?.length ? (
-        <section className="panel score-history" aria-labelledby="score-history-title">
+        <details className="panel score-history simple-options"><summary>Previous scores</summary>
           <p className="eyebrow">Immutable history</p>
           <h2 id="score-history-title">Current and previous scores</h2>
           <ol>
@@ -249,7 +249,7 @@ export function CandidateDetailPage({
               </li>
             ))}
           </ol>
-        </section>
+        </details>
       ) : null}
 
       {contextHints.length ? (

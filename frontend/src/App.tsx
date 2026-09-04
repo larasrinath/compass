@@ -123,7 +123,7 @@ function App() {
           in
         </div>
         <div>
-          <p className="eyebrow">Private sourcing workspace</p>
+          <p className="eyebrow">My recruiting workspace</p>
           <strong className="brand-title">LinkedIn Dashboard</strong>
         </div>
         <div className="topbar-status">
@@ -137,6 +137,7 @@ function App() {
                 ? 'connected'
                 : 'unavailable'}
           </span>
+          {mcp.data?.reachable ? <button className="connection-recheck" disabled={mcp.isFetching} onClick={() => void mcp.refetch()} type="button">{mcp.isFetching ? 'Checking…' : 'Check connection'}</button> : null}
           {session.data ? (
             <span>
               Page reads {session.data.nav_used}/{session.data.nav_budget}
@@ -173,7 +174,7 @@ function App() {
       </nav>
 
       <main id="main-content">
-        <div className={mcp.data?.reachable ? 'connection-strip online' : 'connection-strip'} role="status">
+        {!mcp.data?.reachable ? <div className="connection-strip" role="status">
           <div>
             <strong>{mcp.isFetching ? 'Checking the LinkedIn connector…' : mcp.data?.reachable ? 'LinkedIn connector connected' : 'LinkedIn downloads are offline'}</strong>
             <span>{mcp.data?.reachable ? 'Search and download profiles on demand. Your work is saved locally.' : 'Saved candidates, evidence, and local scoring remain available. Start the LinkedIn connector, then check again.'}</span>
@@ -181,7 +182,7 @@ function App() {
           <button className="quiet-action" disabled={mcp.isFetching} onClick={() => void mcp.refetch()} type="button">
             {mcp.isFetching ? 'Checking…' : 'Check connection'}
           </button>
-        </div>
+        </div> : null}
         {health.isError ? (
           <div className="blocking-banner" role="alert">
             Dashboard API unavailable. Your entered work stays in this browser.

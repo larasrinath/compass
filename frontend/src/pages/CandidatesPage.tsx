@@ -102,11 +102,11 @@ export function CandidatesPage({
     <section className="workspace-page ranked-page" aria-labelledby="ranked-title">
       <div className="page-intro compact-intro">
         <div>
-          <p className="eyebrow">Step 3 · Compare candidates</p>
+          <p className="eyebrow">Your matches</p>
           <h1 id="ranked-title">Compare matches</h1>
           <p>
             Scores summarize only retrieved sections against your saved role brief.
-            Unknown evidence stays unknown and sorts after numeric results when ranking by score or confidence.
+            Missing information is shown as unknown.
           </p>
         </div>
         <div className="version-card">
@@ -177,7 +177,7 @@ export function CandidatesPage({
         </div>
       )}
 
-      <section className="phase-gate-card panel" aria-labelledby="gate-b-title">
+      <details className="phase-gate-card panel simple-options"><summary>Evidence quality check <span>{eligibleEvidence.size} links checked</span></summary>
         <div>
           <p className="eyebrow">Evidence quality check</p>
           <h2 id="gate-b-title">Verify at least 10 exact evidence links</h2>
@@ -217,7 +217,7 @@ export function CandidatesPage({
             {gateB.isError ? <p className="field-error" role="alert">{gateB.error.message}</p> : null}
           </form>
         )}
-      </section>
+      </details>
     </section>
   )
 }

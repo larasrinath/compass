@@ -179,7 +179,7 @@ export function SearchPage({
     <section aria-labelledby="search-title" className="workspace-page search-workspace">
       <div className="page-intro">
         <div>
-          <p className="eyebrow">Step 2 · Find candidates</p>
+          <p className="eyebrow">Your candidates</p>
           <h1 id="search-title">Find candidates</h1>
           <p>
             Search LinkedIn, save promising profiles, and review the evidence.
@@ -510,7 +510,8 @@ export function SearchPage({
         </details>
       </section>
 
-      <section aria-labelledby="runs-title" className="discovery-section search-history">
+      <details className="discovery-section search-history simple-options">
+        <summary>Search history</summary>
         <div className="section-heading">
           <div>
             <p className="eyebrow">Provenance</p>
@@ -555,7 +556,7 @@ export function SearchPage({
             <p>Your first narrow search will appear here without replacing later runs.</p>
           </div>
         )}
-      </section>
+      </details>
 
       {detail.data ? (
         <section aria-labelledby="run-detail-title" className="run-detail panel">

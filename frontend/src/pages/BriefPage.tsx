@@ -135,7 +135,7 @@ export function BriefPage({
     <section aria-labelledby="brief-title" className="workspace-page">
       <div className="page-intro">
         <div>
-          <p className="eyebrow">Step 1 · Role brief</p>
+          <p className="eyebrow">Your search</p>
           <h1 id="brief-title">Role brief</h1>
           <p>
             Set the skills and experience that matter. Save your brief, then start a search.
@@ -228,16 +228,6 @@ export function BriefPage({
             }}
             values={required}
           />
-          <TermEditor
-            errors={fieldErrors.optional_skills}
-            field="optional_skills"
-            label="Nice-to-have skills"
-            onChange={(values) => {
-              setOptional(values)
-              markDirty()
-            }}
-            values={optional}
-          />
           <label
             className="field"
             data-field-prefix="required_experience_months"
@@ -257,9 +247,24 @@ export function BriefPage({
               value={requiredExperienceMonths ?? ''}
             />
             <small className="field-help" id="required-experience-help">
-              Leave blank or enter 0 to disable experience-depth scoring.
+              Optional. Leave blank if experience length does not matter.
             </small>
           </label>
+        </fieldset>
+
+        <details className="simple-options" open={Object.keys(fieldErrors).length > 0 || conflicts.length > 0 || undefined}>
+          <summary>More preferences <span>Optional skills, industries, credentials & keywords</span></summary>
+          <div className="criteria-grid extra-criteria">
+          <TermEditor
+            errors={fieldErrors.optional_skills}
+            field="optional_skills"
+            label="Nice-to-have skills"
+            onChange={(values) => {
+              setOptional(values)
+              markDirty()
+            }}
+            values={optional}
+          />
           <TermEditor
             errors={fieldErrors.industries}
             field="industries"
@@ -308,7 +313,8 @@ export function BriefPage({
               </span>
             ))}
           </label>
-        </fieldset>
+          </div>
+        </details>
 
         <div className="sticky-actions">
           <span aria-live="polite">
