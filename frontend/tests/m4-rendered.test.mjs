@@ -1,0 +1,252 @@
+import assert from 'node:assert/strict'
+import { fileURLToPath } from 'node:url'
+import test from 'node:test'
+
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { JSDOM } from 'jsdom'
+import React from 'react'
+import { createServer } from 'vite'
+
+const root = fileURLToPath(new URL('..', import.meta.url))
+const dom = new JSDOM('<!doctype html><html><body></body></html>', {
+  url: 'http://127.0.0.1:5173',
+})
+globalThis.window = dom.window
+globalThis.document = dom.window.document
+Object.defineProperty(globalThis, 'navigator', { configurable: true, value: dom.window.navigator })
+globalThis.HTMLElement = dom.window.HTMLElement
+globalThis.Node = dom.window.Node
+globalThis.getComputedStyle = dom.window.getComputedStyle
+globalThis.requestAnimationFrame = (callback) => dom.window.setTimeout(() => callback(Date.now()), 0)
+globalThis.IS_REACT_ACT_ENVIRONMENT = true
+
+const { cleanup, render, screen, waitFor, within } = await import('@testing-library/react')
+const userEvent = (await import('@testing-library/user-event')).default
+const vite = await createServer({
+  root,
+  appType: 'custom',
+  optimizeDeps: { noDiscovery: true },
+  server: { hmr: false, middlewareMode: true },
+})
+const { CandidatesPage } = await vite.ssrLoadModule('/src/pages/CandidatesPage.tsx')
+const { EvidencePanel } = await vite.ssrLoadModule('/src/components/EvidencePanel.tsx')
+const { WeightsEditor } = await vite.ssrLoadModule('/src/components/WeightsEditor.tsx')
+const { SearchPage } = await vite.ssrLoadModule('/src/pages/SearchPage.tsx')
+await vite.close()
+
+test.after(async () => {
+  cleanup()
+  dom.window.close()
+})
+test.afterEach(() => cleanup())
+
+function wrapper(child) {
+  return React.createElement(
+    QueryClientProvider,
+    { client: new QueryClient({ defaultOptions: { queries: { retry: false } } }) },
+    child,
+  )
+}
+
+function json(value, status = 200) {
+  return Promise.resolve(new Response(JSON.stringify(value), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  }))
+}
+
+const session = {
+  id: 'session',
+  phase_gates: { A: { gate: 'A', accepted_at: 'now', note: 'checked', evidence_ids: [] } },
+}
+const queue = {
+  state: 'active', pause_reason: null, resume_at: null, counts: {}, jobs: [],
+  connected: true, revision: 0, lastEventAt: null,
+}
+const config = {
+  version: 'v3',
+  weights: { 'S-1': 30, 'S-2': 10, 'S-3': 20, 'S-4': 15, 'S-5': 10, 'S-6': 8, 'S-8': 0 },
+  active_signal_ids: ['S-1'],
+  inert_reasons: { 'S-8': { code: 'brief_input_empty', message: 'brief input is empty' } },
+  metro_region_equivalences: {},
+}
+function ranked(overrides) {
+  return {
+    id: 'numeric', username: 'numeric', profile_url: '/in/numeric', display_name: 'Numeric',
+    stage: 'provisional', score: 82.5, score_lower: 71, score_upper: 89,
+    previous_score: 80, delta: 2.5, confidence: 0.75, confidence_band: 'high',
+    calculation_status: 'scored', active_signal_count: 4, all_inert_attested: false,
+    weights_version: 'v3',
+    top_signals: [{ signal_id: 'S-1', label: 'Required skills', contribution: 27, rollup: 'matched' }],
+    non_scoring_hints: [{ kind: 'network', label: 'Search network', value: 'F/S' }],
+    ...overrides,
+  }
+}
+
+test('candidate-pool inspection records Gate A before ranking navigation', async () => {
+  let gateBody = null
+  let changed = false
+  globalThis.fetch = (input, init) => {
+    const path = String(input)
+    if (path.startsWith('/api/searches?')) return json([{
+      id: 'run', job_id: 'job', brief_id: 'brief', created_at: '2026-01-01T00:00:00Z',
+      keywords: 'platform', location: null, network: ['F', 'S'], current_company: null,
+      status: 'completed', reference_count: 1, person_reference_count: 1,
+      new_candidate_count: 1, existing_candidate_count: 0,
+    }])
+    if (path.startsWith('/api/candidate-pool?')) return json([])
+    if (path === '/api/session/gates/A') {
+      gateBody = JSON.parse(init.body)
+      return json({ gate: 'A', accepted_at: 'now', note: gateBody.note, evidence_ids: [] })
+    }
+    throw new Error(`unexpected fetch ${path}`)
+  }
+  const user = userEvent.setup({ document: dom.window.document })
+  render(wrapper(React.createElement(SearchPage, {
+    session: { id: 'session' }, brief: null, queue,
+    onCandidateOpen() {}, onGateAChanged() { changed = true },
+  })))
+  const accept = await screen.findByRole('button', { name: 'Accept Gate A and unlock ranking' })
+  await waitFor(() => assert.equal(accept.disabled, false))
+  accept.focus()
+  await user.keyboard('{Enter}')
+  await waitFor(() => assert.equal(changed, true))
+  assert.equal(gateBody.note, 'Candidate extraction and dedupe inspected.')
+})
+
+test('ranked list distinguishes stage and both null-score forms without color', async () => {
+  const candidates = [
+    ranked({}),
+    ranked({ id: 'unknown', display_name: 'Unknown', stage: 'enriched', score: null,
+      score_lower: null, score_upper: null, previous_score: null, delta: null,
+      confidence: 0, confidence_band: null, calculation_status: 'unknown',
+      top_signals: [] }),
+    ranked({ id: 'inert', display_name: 'Inert', stage: 'enriched', score: null,
+      score_lower: null, score_upper: null, previous_score: null, delta: null,
+      confidence: 0, confidence_band: 'low', calculation_status: 'unknown',
+      active_signal_count: 0, all_inert_attested: true, top_signals: [] }),
+  ]
+  let opened = null
+  let lastUrl = ''
+  globalThis.fetch = (input) => {
+    lastUrl = String(input)
+    if (lastUrl.startsWith('/api/candidates?')) return json(candidates)
+    if (lastUrl === '/api/weights') return json(config)
+    throw new Error(`unexpected fetch ${lastUrl}`)
+  }
+  const user = userEvent.setup({ document: dom.window.document })
+  render(wrapper(React.createElement(CandidatesPage, {
+    session,
+    verifiedEvidenceIds: new Set(),
+    onCandidateOpen(id) { opened = id },
+  })))
+  const list = await screen.findByLabelText('Ranked candidates')
+  const cards = within(list).getAllByRole('article')
+  const numericCard = cards.find((card) => card.textContent.includes('Numeric'))
+  const unknownCard = cards.find((card) => card.textContent.includes('Unknown'))
+  const inertCard = cards.find((card) => card.textContent.includes('Inert'))
+  assert.equal(numericCard.textContent.includes('◐ Provisional'), true)
+  assert.equal(unknownCard.textContent.includes('◆ Enriched'), true)
+  assert.equal(unknownCard.textContent.includes('not found in the retrieved data'), true)
+  assert.equal(inertCard.textContent.includes('Not scored — no active scoring criteria'), true)
+  assert.equal(inertCard.textContent.includes('Low confidence (0%)'), true)
+  assert.equal(numericCard.textContent.includes('Search network: F/S · non-scoring'), true)
+  assert.equal(cards[0], numericCard, 'numeric scores sort before both null-score forms')
+  const open = within(numericCard).getByRole('button', { name: /Open evidence/ })
+  open.focus()
+  await user.keyboard('{Enter}')
+  assert.equal(opened, 'numeric')
+  await user.selectOptions(screen.getByLabelText('Sort order'), 'confidence_desc')
+  await waitFor(() => assert.equal(lastUrl.includes('sort=confidence_desc'), true))
+})
+
+test('evidence opening and verification are separate; unknown and masked states are exact', async () => {
+  const calls = []
+  const signals = [{
+    id: 'signal', signal_id: 'S-1', label: 'Required skills', rollup: 'mixed',
+    weight: 30, raw_subscore: 0.5, contribution: 15, availability: 0.5,
+    claims: [
+      { id: 'match', claim_key: 'required:go', display_term: 'Go', verdict: 'matched',
+        evidence: [{ id: 'e1', section_name: 'experience', profile_section_id: 'p1',
+          span_start: 9, span_end: 16, snippet: '🚀 Alpha', matched_term: 'Alpha', matcher: 'exact',
+          polarity: 'supporting', provenance_available: true, provenance_label: 'Exact stored text' }],
+        coverage: [], missing_sections: [] },
+      { id: 'unknown', claim_key: 'required:rust', display_term: 'Rust', verdict: 'unknown',
+        evidence: [], coverage: [], missing_sections: [{ section_name: 'skills', reason: 'not_requested' }] },
+      { id: 'masked', claim_key: 'required:masked', display_term: 'Masked', verdict: 'matched',
+        evidence: [{ id: 'masked-e', section_name: 'experience', profile_section_id: 'p1',
+          span_start: 1, span_end: 4, snippet: 'secret', matched_term: 'secret', matcher: 'exact',
+          polarity: 'supporting', provenance_available: false, provenance_label: 'Withheld' }],
+        coverage: [], missing_sections: [] },
+    ],
+  }]
+  const user = userEvent.setup({ document: dom.window.document })
+  render(React.createElement(EvidencePanel, {
+    signals,
+    allInert: false,
+    verifiedEvidenceIds: new Set(),
+    onEvidenceOpen(sectionName, evidenceId) { calls.push(['open', sectionName, evidenceId]) },
+    onEvidenceVerified(evidenceId, verified) { calls.push(['verify', evidenceId, verified]) },
+  }))
+  assert.equal(screen.getByText('not found in the retrieved data', { exact: false }).textContent.includes('not found in the retrieved data'), true)
+  assert.equal(screen.getByText(/Evidence withheld/).textContent, 'Evidence withheld')
+  assert.equal(screen.queryByRole('button', { name: /secret/ }), null)
+  const evidence = screen.getByRole('button', { name: /🚀 Alpha/ })
+  evidence.focus()
+  await user.keyboard('{Enter}')
+  assert.deepEqual(calls, [['open', 'experience', 'e1']])
+  const verify = screen.getByRole('checkbox', { name: 'I verified this exact source span' })
+  verify.focus()
+  await user.keyboard(' ')
+  assert.deepEqual(calls[1], ['verify', 'e1', true])
+})
+
+test('Gate B posts only the separately verified exact evidence ids', async () => {
+  const verified = new Set(Array.from({ length: 10 }, (_, index) => `e${index}`))
+  let payload = null
+  globalThis.fetch = (input, init) => {
+    const path = String(input)
+    if (path.startsWith('/api/candidates?')) return json([])
+    if (path === '/api/weights') return json(config)
+    if (path === '/api/session/gates/B') {
+      payload = JSON.parse(init.body)
+      return json({ gate: 'B', accepted_at: 'now', note: payload.note, evidence_ids: payload.evidence_ids })
+    }
+    throw new Error(`unexpected fetch ${path}`)
+  }
+  const user = userEvent.setup({ document: dom.window.document })
+  render(wrapper(React.createElement(CandidatesPage, {
+    session,
+    verifiedEvidenceIds: verified,
+    onCandidateOpen() {},
+  })))
+  const button = await screen.findByRole('button', { name: 'Accept Gate B' })
+  button.focus()
+  await user.keyboard('{Enter}')
+  await waitFor(() => assert.equal(payload.evidence_ids.length, 10))
+  assert.deepEqual(new Set(payload.evidence_ids), verified)
+})
+
+test('weights save uses the loaded optimistic version and never offers S-7 input', async () => {
+  let payload = null
+  globalThis.fetch = (input, init) => {
+    const path = String(input)
+    if (path === '/api/weights' && !init?.method) return json(config)
+    if (path === '/api/weights/current') {
+      payload = JSON.parse(init.body)
+      return json({ ...config, version: 'v4', weights: payload.weights })
+    }
+    throw new Error(`unexpected fetch ${path}`)
+  }
+  const user = userEvent.setup({ document: dom.window.document })
+  render(wrapper(React.createElement(WeightsEditor)))
+  await user.click(await screen.findByText('Scoring weights'))
+  const required = screen.getByLabelText('Required skills weight')
+  await user.clear(required)
+  await user.type(required, '31')
+  await user.click(screen.getByRole('button', { name: 'Save from v3' }))
+  await waitFor(() => assert.equal(payload.expected_version, 'v3'))
+  assert.equal(payload.weights['S-1'], 31)
+  assert.equal(screen.queryByLabelText(/Network context weight/), null)
+  assert.equal(screen.getByText('Search only — not a scoring criterion.').textContent.length > 0, true)
+})

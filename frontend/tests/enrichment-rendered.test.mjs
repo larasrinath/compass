@@ -203,7 +203,7 @@ test('candidate pool renders queued, failed, and focused enqueue errors', { time
   globalThis.fetch = (input, init) => {
     const path = String(input)
     if (path.startsWith('/api/searches?')) return json([])
-    if (path.startsWith('/api/candidates?')) return json(candidates)
+    if (path.startsWith('/api/candidate-pool?')) return json(candidates)
     if (path === '/api/candidates/ready/enrich' && init?.method === 'POST') {
       return json({ detail: 'candidate already has a queued or running fetch' }, 409)
     }

@@ -10,10 +10,11 @@ import {
 import { useJobEvents } from './hooks/useJobEvents'
 import { BriefPage } from './pages/BriefPage'
 import { CandidateDetailPage } from './pages/CandidateDetailPage'
+import { CandidatesPage } from './pages/CandidatesPage'
 import { SearchPage } from './pages/SearchPage'
 import './App.css'
 
-type View = 'brief' | 'search' | 'candidate'
+type View = 'brief' | 'search' | 'ranked' | 'candidate'
 
 function StatusDot({ healthy }: { healthy: boolean }) {
   return (
@@ -26,11 +27,16 @@ function StatusDot({ healthy }: { healthy: boolean }) {
 
 function App() {
   const queryClient = useQueryClient()
-  const [view, setView] = useState<View>(() =>
-    window.location.pathname === '/search' ? 'search' : 'brief',
-  )
+  const [view, setView] = useState<View>(() => {
+    if (window.location.pathname === '/search') return 'search'
+    if (window.location.pathname === '/candidates') return 'ranked'
+    return 'brief'
+  })
   const [sessionLabel, setSessionLabel] = useState('Focused candidate search')
   const [candidateId, setCandidateId] = useState<string | null>(null)
+  const [verifiedEvidenceIds, setVerifiedEvidenceIds] = useState<Set<string>>(
+    () => new Set(),
+  )
   const health = useQuery({ queryKey: ['health'], queryFn: getHealth })
   const mcp = useQuery({
     queryKey: ['mcp-status'],
@@ -57,9 +63,17 @@ function App() {
         ? 'Role brief · LinkedIn Dashboard'
         : view === 'candidate'
           ? 'Candidate detail · LinkedIn Dashboard'
-          : 'Find candidates · LinkedIn Dashboard'
+          : view === 'ranked'
+            ? 'Ranked evidence · LinkedIn Dashboard'
+            : 'Find candidates · LinkedIn Dashboard'
     const path =
-      view === 'brief' ? '/brief' : view === 'candidate' ? '/candidate' : '/search'
+      view === 'brief'
+        ? '/brief'
+        : view === 'candidate'
+          ? '/candidate'
+          : view === 'ranked'
+            ? '/candidates'
+            : '/search'
     if (window.location.pathname !== path) {
       window.history.replaceState(null, '', path)
     }
@@ -106,12 +120,20 @@ function App() {
           <span>01</span> Role brief
         </button>
         <button
-          aria-current={view !== 'brief' ? 'page' : undefined}
+          aria-current={view === 'search' ? 'page' : undefined}
           disabled={!brief.data}
           onClick={() => setView('search')}
           type="button"
         >
           <span>02</span> Find candidates
+        </button>
+        <button
+          aria-current={view === 'ranked' || view === 'candidate' ? 'page' : undefined}
+          disabled={!session.data?.phase_gates?.A}
+          onClick={() => setView('ranked')}
+          type="button"
+        >
+          <span>03</span> Ranked evidence
         </button>
       </nav>
 
@@ -167,8 +189,28 @@ function App() {
           ) : view === 'candidate' && candidateId ? (
             <CandidateDetailPage
               candidateId={candidateId}
-              onBack={() => setView('search')}
+              onBack={() =>
+                setView(session.data?.phase_gates?.A ? 'ranked' : 'search')
+              }
+              onEvidenceVerified={(evidenceId, verified) =>
+                setVerifiedEvidenceIds((current) => {
+                  const next = new Set(current)
+                  if (verified) next.add(evidenceId)
+                  else next.delete(evidenceId)
+                  return next
+                })
+              }
               queue={queue}
+              verifiedEvidenceIds={verifiedEvidenceIds}
+            />
+          ) : view === 'ranked' ? (
+            <CandidatesPage
+              onCandidateOpen={(id) => {
+                setCandidateId(id)
+                setView('candidate')
+              }}
+              session={session.data}
+              verifiedEvidenceIds={verifiedEvidenceIds}
             />
           ) : (
             <SearchPage
@@ -177,6 +219,7 @@ function App() {
                 setCandidateId(id)
                 setView('candidate')
               }}
+              onGateAChanged={() => setView('ranked')}
               queue={queue}
               session={session.data}
             />
@@ -187,6 +230,7 @@ function App() {
       </main>
 
       <footer>
+        <strong>Scores rank retrieved evidence, not people.</strong>
         <span>Single operator</span>
         <span>Loopback only</span>
         <span>Send gate: off</span>

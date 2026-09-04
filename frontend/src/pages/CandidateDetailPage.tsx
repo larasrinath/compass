@@ -7,7 +7,10 @@ import {
   getProfileSections,
 } from '../api/client'
 import { QueueStatus } from '../components/QueueStatus'
+import { ConfidenceBand } from '../components/ConfidenceBand'
+import { EvidencePanel } from '../components/EvidencePanel'
 import { RawTextViewer } from '../components/RawTextViewer'
+import { ScoreBadge } from '../components/ScoreBadge'
 import { SectionAvailabilityMap } from '../components/SectionAvailabilityMap'
 import type { ReturnTypeOfJobEvents } from '../hooks/useJobEvents'
 
@@ -15,10 +18,14 @@ export function CandidateDetailPage({
   candidateId,
   onBack,
   queue,
+  verifiedEvidenceIds = new Set<string>(),
+  onEvidenceVerified = () => undefined,
 }: {
   candidateId: string
   onBack: () => void
   queue: ReturnTypeOfJobEvents
+  verifiedEvidenceIds?: Set<string>
+  onEvidenceVerified?: (evidenceId: string, verified: boolean) => void
 }) {
   const queryClient = useQueryClient()
   const enrichmentErrorRef = useRef<HTMLParagraphElement>(null)
@@ -80,12 +87,23 @@ export function CandidateDetailPage({
     )
   }
   const candidate = detail.data
+  const contextHints = [...(candidate.non_scoring_hints ?? [])]
+  if (
+    candidate.profile_urn &&
+    !contextHints.some((hint) => hint.kind === 'profile_urn')
+  ) {
+    contextHints.push({
+      kind: 'profile_urn',
+      label: 'Profile identifier',
+      value: candidate.profile_urn,
+    })
+  }
   const promotedSections =
     profileSections.data?.filter((section) => section !== 'experience') ?? []
   return (
     <section aria-labelledby="candidate-title" className="workspace-page">
       <button className="quiet-action back-action" onClick={onBack} type="button">
-        ← Back to candidate pool
+        ← Back to candidates
       </button>
       <div className="page-intro compact-intro">
         <div>
@@ -94,14 +112,28 @@ export function CandidateDetailPage({
             {candidate.display_name || candidate.username}
           </h1>
           <p>
-            Parsed claims stay linked to the exact stored profile text. No score or
-            shortlist decision exists in this milestone.
+            Parsed claims and score evidence stay linked to exact stored profile text.
+            Opening evidence does not mark it verified.
           </p>
         </div>
-        <div className="version-card">
-          <strong>{candidate.retrieval_status.replaceAll('_', ' ')}</strong>
-          <span>{Object.keys(candidate.available_sections).length} sections stored</span>
-        </div>
+        {candidate.score ? (
+          <div className="candidate-score-summary">
+            <ScoreBadge candidate={candidate.score} />
+            <ConfidenceBand candidate={candidate.score} />
+            <span className={`stage-badge ${candidate.score.stage}`}>
+              {candidate.score.stage === 'provisional' ? '◐ Provisional' : '◆ Enriched'}
+            </span>
+            <small>
+              {Object.keys(candidate.available_sections).length} of 6 sections retrieved · config{' '}
+              {candidate.score.weights_version}
+            </small>
+          </div>
+        ) : (
+          <div className="version-card">
+            <strong>{candidate.retrieval_status.replaceAll('_', ' ')}</strong>
+            <span>{Object.keys(candidate.available_sections).length} sections stored</span>
+          </div>
+        )}
       </div>
 
       <QueueStatus queue={queue} />
@@ -131,6 +163,49 @@ export function CandidateDetailPage({
       ) : null}
 
       <SectionAvailabilityMap available={candidate.available_sections} />
+
+      {candidate.score || candidate.signals ? (
+        <EvidencePanel
+          allInert={candidate.score?.all_inert_attested ?? false}
+          onEvidenceOpen={(sectionName, evidenceId) => {
+            setSelectedSectionName(sectionName)
+            setSelectedFieldId(evidenceId)
+          }}
+          onEvidenceVerified={onEvidenceVerified}
+          signals={candidate.signals ?? []}
+          verifiedEvidenceIds={verifiedEvidenceIds}
+        />
+      ) : null}
+
+      {candidate.score_history?.length ? (
+        <section className="panel score-history" aria-labelledby="score-history-title">
+          <p className="eyebrow">Immutable history</p>
+          <h2 id="score-history-title">Current and previous scores</h2>
+          <ol>
+            {candidate.score_history.map((score) => (
+              <li key={score.id}>
+                <strong>{score.score === null ? 'Not scored' : score.score.toFixed(1)}</strong>
+                <span>{score.current ? 'Current' : 'Previous'} · config {score.weights_version} · {new Date(score.computed_at).toLocaleString()}</span>
+              </li>
+            ))}
+          </ol>
+        </section>
+      ) : null}
+
+      {contextHints.length ? (
+        <section className="panel context-panel" aria-labelledby="context-title">
+          <p className="eyebrow">Context only</p>
+          <h2 id="context-title">Search and routing hints</h2>
+          <p>These details are displayed for workflow context and carry zero scoring weight.</p>
+          <dl>
+            {contextHints.map((hint, index) => (
+              <div key={`${hint.kind}-${index}`}>
+                <dt>{hint.label}</dt><dd>{hint.value} · non-scoring</dd>
+              </div>
+            ))}
+          </dl>
+        </section>
+      ) : null}
 
       <section className="panel promotion-panel" aria-labelledby="promotion-title">
         <div>
