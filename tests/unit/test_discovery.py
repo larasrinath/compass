@@ -453,7 +453,7 @@ def test_raw_cap_dedupe_provenance_and_diagnostic_privacy(tmp_path) -> None:
         ).json()
         assert wait_for_job(app, second["job_id"]).state == "done"
         candidates = client.get(
-            "/api/candidates", params={"session_id": session_id}
+            "/api/candidate-pool", params={"session_id": session_id}
         ).json()
         alice = next(item for item in candidates if item["username"] == "Alice")
         assert alice["source_count"] == 2

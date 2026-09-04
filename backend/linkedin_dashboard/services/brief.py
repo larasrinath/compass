@@ -3,12 +3,15 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from sqlalchemy import func, select, update
 
-from linkedin_dashboard.audit import append_audit_event
+from linkedin_dashboard.correlation import current_correlation_id
 from linkedin_dashboard.db.models import (
+    AuditLog,
+    BriefCredential,
     BriefSkill,
     BriefTerm,
     CandidateScore,
@@ -16,6 +19,9 @@ from linkedin_dashboard.db.models import (
     RoleBrief,
 )
 from linkedin_dashboard.db.session import Database
+
+if TYPE_CHECKING:
+    from linkedin_dashboard.services.scoring_service import ScoringService
 
 PROTECTED_TERMS = frozenset(
     {
@@ -63,6 +69,8 @@ class BriefValue:
     positive_keywords: tuple[str, ...]
     negative_keywords: tuple[str, ...]
     message_tone: str
+    required_experience_months: int | None = None
+    required_credentials: tuple[TermValue, ...] = ()
 
 
 class ProtectedTermError(ValueError):
@@ -117,9 +125,16 @@ def normalize_brief(value: BriefValue) -> BriefValue:
         positive_keywords=_clean_strings(value.positive_keywords),
         negative_keywords=_clean_strings(value.negative_keywords),
         message_tone=value.message_tone.strip(),
+        required_experience_months=value.required_experience_months,
+        required_credentials=_clean_terms(value.required_credentials),
     )
     if not normalized.job_description:
         raise ValueError("job_description is required")
+    if normalized.required_experience_months is not None and (
+        type(normalized.required_experience_months) is not int
+        or normalized.required_experience_months < 0
+    ):
+        raise ValueError("required_experience_months must be a nonnegative integer")
     if not (
         normalized.required_skills
         or normalized.optional_skills
@@ -148,6 +163,7 @@ def _reject_protected(value: BriefValue) -> None:
         "optional_skills",
         "target_titles",
         "industries",
+        "required_credentials",
     ):
         for index, item in enumerate(getattr(value, name)):
             fields.append((f"{name}.{index}.term", item.term))
@@ -169,8 +185,11 @@ def _reject_protected(value: BriefValue) -> None:
 
 
 class BriefService:
-    def __init__(self, database: Database) -> None:
+    def __init__(
+        self, database: Database, scoring_service: ScoringService | None = None
+    ) -> None:
         self.database = database
+        self.scoring_service = scoring_service
 
     def create_session(self, label: str, nav_budget: int = 120) -> DashboardSession:
         cleaned = label.strip()
@@ -188,15 +207,21 @@ class BriefService:
         )
         with self.database.sessions.begin() as session:
             session.add(row)
-        append_audit_event(
-            self.database,
-            session_id=row.id,
-            actor="operator",
-            action="session.created",
-            subject_type="session",
-            subject_id=row.id,
-            detail={"label": cleaned, "nav_budget": nav_budget},
-        )
+            session.flush()
+            if self.scoring_service is not None:
+                self.scoring_service.ensure_default_config(session, row.id)
+            session.add(
+                AuditLog(
+                    session_id=row.id,
+                    at=now.isoformat(),
+                    actor="operator",
+                    action="session.created",
+                    subject_type="session",
+                    subject_id=row.id,
+                    detail={"label": cleaned, "nav_budget": nav_budget},
+                    correlation_id=current_correlation_id(),
+                )
+            )
         return row
 
     def current_session(self) -> DashboardSession | None:
@@ -239,6 +264,19 @@ class BriefService:
                 .limit(1)
             )
             version = 1 if current is None else current.version + 1
+            previous_had_credentials = bool(
+                current
+                and session.scalar(
+                    select(func.count(BriefCredential.id)).where(
+                        BriefCredential.brief_id == current.id
+                    )
+                )
+            )
+            config = (
+                self.scoring_service.ensure_default_config(session, session_id)
+                if self.scoring_service is not None
+                else None
+            )
             if current is not None:
                 current.superseded_at = now
                 stale_count = int(
@@ -250,14 +288,15 @@ class BriefService:
                     )
                     or 0
                 )
-                session.execute(
-                    update(CandidateScore)
-                    .where(
-                        CandidateScore.brief_id == current.id,
-                        CandidateScore.is_current.is_(True),
+                if self.scoring_service is None:
+                    session.execute(
+                        update(CandidateScore)
+                        .where(
+                            CandidateScore.brief_id == current.id,
+                            CandidateScore.is_current.is_(True),
+                        )
+                        .values(is_current=False, superseded_at=now)
                     )
-                    .values(is_current=False, superseded_at=now)
-                )
             brief = RoleBrief(
                 id=str(uuid4()),
                 session_id=session_id,
@@ -272,7 +311,8 @@ class BriefService:
                 positive_keywords=list(value.positive_keywords),
                 negative_keywords=list(value.negative_keywords),
                 message_tone=value.message_tone,
-                weights_version="v1",
+                required_experience_months=value.required_experience_months,
+                weights_version=str(config.version) if config is not None else "v1",
             )
             session.add(brief)
             session.flush()
@@ -307,17 +347,40 @@ class BriefService:
                             position=position,
                         )
                     )
+            for position, item in enumerate(value.required_credentials):
+                session.add(
+                    BriefCredential(
+                        id=str(uuid4()),
+                        brief_id=brief.id,
+                        term=item.term,
+                        term_key=item.term.casefold(),
+                        aliases=list(item.aliases),
+                        position=position,
+                    )
+                )
             session.flush()
             brief.sealed_at = now
-        append_audit_event(
-            self.database,
-            session_id=session_id,
-            actor="operator",
-            action="brief.saved",
-            subject_type="role_brief",
-            subject_id=brief.id,
-            detail={"version": brief.version, "stale_scores": stale_count},
-        )
+            if self.scoring_service is not None:
+                self.scoring_service.on_brief_saved(
+                    session,
+                    previous=current,
+                    current=brief,
+                    removed_final_credential=(
+                        previous_had_credentials and not value.required_credentials
+                    ),
+                )
+            session.add(
+                AuditLog(
+                    session_id=session_id,
+                    at=now,
+                    actor="operator",
+                    action="brief.saved",
+                    subject_type="role_brief",
+                    subject_id=brief.id,
+                    detail={"version": brief.version, "stale_scores": stale_count},
+                    correlation_id=current_correlation_id(),
+                )
+            )
         return brief, stale_count
 
     def load_value(self, brief_id: str) -> BriefValue:
@@ -337,6 +400,13 @@ class BriefService:
                     select(BriefTerm)
                     .where(BriefTerm.brief_id == brief_id)
                     .order_by(BriefTerm.kind, BriefTerm.position, BriefTerm.id)
+                )
+            )
+            credentials = list(
+                session.scalars(
+                    select(BriefCredential)
+                    .where(BriefCredential.brief_id == brief_id)
+                    .order_by(BriefCredential.position, BriefCredential.id)
                 )
             )
             return BriefValue(
@@ -365,4 +435,8 @@ class BriefService:
                 positive_keywords=tuple(brief.positive_keywords),
                 negative_keywords=tuple(brief.negative_keywords),
                 message_tone=brief.message_tone,
+                required_experience_months=brief.required_experience_months,
+                required_credentials=tuple(
+                    TermValue(row.term, tuple(row.aliases)) for row in credentials
+                ),
             )

@@ -4,9 +4,13 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select
 
-from linkedin_dashboard.api._filters import preserve_provenance_text
-from linkedin_dashboard.db.models import RoleBrief
+from linkedin_dashboard.api._filters import (
+    preserve_brief_domain_credentials,
+    preserve_provenance_text,
+)
+from linkedin_dashboard.db.models import PhaseGate, PhaseGateEvidence, RoleBrief
 from linkedin_dashboard.services.brief import (
     BriefService,
     BriefValue,
@@ -43,6 +47,7 @@ class SessionRecord(BaseModel):
     nav_budget: int
     nav_used: int
     send_enabled: bool
+    phase_gates: dict[str, Any] = Field(default_factory=dict)
 
 
 class BriefTermInput(BaseModel):
@@ -71,11 +76,15 @@ class BriefInput(BaseModel):
         default_factory=list, max_length=100
     )
     message_tone: str = Field(default="Professional and concise", max_length=500)
+    required_experience_months: int | None = Field(default=None, ge=0)
+    required_credentials: list[BriefTermInput] | None = Field(
+        default=None, max_length=100
+    )
 
-    def as_value(self) -> BriefValue:
-        def terms(values: list[BriefTermInput]) -> tuple[TermValue, ...]:
+    def as_value(self, previous: BriefValue | None = None) -> BriefValue:
+        def terms(values: list[BriefTermInput] | None) -> tuple[TermValue, ...]:
             return tuple(
-                TermValue(value.term, tuple(value.aliases)) for value in values
+                TermValue(value.term, tuple(value.aliases)) for value in (values or [])
             )
 
         return BriefValue(
@@ -88,6 +97,17 @@ class BriefInput(BaseModel):
             positive_keywords=tuple(self.positive_keywords),
             negative_keywords=tuple(self.negative_keywords),
             message_tone=self.message_tone,
+            required_experience_months=(
+                self.required_experience_months
+                if "required_experience_months" in self.model_fields_set
+                or previous is None
+                else previous.required_experience_months
+            ),
+            required_credentials=(
+                terms(self.required_credentials)
+                if "required_credentials" in self.model_fields_set or previous is None
+                else previous.required_credentials
+            ),
         )
 
 
@@ -106,6 +126,8 @@ class BriefRecord(BaseModel):
     positive_keywords: list[str]
     negative_keywords: list[str]
     message_tone: str
+    required_experience_months: int | None
+    required_credentials: list[BriefTermInput]
     weights_version: str
     stale_scores: int = 0
 
@@ -132,6 +154,8 @@ def _brief_record(
         positive_keywords=list(value.positive_keywords),
         negative_keywords=list(value.negative_keywords),
         message_tone=value.message_tone,
+        required_experience_months=value.required_experience_months,
+        required_credentials=convert(value.required_credentials),
         weights_version=row.weights_version,
         stale_scores=stale_scores,
     )
@@ -155,12 +179,45 @@ def current_session(
     service: Annotated[BriefService, Depends(get_brief_service)],
 ) -> SessionRecord | None:
     row = service.current_session()
-    return SessionRecord.model_validate(row) if row else None
+    if row is None:
+        return None
+    with service.database.sessions() as session:
+        gates = list(
+            session.scalars(
+                select(PhaseGate)
+                .where(PhaseGate.session_id == row.id)
+                .order_by(PhaseGate.gate)
+            )
+        )
+        records: dict[str, Any] = {}
+        for gate in gates:
+            evidence_ids = list(
+                session.scalars(
+                    select(PhaseGateEvidence.evidence_id)
+                    .where(PhaseGateEvidence.phase_gate_id == gate.id)
+                    .order_by(PhaseGateEvidence.evidence_id)
+                )
+            )
+            records[gate.gate] = {
+                "gate": gate.gate,
+                "accepted_at": gate.accepted_at,
+                "note": gate.accepted_note or None,
+                "evidence_ids": evidence_ids,
+            }
+    return SessionRecord.model_validate(row).model_copy(update={"phase_gates": records})
 
 
-def _save_brief(service: BriefService, payload: BriefInput) -> BriefRecord:
+def _save_brief(
+    service: BriefService, payload: BriefInput, *, preserve_omitted: bool = False
+) -> BriefRecord:
     try:
-        row, stale = service.save(payload.session_id, payload.as_value())
+        current = service.current(payload.session_id)
+        previous = (
+            service.load_value(current.id)
+            if preserve_omitted and current is not None
+            else None
+        )
+        row, stale = service.save(payload.session_id, payload.as_value(previous))
     except ProtectedTermError as error:
         raise HTTPException(
             422,
@@ -175,6 +232,7 @@ def _save_brief(service: BriefService, payload: BriefInput) -> BriefRecord:
 
 
 @router.post("/briefs", response_model=BriefRecord, status_code=201)
+@preserve_brief_domain_credentials
 def create_brief(
     payload: BriefInput,
     service: Annotated[BriefService, Depends(get_brief_service)],
@@ -185,16 +243,18 @@ def create_brief(
 
 
 @router.put("/briefs/current", response_model=BriefRecord)
+@preserve_brief_domain_credentials
 def update_brief(
     payload: BriefInput,
     service: Annotated[BriefService, Depends(get_brief_service)],
 ) -> BriefRecord:
     if service.current(payload.session_id) is None:
         raise HTTPException(404, "No saved brief exists")
-    return _save_brief(service, payload)
+    return _save_brief(service, payload, preserve_omitted=True)
 
 
 @router.get("/briefs/current", response_model=BriefRecord | None)
+@preserve_brief_domain_credentials
 def current_brief(
     session_id: Annotated[str, Query(min_length=1, max_length=36)],
     service: Annotated[BriefService, Depends(get_brief_service)],
@@ -257,7 +317,7 @@ def search_detail(
         raise HTTPException(404, str(error)) from error
 
 
-@router.get("/candidates", response_model=list[dict[str, Any]])
+@router.get("/candidate-pool", response_model=list[dict[str, Any]])
 @preserve_provenance_text
 def candidates(
     session_id: Annotated[str, Query(min_length=1, max_length=36)],

@@ -66,12 +66,34 @@ class PhaseGate(Base):
     gate: Mapped[str] = mapped_column(String(1), nullable=False)
     accepted_at: Mapped[str] = mapped_column(String(32), nullable=False)
     accepted_note: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_manifest: Mapped[list[dict[str, str]]] = mapped_column(
+        JSON, nullable=False, server_default="[]"
+    )
+
+
+class PhaseGateEvidence(Base):
+    __tablename__ = "phase_gate_evidence"
+
+    phase_gate_id: Mapped[str] = mapped_column(
+        ForeignKey("phase_gate.id", ondelete="CASCADE"), primary_key=True
+    )
+    evidence_id: Mapped[str] = mapped_column(
+        ForeignKey("evidence.id", ondelete="RESTRICT"), primary_key=True
+    )
+    score_id: Mapped[str] = mapped_column(
+        ForeignKey("score.id", ondelete="RESTRICT"), nullable=False
+    )
+    input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
 class RoleBrief(Base):
     __tablename__ = "role_brief"
     __table_args__ = (
         UniqueConstraint("session_id", "version", name="uq_role_brief_version"),
+        CheckConstraint(
+            "required_experience_months IS NULL OR required_experience_months >= 0",
+            name="ck_role_brief_experience_months",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -89,6 +111,7 @@ class RoleBrief(Base):
     positive_keywords: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     negative_keywords: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     message_tone: Mapped[str] = mapped_column(Text, nullable=False)
+    required_experience_months: Mapped[int | None] = mapped_column(Integer)
     weights_version: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
@@ -128,6 +151,41 @@ class BriefTerm(Base):
     term_key: Mapped[str] = mapped_column(Text, nullable=False)
     aliases: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     position: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class BriefCredential(Base):
+    __tablename__ = "brief_credential"
+    __table_args__ = (
+        UniqueConstraint("brief_id", "term_key", name="uq_brief_credential_key"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    brief_id: Mapped[str] = mapped_column(
+        ForeignKey("role_brief.id", ondelete="CASCADE"), nullable=False
+    )
+    term: Mapped[str] = mapped_column(Text, nullable=False)
+    term_key: Mapped[str] = mapped_column(Text, nullable=False)
+    aliases: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class ScoringConfig(Base):
+    __tablename__ = "scoring_config"
+    __table_args__ = (
+        UniqueConstraint("session_id", "version", name="uq_scoring_config_version"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("session.id", ondelete="CASCADE"), nullable=False
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[str] = mapped_column(String(32), nullable=False)
+    weights: Mapped[dict[str, float]] = mapped_column(JSON, nullable=False)
+    metro_region_equivalences: Mapped[dict[str, list[str]]] = mapped_column(
+        JSON, nullable=False
+    )
+    superseded_at: Mapped[str | None] = mapped_column(String(32))
 
 
 class SearchRun(Base):
@@ -475,6 +533,9 @@ class ProfileSection(Base):
     )
     section_name: Mapped[str] = mapped_column(String(64), nullable=False)
     raw_text: Mapped[str] = mapped_column(Text, nullable=False)
+    content_sha256: Mapped[str] = mapped_column(
+        String(64), nullable=False, server_default=""
+    )
     retrieved_at: Mapped[str] = mapped_column(String(32), nullable=False)
     char_len: Mapped[int] = mapped_column(Integer, nullable=False)
 
@@ -553,8 +614,16 @@ class CandidateScore(Base):
     __table_args__ = (
         CheckConstraint("stage IN ('provisional','enriched')", name="ck_score_stage"),
         CheckConstraint(
-            "confidence_band IN ('low','medium','high')",
+            "confidence_band IS NULL OR confidence_band IN ('low','medium','high')",
             name="ck_score_confidence_band",
+        ),
+        CheckConstraint(
+            "calculation_status IN ('scored','unknown')",
+            name="ck_score_calculation_status",
+        ),
+        CheckConstraint("active_signal_count >= 0", name="ck_score_active_count"),
+        CheckConstraint(
+            "all_inert_attested IN (0, 1)", name="ck_score_all_inert_boolean"
         ),
         CheckConstraint("is_current IN (0, 1)", name="ck_score_is_current_boolean"),
     )
@@ -567,12 +636,30 @@ class CandidateScore(Base):
         ForeignKey("role_brief.id", ondelete="CASCADE"), nullable=False
     )
     weights_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    scoring_config_id: Mapped[str | None] = mapped_column(
+        ForeignKey("scoring_config.id", ondelete="RESTRICT")
+    )
     stage: Mapped[str] = mapped_column(String(16), nullable=False)
-    score: Mapped[float] = mapped_column(Float, nullable=False)
-    score_lower: Mapped[float] = mapped_column(Float, nullable=False)
-    score_upper: Mapped[float] = mapped_column(Float, nullable=False)
+    score: Mapped[float | None] = mapped_column(Float)
+    score_lower: Mapped[float | None] = mapped_column(Float)
+    score_upper: Mapped[float | None] = mapped_column(Float)
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
-    confidence_band: Mapped[str] = mapped_column(String(16), nullable=False)
+    confidence_band: Mapped[str | None] = mapped_column(String(16))
+    calculation_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="scored"
+    )
+    active_signal_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="1"
+    )
+    all_inert_attested: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="0"
+    )
+    input_fingerprint: Mapped[str] = mapped_column(
+        String(64), nullable=False, server_default="legacy"
+    )
+    source_snapshot: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, server_default="{}"
+    )
     computed_at: Mapped[str] = mapped_column(String(32), nullable=False)
     superseded_at: Mapped[str | None] = mapped_column(String(32))
     is_current: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
@@ -594,6 +681,7 @@ class ScoreSignal(Base):
     signal_id: Mapped[str] = mapped_column(String(64), nullable=False)
     weight: Mapped[float] = mapped_column(Float, nullable=False)
     verdict: Mapped[str] = mapped_column(String(32), nullable=False)
+    rollup: Mapped[str | None] = mapped_column(String(32))
     raw_subscore: Mapped[float] = mapped_column(Float, nullable=False)
     contribution: Mapped[float] = mapped_column(Float, nullable=False)
     availability: Mapped[float] = mapped_column(Float, nullable=False)
@@ -617,10 +705,17 @@ class Evidence(Base):
     score_signal_id: Mapped[str] = mapped_column(
         ForeignKey("score_signal.id", ondelete="CASCADE"), nullable=False
     )
+    evidence_set_id: Mapped[str | None] = mapped_column(
+        ForeignKey("evidence_set.id", ondelete="CASCADE")
+    )
     parsed_field_id: Mapped[str | None] = mapped_column(
         ForeignKey("parsed_field.id", ondelete="SET NULL")
     )
     section_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    profile_section_id: Mapped[str | None] = mapped_column(
+        ForeignKey("profile_section.id", ondelete="RESTRICT")
+    )
+    content_sha256: Mapped[str | None] = mapped_column(String(64))
     span_start: Mapped[int] = mapped_column(Integer, nullable=False)
     span_end: Mapped[int] = mapped_column(Integer, nullable=False)
     snippet: Mapped[str] = mapped_column(Text, nullable=False)
@@ -628,6 +723,145 @@ class Evidence(Base):
     matched_term: Mapped[str] = mapped_column(Text, nullable=False)
     polarity: Mapped[str] = mapped_column(String(16), nullable=False)
     purged_at: Mapped[str | None] = mapped_column(String(32))
+
+
+class ScoreInputSection(Base):
+    __tablename__ = "score_input_section"
+
+    score_id: Mapped[str] = mapped_column(
+        ForeignKey("score.id", ondelete="CASCADE"), primary_key=True
+    )
+    profile_section_id: Mapped[str] = mapped_column(
+        ForeignKey("profile_section.id", ondelete="RESTRICT"), primary_key=True
+    )
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class EvidenceSetRecord(Base):
+    __tablename__ = "evidence_set"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("candidate.id", ondelete="CASCADE"), nullable=False
+    )
+
+
+class CoverageSetRecord(Base):
+    __tablename__ = "coverage_set"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("candidate.id", ondelete="CASCADE"), nullable=False
+    )
+    required_sections: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+
+
+class SignalCoverage(Base):
+    __tablename__ = "signal_coverage"
+    __table_args__ = (
+        UniqueConstraint(
+            "coverage_set_id", "profile_section_id", name="uq_signal_coverage_section"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    coverage_set_id: Mapped[str] = mapped_column(
+        ForeignKey("coverage_set.id", ondelete="CASCADE"), nullable=False
+    )
+    profile_section_id: Mapped[str] = mapped_column(
+        ForeignKey("profile_section.id", ondelete="RESTRICT"), nullable=False
+    )
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    normalized_terms: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    aliases: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    matcher_version: Mapped[str] = mapped_column(String(32), nullable=False)
+
+
+class MissingSetRecord(Base):
+    __tablename__ = "missing_set"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("candidate.id", ondelete="CASCADE"), nullable=False
+    )
+
+
+class SignalMissingSection(Base):
+    __tablename__ = "signal_missing_section"
+    __table_args__ = (
+        CheckConstraint(
+            "reason IN ('not_requested','rate_limit','fetch_error','unparseable')",
+            name="ck_signal_missing_reason",
+        ),
+        UniqueConstraint(
+            "missing_set_id", "section_name", "reason", name="uq_missing_section"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    missing_set_id: Mapped[str] = mapped_column(
+        ForeignKey("missing_set.id", ondelete="CASCADE"), nullable=False
+    )
+    section_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    reason: Mapped[str] = mapped_column(String(32), nullable=False)
+    section_error_id: Mapped[str | None] = mapped_column(
+        ForeignKey("section_error.id", ondelete="SET NULL")
+    )
+
+
+class ScoreClaim(Base):
+    __tablename__ = "score_claim"
+    __table_args__ = (
+        CheckConstraint(
+            "verdict IN ('matched','not_matched','unknown','contradicted')",
+            name="ck_score_claim_verdict",
+        ),
+        CheckConstraint(
+            "(evidence_set_id IS NOT NULL) + (coverage_set_id IS NOT NULL) + "
+            "(missing_set_id IS NOT NULL) = 1",
+            name="ck_score_claim_one_provenance",
+        ),
+        CheckConstraint(
+            "((verdict IN ('matched','contradicted') AND evidence_set_id IS NOT NULL) "
+            "OR (verdict='not_matched' AND coverage_set_id IS NOT NULL) "
+            "OR (verdict='unknown' AND missing_set_id IS NOT NULL))",
+            name="ck_score_claim_compatible_provenance",
+        ),
+        UniqueConstraint("score_signal_id", "claim_key", name="uq_score_claim_key"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    score_signal_id: Mapped[str] = mapped_column(
+        ForeignKey("score_signal.id", ondelete="CASCADE"), nullable=False
+    )
+    claim_key: Mapped[str] = mapped_column(Text, nullable=False)
+    display_term: Mapped[str] = mapped_column(Text, nullable=False)
+    verdict: Mapped[str] = mapped_column(String(32), nullable=False)
+    evidence_set_id: Mapped[str | None] = mapped_column(
+        ForeignKey("evidence_set.id", ondelete="RESTRICT")
+    )
+    coverage_set_id: Mapped[str | None] = mapped_column(
+        ForeignKey("coverage_set.id", ondelete="RESTRICT")
+    )
+    missing_set_id: Mapped[str | None] = mapped_column(
+        ForeignKey("missing_set.id", ondelete="RESTRICT")
+    )
+
+
+class ScorePenalty(Base):
+    __tablename__ = "score_penalty"
+    __table_args__ = (
+        CheckConstraint("penalty_id IN ('P-1','P-2')", name="ck_score_penalty_id"),
+        UniqueConstraint("score_id", "penalty_id", name="uq_score_penalty_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    score_id: Mapped[str] = mapped_column(
+        ForeignKey("score.id", ondelete="CASCADE"), nullable=False
+    )
+    penalty_id: Mapped[str] = mapped_column(String(3), nullable=False)
+    points: Mapped[float] = mapped_column(Float, nullable=False)
+    details: Mapped[list[str]] = mapped_column(JSON, nullable=False)
 
 
 class ShortlistDecision(Base):

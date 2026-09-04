@@ -32,6 +32,7 @@ from linkedin_dashboard.db.migrations import (
     v0020_m3_integrity_corrections,
     v0021_m3_final_integrity,
     v0022_terminal_projection_authority,
+    v0023_m4_scoring,
 )
 from linkedin_dashboard.db.models import (
     Candidate,
@@ -620,6 +621,7 @@ def test_existing_v0001_database_receives_integrity_migration(tmp_path) -> None:
         v0020_m3_integrity_corrections.VERSION,
         v0021_m3_final_integrity.VERSION,
         v0022_terminal_projection_authority.VERSION,
+        v0023_m4_scoring.VERSION,
     ]
     assert "NEW.candidate_id IS NOT OLD.candidate_id" in trigger_sql
 
