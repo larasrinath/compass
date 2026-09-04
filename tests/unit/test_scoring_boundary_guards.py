@@ -20,6 +20,7 @@ from linkedin_dashboard.db.migrations import (
     v0026_m4_manifest_convergence,
     v0027_m4_bounded_manifests,
     v0028_m4_text_storage,
+    v0029_m4_claim_stage_identity,
 )
 from linkedin_dashboard.db.models import (
     BriefCredential,
@@ -148,6 +149,8 @@ def _profile_result(**sections: str) -> dict[str, Any]:
 
 
 def _downgrade_v25_schema_to_v24(connection: sqlite3.Connection) -> None:
+    for name in v0029_m4_claim_stage_identity.TRIGGER_NAMES:
+        connection.execute(f'DROP TRIGGER "{name}"')
     for name in v0028_m4_text_storage.TRIGGER_NAMES:
         connection.execute(f'DROP TRIGGER "{name}"')
     for name in v0027_m4_bounded_manifests.TRIGGER_NAMES:
@@ -179,12 +182,13 @@ def _downgrade_v25_schema_to_v24(connection: sqlite3.Connection) -> None:
         )
     )
     connection.execute(
-        "DELETE FROM schema_migration WHERE version IN (?,?,?,?)",
+        "DELETE FROM schema_migration WHERE version IN (?,?,?,?,?)",
         (
             v0025_m4_semantic_integrity.VERSION,
             v0026_m4_manifest_convergence.VERSION,
             v0027_m4_bounded_manifests.VERSION,
             v0028_m4_text_storage.VERSION,
+            v0029_m4_claim_stage_identity.VERSION,
         ),
     )
 
@@ -1063,7 +1067,10 @@ def test_raw_score_signals_require_unique_exact_configured_set(
                 connection.execute(child_trigger)
                 with pytest.raises(
                     sqlite3.IntegrityError,
-                    match="score signal set does not match snapshot",
+                    match=(
+                        r"score (signal set does not match snapshot|"
+                        r"claim set does not match brief)"
+                    ),
                 ):
                     connection.execute(
                         "UPDATE score SET is_current=1 WHERE id=?", (score_id,)

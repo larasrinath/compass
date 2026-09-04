@@ -33,7 +33,11 @@ def _initialize_exact_v27(path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     database = Database(path)
     try:
         with monkeypatch.context() as patch:
-            patch.setattr(db_session, "_MIGRATION_MODULES", modules[:-1])
+            patch.setattr(
+                db_session,
+                "_MIGRATION_MODULES",
+                tuple(module for module in modules if module.VERSION < "0028"),
+            )
             database.initialize()
     finally:
         database.dispose()
@@ -499,7 +503,7 @@ def test_exact_v27_blob_fails_v28_atomically_then_purge_retries(
     with _connect(path) as connection:
         assert connection.execute(
             "SELECT count(*) FROM schema_migration"
-        ).fetchone() == (28,)
+        ).fetchone() == (len(db_session._MIGRATION_MODULES),)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
         assert (

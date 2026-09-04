@@ -130,6 +130,11 @@ def _overlaps(start: int, end: int, ranges: tuple[tuple[int, int], ...]) -> bool
 
 
 def _score_uses_latest_inputs(session: Any, score: CandidateScore) -> bool:
+    candidate = session.get(Candidate, score.candidate_id)
+    if candidate is None or score.stage != (
+        "enriched" if candidate.stage == "stage2" else "provisional"
+    ):
+        return False
     brief = session.get(RoleBrief, score.brief_id)
     config = session.get(ScoringConfig, score.scoring_config_id)
     if (

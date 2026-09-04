@@ -518,8 +518,8 @@ def test_m4_score_gate_and_exact_evidence_lifecycle(tmp_path: Path) -> None:
                     ScoreClaim(
                         id="cross-owner-claim",
                         score_signal_id=staged_signal.id,
-                        claim_key="cross-owner",
-                        display_term="must fail",
+                        claim_key="S-1:skill0",
+                        display_term="skill0",
                         verdict="matched",
                         evidence_set_id=evidence.evidence_set_id,
                         coverage_set_id=None,

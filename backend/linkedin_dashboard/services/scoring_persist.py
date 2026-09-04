@@ -46,7 +46,9 @@ from linkedin_dashboard.db.models import (
 from linkedin_dashboard.db.scoring_manifest import (
     MATCHER_VERSION,
     canonical_coverage_values,
+    claim_label_matches,
     coverage_values,
+    expected_claim_labels,
 )
 from linkedin_dashboard.parsing.verify import verify_substring
 from linkedin_dashboard.services.scoring.aggregate import calculate_score
@@ -486,6 +488,7 @@ def input_fingerprint(
 
     payload: dict[str, Any] = {
         "algorithm_version": ALGORITHM_VERSION,
+        "scoring_stage": ("enriched" if candidate.stage == "stage2" else "provisional"),
         "candidate_id": candidate.id,
         "brief": {
             "id": brief.id,
@@ -763,6 +766,25 @@ def persist_calculation(
     fingerprint_payload: dict[str, Any],
     source_sections: tuple[ProfileSectionRow, ...],
 ) -> CandidateScore:
+    if not isinstance(brief.scoring_inputs, dict):
+        raise ValueError("brief scoring inputs are unavailable")
+    for signal in calculation.signals:
+        signal_id = signal.signal_id.value
+        expected = expected_claim_labels(
+            brief.scoring_inputs, signal_id, brief.required_experience_months
+        )
+        keys = [claim.claim_key for claim in signal.claims]
+        if keys != sorted(expected) or any(
+            not claim_label_matches(
+                expected,
+                signal_id,
+                claim.claim_key,
+                claim.display_term,
+                claim.verdict.value,
+            )
+            for claim in signal.claims
+        ):
+            raise ValueError("score claim identities do not match immutable brief")
     now = _now()
     score_row = CandidateScore(
         id=str(uuid4()),

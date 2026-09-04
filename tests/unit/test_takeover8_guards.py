@@ -314,7 +314,11 @@ def test_migrated_v22_score_signal_is_immutable_until_session_purge(
     legacy = Database(path)
     try:
         with monkeypatch.context() as patch:
-            patch.setattr(db_session, "_MIGRATION_MODULES", modules[:-6])
+            patch.setattr(
+                db_session,
+                "_MIGRATION_MODULES",
+                tuple(module for module in modules if module.VERSION < "0023"),
+            )
             legacy.initialize()
             with legacy.engine.begin() as connection:
                 connection.exec_driver_sql(
@@ -426,7 +430,11 @@ def _initialize_v23_database(
     database = Database(path)
     try:
         with monkeypatch.context() as patch:
-            patch.setattr(db_session, "_MIGRATION_MODULES", modules[:-5])
+            patch.setattr(
+                db_session,
+                "_MIGRATION_MODULES",
+                tuple(module for module in modules if module.VERSION < "0024"),
+            )
             database.initialize()
             if populated:
                 with database.engine.begin() as connection:
@@ -575,7 +583,7 @@ def test_exact_v23_database_upgrades_through_v25_without_data_loss(
     with _maintenance_connect(path) as connection:
         assert connection.execute(
             "SELECT count(*) FROM schema_migration"
-        ).fetchone() == (28,)
+        ).fetchone() == (len(db_session._MIGRATION_MODULES),)
         assert connection.execute(
             "SELECT 1 FROM schema_migration WHERE version=?",
             (v0024_m4_integrity_upgrade.VERSION,),
@@ -689,7 +697,11 @@ def _initialize_exact_v24_database(
     database = Database(path)
     try:
         with monkeypatch.context() as patch:
-            patch.setattr(db_session, "_MIGRATION_MODULES", modules[:-4])
+            patch.setattr(
+                db_session,
+                "_MIGRATION_MODULES",
+                tuple(module for module in modules if module.VERSION < "0025"),
+            )
             database.initialize()
             with database.engine.connect() as connection:
                 assert (
@@ -742,7 +754,7 @@ def test_exact_v24_database_upgrades_to_v25_atomically(
     with _maintenance_connect(path) as connection:
         assert connection.execute(
             "SELECT count(*) FROM schema_migration"
-        ).fetchone() == (28,)
+        ).fetchone() == (len(db_session._MIGRATION_MODULES),)
         assert connection.execute(
             "SELECT 1 FROM schema_migration WHERE version=?",
             (v0025_m4_semantic_integrity.VERSION,),
@@ -930,7 +942,11 @@ def test_v25_preflights_unsealed_briefs_without_rewriting(
     failed = Database(path)
     try:
         with monkeypatch.context() as patch:
-            patch.setattr(db_session, "_MIGRATION_MODULES", modules[:-3])
+            patch.setattr(
+                db_session,
+                "_MIGRATION_MODULES",
+                tuple(module for module in modules if module.VERSION < "0026"),
+            )
             with pytest.raises(RuntimeError, match="invalid scoring sources"):
                 failed.initialize()
     finally:
@@ -1103,7 +1119,11 @@ def _initialize_rejected_v25_database(
     database = Database(path)
     try:
         with monkeypatch.context() as patch:
-            patch.setattr(db_session, "_MIGRATION_MODULES", modules[:-3])
+            patch.setattr(
+                db_session,
+                "_MIGRATION_MODULES",
+                tuple(module for module in modules if module.VERSION < "0026"),
+            )
             database.initialize()
             with database.engine.connect() as connection:
                 assert (
@@ -1180,7 +1200,7 @@ def test_v26_converges_recorded_rejected_v25_database(
     with _maintenance_connect(path) as connection:
         assert connection.execute(
             "SELECT count(*) FROM schema_migration"
-        ).fetchone() == (28,)
+        ).fetchone() == (len(db_session._MIGRATION_MODULES),)
         manifest = json.loads(
             connection.execute(
                 "SELECT scoring_inputs FROM role_brief WHERE id='v23-brief'"

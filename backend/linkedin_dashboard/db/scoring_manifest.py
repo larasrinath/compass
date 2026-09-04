@@ -234,3 +234,48 @@ def canonical_coverage_values(
         )
     )
     return canonical_terms, canonical_aliases
+
+
+def expected_claim_labels(
+    manifest: Mapping[str, Any], signal_id: str, months: int | None
+) -> dict[str, tuple[str, ...]]:
+    """Canonical claim identities; title matches may name one selected target.
+
+    The tuple's first value is the aggregate display for non-matched scalar
+    claims. Remaining values are allowed selected target displays for S-4.
+    This boundary describes immutable brief identity, not scoring behavior.
+    """
+    entries = manifest[signal_id]
+    if signal_id in {"S-1", "S-2", "S-8"}:
+        return {
+            f"{signal_id}:{entry['term']}": (entry["display"],) for entry in entries
+        }
+    if signal_id == "S-3":
+        return (
+            {"S-3:experience-depth": (f"{months} months relevant experience",)}
+            if months is not None and months > 0
+            else {}
+        )
+    if not entries:
+        return {}
+    displays = tuple(entry["display"] for entry in entries)
+    if signal_id == "S-4":
+        return {"S-4:title-similarity": (", ".join(displays), *displays)}
+    if signal_id == "S-5":
+        return {"S-5:industry-relevance": (", ".join(displays),)}
+    if signal_id == "S-6":
+        return {"S-6:location-fit": displays}
+    raise ValueError("unsupported scoring signal")
+
+
+def claim_label_matches(
+    expected: Mapping[str, tuple[str, ...]],
+    signal_id: str,
+    claim_key: str,
+    display_term: str,
+    verdict: str,
+) -> bool:
+    labels = expected.get(claim_key, ())
+    if signal_id == "S-4":
+        labels = labels[1:] if verdict == "matched" else labels[:1]
+    return display_term in labels

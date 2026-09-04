@@ -20,7 +20,6 @@ from linkedin_dashboard.db.models import (
     PhaseGate,
     ProfileSection,
     ScoreClaim,
-    ScoreInputSection,
     ScoreSignal,
     SearchRun,
     SignalCoverage,
@@ -108,7 +107,7 @@ def _sort_ranked_records(
     return sorted(records, key=key)
 
 
-def _headline(session: Session, candidate_id: str, score_id: str) -> str | None:
+def _headline(session: Session, candidate_id: str) -> str | None:
     latest = session.scalar(
         select(ProfileSection)
         .where(
@@ -118,28 +117,26 @@ def _headline(session: Session, candidate_id: str, score_id: str) -> str | None:
         .order_by(ProfileSection.retrieved_at.desc(), ProfileSection.id.desc())
         .limit(1)
     )
-    if latest is None:
-        return None
-    sourced = session.scalar(
-        select(ScoreInputSection.score_id).where(
-            ScoreInputSection.score_id == score_id,
-            ScoreInputSection.profile_section_id == latest.id,
-            ScoreInputSection.content_sha256 == latest.content_sha256,
-        )
-    )
-    if sourced is None:
+    if latest is None or not latest.raw_text:
         return None
     field = session.scalar(
-        select(ParsedField.snippet)
+        select(ParsedField)
         .where(
             ParsedField.candidate_id == candidate_id,
             ParsedField.field_key == "headline",
             ParsedField.profile_section_id == latest.id,
+            ParsedField.section_name == "main_profile",
+            ParsedField.origin.in_(("deterministic", "llm_verified")),
         )
         .order_by(ParsedField.created_at.desc(), ParsedField.id.desc())
         .limit(1)
     )
-    return field
+    if field is None or not (
+        0 <= field.span_start < field.span_end <= len(latest.raw_text)
+        and latest.raw_text[field.span_start : field.span_end] == field.snippet
+    ):
+        return None
+    return field.snippet
 
 
 def _non_scoring_hints(session: Session, candidate: Candidate) -> list[dict[str, str]]:
@@ -202,7 +199,7 @@ def ranked_record(
         "username": candidate.username,
         "profile_url": candidate.profile_url,
         "display_name": candidate.display_name,
-        "headline": _headline(session, candidate.id, score.id),
+        "headline": _headline(session, candidate.id),
         "stage": score.stage,
         "score": score.score,
         "score_lower": score.score_lower,
