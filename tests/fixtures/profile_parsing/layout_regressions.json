@@ -1,0 +1,22 @@
+{
+  "provenance": "synthetic_structural_not_recorded",
+  "cases": [
+    {
+      "id": "grouped-employment",
+      "experience": "Experience\n\nGROUP_COMPANY\n\n8 yrs\n\nGROUP_WORK_MODE\n\nROLE_TITLE_ALPHA\n\n2022 - Present\n\nROLE_LOCATION\n\nROLE_SKILLS\n\nROLE_TITLE_BETA\n\n2020 - 2022\n\nROLE_LOCATION\n\nROLE_SKILLS",
+      "pairs": [
+        ["ROLE_TITLE_ALPHA", "GROUP_COMPANY"],
+        ["ROLE_TITLE_BETA", "GROUP_COMPANY"]
+      ]
+    },
+    {
+      "id": "date-anchored-reset",
+      "experience": "Experience\nROLE_TITLE_ALPHA\nCOMPANY_ALPHA\n2018 - 2020\nPREVIOUS_ROLE_LOCATION\nNARRATIVE_OR_SKILLS\nROLE_TITLE_BETA\nCOMPANY_BETA\n2020 - 2022\nROLE_LOCATION\nDESCRIPTION\n\n\nROLE_TITLE_GAMMA\nCOMPANY_GAMMA\n2022 - Present\nROLE_LOCATION\nDESCRIPTION",
+      "pairs": [
+        ["ROLE_TITLE_ALPHA", "COMPANY_ALPHA"],
+        ["ROLE_TITLE_BETA", "COMPANY_BETA"],
+        ["ROLE_TITLE_GAMMA", "COMPANY_GAMMA"]
+      ]
+    }
+  ]
+}

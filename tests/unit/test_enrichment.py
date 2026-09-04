@@ -1098,6 +1098,34 @@ def test_representative_experience_fixture_recall_has_explicit_denominator() -> 
     assert matched / denominator >= 0.90
 
 
+def test_experience_parser_anchors_roles_and_inherits_group_company() -> None:
+    fixture_path = (
+        Path(__file__).parents[1]
+        / "fixtures"
+        / "profile_parsing"
+        / "layout_regressions.json"
+    )
+    fixture = json.loads(fixture_path.read_text())
+    assert fixture["provenance"] == "synthetic_structural_not_recorded"
+
+    for case in fixture["cases"]:
+        parsed = PARSERS["experience"](case["experience"])
+        entries: dict[str, dict[str, str]] = {}
+        for field in parsed:
+            prefix, entry, kind = field.field_key.split(".")
+            assert prefix == "experience"
+            entries.setdefault(entry, {})[kind] = field.value
+            assert (
+                case["experience"][field.span.start : field.span.end]
+                == field.span.snippet
+                == field.value
+            )
+
+        assert [
+            [entry["title"], entry["company"]] for entry in entries.values()
+        ] == case["pairs"]
+
+
 def test_llm_proposal_requires_exact_substring() -> None:
     exact = verify_proposal(
         "Uses Kubernetes daily",

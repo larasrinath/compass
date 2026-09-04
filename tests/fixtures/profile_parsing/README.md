@@ -8,3 +8,7 @@ reported as real-profile acceptance evidence. `gold.json` supplies an explicit
 The M3 real-profile acceptance metric remains a manual blocker until the project
 has a consented, non-private recorded corpus that can be evaluated without
 committing personal profile data.
+
+`layout_regressions.json` contains placeholder-only line-class fixtures for
+grouped-employment inheritance and date-anchored role resets. It contains no
+recorded profile values and is regression evidence only.
