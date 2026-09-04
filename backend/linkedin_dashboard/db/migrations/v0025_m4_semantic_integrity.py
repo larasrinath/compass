@@ -9,7 +9,16 @@ from typing import Any
 
 from sqlalchemy import Connection
 
-from linkedin_dashboard.db.scoring_manifest import SIGNAL_IDS, build_manifest
+from linkedin_dashboard.db.scoring_manifest import (
+    MAX_ALIAS_LENGTH,
+    MAX_ALIASES_PER_TERM,
+    MAX_BRIEF_CANONICAL_CHARS,
+    MAX_BRIEF_VOCABULARY,
+    MAX_TERM_LENGTH,
+    SIGNAL_IDS,
+    build_manifest,
+    normalize,
+)
 from linkedin_dashboard.db.unicode_identity import (
     SCORING_CANONICAL_SENTINEL,
     SCORING_DISPLAY_CANONICAL_SENTINEL,
@@ -38,32 +47,56 @@ def _signal_source(signal_id: str, brief: str) -> str:
 def _signal_manifest_invalid(signal_id: str, brief: str) -> str:
     path = f"'$.\"{signal_id}\"'"
     source = _signal_source(signal_id, brief)
-    return f"""
-json_type({brief}.scoring_inputs,{path})<>'array'
+    source_conflicts = ""
+    if signal_id != "S-3":
+        source_conflicts = f"""
 OR EXISTS (
+  SELECT 1 FROM ({source}) owner,json_each(owner.aliases) owner_alias,
+                ({source}) other
+  WHERE owner.term<>other.term COLLATE scoring_normalized_v1
+    AND (owner_alias.value=other.term COLLATE scoring_normalized_v1
+      OR EXISTS (SELECT 1 FROM json_each(other.aliases) other_alias
+                 WHERE owner_alias.value=other_alias.value
+                   COLLATE scoring_normalized_v1)))
+"""
+    return f"""
+CASE WHEN json_type({brief}.scoring_inputs,{path}) IS NOT 'array' THEN 1 ELSE
+COALESCE((
+EXISTS (
   SELECT 1 FROM json_each({brief}.scoring_inputs,{path}) item
-  WHERE json_type(item.value)<>'object'
+  WHERE json_type(item.value) IS NOT 'object'
     OR (SELECT count(*) FROM json_each(item.value))<>3
-    OR json_type(item.value,'$.display')<>'text'
-    OR length(json_extract(item.value,'$.display'))=0
+    OR EXISTS (SELECT 1 FROM json_each(item.value) member
+               WHERE member.key NOT IN ('display','term','aliases'))
+    OR (SELECT count(*) FROM json_each(item.value) member
+        WHERE member.key='display')<>1
+    OR (SELECT count(*) FROM json_each(item.value) member
+        WHERE member.key='term')<>1
+    OR (SELECT count(*) FROM json_each(item.value) member
+        WHERE member.key='aliases')<>1
+    OR json_type(item.value,'$.display') IS NOT 'text'
+    OR length(json_extract(item.value,'$.display')) NOT BETWEEN 1 AND {MAX_TERM_LENGTH}
     OR NOT (json_extract(item.value,'$.display')=
             '{SCORING_DISPLAY_CANONICAL_SENTINEL}'
               COLLATE scoring_display_canonical_v1)
-    OR json_type(item.value,'$.term')<>'text'
+    OR json_type(item.value,'$.term') IS NOT 'text'
+    OR length(json_extract(item.value,'$.term')) NOT BETWEEN 1 AND {MAX_TERM_LENGTH}
     OR NOT (json_extract(item.value,'$.term')=
             '{SCORING_CANONICAL_SENTINEL}' COLLATE scoring_canonical_v1)
-    OR json_type(item.value,'$.aliases')<>'array'
-    OR EXISTS (SELECT 1 FROM json_each(json_extract(item.value,'$.aliases')) alias
-      WHERE alias.type<>'text' OR NOT (
+    OR json_type(item.value,'$.aliases') IS NOT 'array'
+    OR json_array_length(item.value,'$.aliases')>{MAX_ALIASES_PER_TERM}
+    OR EXISTS (SELECT 1 FROM json_each(item.value,'$.aliases') alias
+      WHERE alias.type IS NOT 'text'
+        OR length(alias.value) NOT BETWEEN 1 AND {MAX_ALIAS_LENGTH} OR NOT (
         alias.value='{SCORING_CANONICAL_SENTINEL}' COLLATE scoring_canonical_v1))
-    OR EXISTS (SELECT 1 FROM json_each(json_extract(item.value,'$.aliases')) current
-      JOIN json_each(json_extract(item.value,'$.aliases')) previous
+    OR EXISTS (SELECT 1 FROM json_each(item.value,'$.aliases') current
+      JOIN json_each(item.value,'$.aliases') previous
         ON cast(previous.key AS INTEGER)=cast(current.key AS INTEGER)-1
       WHERE previous.value>=current.value)
     OR EXISTS (SELECT 1 FROM json_each({brief}.scoring_inputs,{path}) primary_item,
-                            json_each(json_extract(item.value,'$.aliases')) alias
+                            json_each(item.value,'$.aliases') alias
       WHERE json_extract(primary_item.value,'$.term')=alias.value)
-    OR NOT (json_extract(item.value,'$.display')=(
+    OR NOT (json_extract(item.value,'$.display') IS (
       SELECT min(display_source.term COLLATE scoring_display_v1)
       FROM ({source}) display_source
       WHERE display_source.term=json_extract(item.value,'$.term')
@@ -85,7 +118,7 @@ OR EXISTS (SELECT 1 FROM json_each({brief}.scoring_inputs,{path}) item WHERE NOT
   WHERE source.term=json_extract(item.value,'$.term') COLLATE scoring_normalized_v1))
 OR EXISTS (
   SELECT 1 FROM json_each({brief}.scoring_inputs,{path}) item,
-                json_each(json_extract(item.value,'$.aliases')) manifest_alias
+                json_each(item.value,'$.aliases') manifest_alias
   WHERE NOT EXISTS (
     SELECT 1 FROM ({source}) source,json_each(source.aliases) raw_alias
     WHERE source.term=json_extract(item.value,'$.term') COLLATE scoring_normalized_v1
@@ -108,9 +141,11 @@ OR EXISTS (
     ) COLLATE scoring_normalized_v1
     AND NOT EXISTS (
       SELECT 1 FROM json_each({brief}.scoring_inputs,{path}) item,
-                    json_each(json_extract(item.value,'$.aliases')) manifest_alias
+                    json_each(item.value,'$.aliases') manifest_alias
       WHERE json_extract(item.value,'$.term')=source.term COLLATE scoring_normalized_v1
         AND manifest_alias.value=raw_alias.value COLLATE scoring_normalized_v1))
+{source_conflicts}
+),1) END
 """
 
 
@@ -119,14 +154,38 @@ def _manifest_invalid(brief: str) -> str:
         f"({_signal_manifest_invalid(signal_id, brief)})" for signal_id in SIGNAL_IDS
     )
     allowed = ",".join(f"'{item}'" for item in (*SIGNAL_IDS, "matcher_version"))
+    exact_keys = "\nOR ".join(
+        f"(SELECT count(*) FROM json_each({brief}.scoring_inputs) item "
+        f"WHERE item.key='{key}')<>1"
+        for key in (*SIGNAL_IDS, "matcher_version")
+    )
+    budget_paths = ",".join(
+        f"'{signal_id}'" for signal_id in SIGNAL_IDS if signal_id != "S-3"
+    )
     return f"""
-json_valid({brief}.scoring_inputs)<>1
-OR json_type({brief}.scoring_inputs)<>'object'
-OR json_extract({brief}.scoring_inputs,'$.matcher_version')<>'scoring-v1'
-OR (SELECT count(*) FROM json_each({brief}.scoring_inputs))<>8
-OR EXISTS (SELECT 1 FROM json_each({brief}.scoring_inputs) item
-           WHERE item.key NOT IN ({allowed}))
-OR {signals}
+CASE
+WHEN {brief}.scoring_inputs IS NULL THEN 1
+WHEN json_valid({brief}.scoring_inputs) IS NOT 1 THEN 1
+WHEN json_type({brief}.scoring_inputs) IS NOT 'object' THEN 1
+ELSE COALESCE((
+  json_type({brief}.scoring_inputs,'$.matcher_version') IS NOT 'text'
+  OR json_extract({brief}.scoring_inputs,'$.matcher_version') IS NOT 'scoring-v1'
+  OR (SELECT count(*) FROM json_each({brief}.scoring_inputs))<>8
+  OR EXISTS (SELECT 1 FROM json_each({brief}.scoring_inputs) item
+             WHERE item.key NOT IN ({allowed}))
+  OR {exact_keys}
+  OR (SELECT coalesce(sum(1+json_array_length(entry.value,'$.aliases')),0)
+      FROM json_each({brief}.scoring_inputs) signal,
+           json_each(signal.value) entry
+      WHERE signal.key IN ({budget_paths}))>{MAX_BRIEF_VOCABULARY}
+  OR (SELECT coalesce(sum(length(json_extract(entry.value,'$.term'))+
+         coalesce((SELECT sum(length(alias.value))
+                   FROM json_each(entry.value,'$.aliases') alias),0)),0)
+      FROM json_each({brief}.scoring_inputs) signal,
+           json_each(signal.value) entry
+      WHERE signal.key IN ({budget_paths}))>{MAX_BRIEF_CANONICAL_CHARS}
+  OR {signals}
+),1) END
 """
 
 
@@ -402,9 +461,21 @@ STATEMENTS = (
 
 
 def _array(value: Any) -> list[str]:
-    decoded = json.loads(value) if isinstance(value, str) else value
-    if not isinstance(decoded, list) or not all(
-        isinstance(item, str) for item in decoded
+    try:
+        decoded = json.loads(value) if isinstance(value, str) else value
+    except (TypeError, json.JSONDecodeError) as error:
+        raise RuntimeError(
+            f"cannot apply {VERSION}: brief aliases are invalid"
+        ) from error
+    if (
+        not isinstance(decoded, list)
+        or len(decoded) > MAX_ALIASES_PER_TERM
+        or not all(
+            type(item) is str
+            and 0 < len(item) <= MAX_ALIAS_LENGTH
+            and 0 < len(normalize(item)) <= MAX_ALIAS_LENGTH
+            for item in decoded
+        )
     ):
         raise RuntimeError(f"cannot apply {VERSION}: brief aliases are invalid")
     return decoded
@@ -441,14 +512,19 @@ def _brief_manifest(
             (brief_id,),
         )
     ]
-    return build_manifest(
-        required_skills=skills["required"],
-        optional_skills=skills["optional"],
-        target_titles=terms["target_title"],
-        industries=terms["industry"],
-        location=location,
-        required_credentials=credentials,
-    )
+    try:
+        return build_manifest(
+            required_skills=skills["required"],
+            optional_skills=skills["optional"],
+            target_titles=terms["target_title"],
+            industries=terms["industry"],
+            location=location,
+            required_credentials=credentials,
+        )
+    except (TypeError, ValueError) as error:
+        raise RuntimeError(
+            f"cannot apply {VERSION}: brief {brief_id} has invalid scoring sources"
+        ) from error
 
 
 def _prepare_brief_manifests(connection: Connection) -> None:
@@ -493,6 +569,14 @@ def _prepare_brief_manifests(connection: Connection) -> None:
 
 
 def _preflight(connection: Connection) -> None:
+    invalid_brief = connection.exec_driver_sql(
+        f"SELECT rb.id FROM role_brief rb WHERE ({_BRIEF_MANIFEST_INVALID}) LIMIT 1"
+    ).first()
+    if invalid_brief is not None:
+        raise RuntimeError(
+            f"cannot apply {VERSION}: brief {invalid_brief[0]} has a noncanonical "
+            "scoring manifest"
+        )
     duplicate = connection.exec_driver_sql(
         "SELECT score_id,signal_id FROM score_signal "
         "GROUP BY score_id,signal_id HAVING count(*)>1 LIMIT 1"
@@ -523,6 +607,18 @@ def _preflight(connection: Connection) -> None:
         raise RuntimeError(
             f"cannot apply {VERSION}: finalized score {signal[0]} has an invalid "
             "signal set or weight"
+        )
+    inactive_s3 = connection.exec_driver_sql(
+        "SELECT claim.id FROM score_claim claim "
+        "JOIN score_signal ss ON ss.id=claim.score_signal_id "
+        "JOIN score s ON s.id=ss.score_id "
+        "JOIN role_brief rb ON rb.id=s.brief_id "
+        "WHERE ss.signal_id='S-3' "
+        "AND coalesce(rb.required_experience_months,0)<=0 LIMIT 1"
+    ).first()
+    if inactive_s3 is not None:
+        raise RuntimeError(
+            f"cannot apply {VERSION}: claim {inactive_s3[0]} belongs to inactive S-3"
         )
     coverage = connection.exec_driver_sql(
         f"""SELECT claim.id FROM score_claim claim

@@ -278,14 +278,20 @@ class BriefService:
             return row
 
     def save(self, session_id: str, value: BriefValue) -> tuple[RoleBrief, int]:
+        value = normalize_brief(value)
+        manifest = scoring_inputs(value)
         # SQLite serializes writers, but a process-local lock prevents two
         # deferred transactions from both choosing the same next version and
         # turning an optimistic conflict into an opaque "database is locked".
         with self._transition_lock:
-            return self._save_locked(session_id, value)
+            return self._save_locked(session_id, value, manifest)
 
-    def _save_locked(self, session_id: str, value: BriefValue) -> tuple[RoleBrief, int]:
-        value = normalize_brief(value)
+    def _save_locked(
+        self,
+        session_id: str,
+        value: BriefValue,
+        manifest: dict[str, object],
+    ) -> tuple[RoleBrief, int]:
         now = datetime.now(UTC).isoformat()
         stale_count = 0
         with self.database.sessions.begin() as session:
@@ -353,7 +359,7 @@ class BriefService:
                 message_tone=value.message_tone,
                 required_experience_months=value.required_experience_months,
                 weights_version=str(config.version) if config is not None else "v1",
-                scoring_inputs=scoring_inputs(value),
+                scoring_inputs=manifest,
             )
             session.add(brief)
             session.flush()

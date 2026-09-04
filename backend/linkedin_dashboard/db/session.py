@@ -45,6 +45,7 @@ from linkedin_dashboard.db.migrations import (
     v0024_m4_integrity_upgrade,
     v0025_m4_semantic_integrity,
     v0026_m4_manifest_convergence,
+    v0027_m4_bounded_manifests,
 )
 from linkedin_dashboard.db.models import Base
 from linkedin_dashboard.db.unicode_identity import (
@@ -80,6 +81,7 @@ _MIGRATION_MODULES = (
     v0024_m4_integrity_upgrade,
     v0025_m4_semantic_integrity,
     v0026_m4_manifest_convergence,
+    v0027_m4_bounded_manifests,
 )
 
 _SCHEMA_ACTIONS = {
