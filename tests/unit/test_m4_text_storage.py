@@ -195,6 +195,18 @@ def _purge_affected_session(path: Path, *, recursive_triggers: str) -> None:
         connection.execute("DELETE FROM session WHERE id='text-session'")
 
 
+def _assert_no_direct_row_repair_guidance(message: str) -> None:
+    for forbidden in (
+        "restore canonical",
+        "known-good value",
+        "repair the row",
+        "update the row",
+        "delete the row",
+        "purge affected brief",
+    ):
+        assert forbidden not in message.lower()
+
+
 def test_exact_v27_text_database_converges_without_data_loss(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -431,16 +443,16 @@ def test_exact_v27_blob_fails_v28_atomically_then_purge_retries(
 
     failed = Database(path)
     try:
-        with pytest.raises(
-            RuntimeError,
-            match=(
-                rf"{table}\.{column}.*SQLite blob storage.*restore.*"
-                r"purge affected session 'text-session'.*session-purge"
-            ),
-        ):
+        with pytest.raises(RuntimeError) as error:
             failed.initialize()
     finally:
         failed.dispose()
+    assert str(error.value) == (
+        f"cannot apply {v0028_m4_text_storage.VERSION}: {table}.{column} for row "
+        f"{row_id} uses SQLite blob storage; purge owning session 'text-session' "
+        "through the supported session-purge workflow before retrying"
+    )
+    _assert_no_direct_row_repair_guidance(str(error.value))
 
     with _connect(path) as connection:
         assert (
@@ -503,6 +515,63 @@ def test_exact_v27_blob_fails_v28_atomically_then_purge_retries(
             )
         }
         assert names.issuperset(v0028_m4_text_storage.TRIGGER_NAMES)
+
+
+@pytest.mark.parametrize("table", ["brief_skill", "brief_term", "brief_credential"])
+def test_v28_unresolved_owner_requires_database_backup_restore(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, table: str
+) -> None:
+    path = tmp_path / f"v27-unresolved-{table}.db"
+    _initialize_exact_v27(path, monkeypatch)
+    row_id = f"orphan-{table}"
+    with _connect(path) as connection:
+        _seed_session(connection)
+        _insert_brief(connection, brief_id="missing-brief", version=1)
+        _insert_child(
+            connection,
+            table,
+            brief_id="missing-brief",
+            row_id=row_id,
+            aliases=b"[]",
+        )
+        connection.execute("DELETE FROM session WHERE id='text-session'")
+        connection.execute("DELETE FROM role_brief WHERE id='missing-brief'")
+        baseline_schema = connection.execute(
+            "SELECT type,name,sql FROM sqlite_master "
+            "WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
+        ).fetchall()
+
+    failed = Database(path)
+    try:
+        with pytest.raises(RuntimeError) as error:
+            failed.initialize()
+    finally:
+        failed.dispose()
+    assert str(error.value) == (
+        f"cannot apply {v0028_m4_text_storage.VERSION}: {table}.aliases for row "
+        f"{row_id} uses SQLite blob storage; restore the database from a "
+        "known-good backup before retrying"
+    )
+    _assert_no_direct_row_repair_guidance(str(error.value))
+
+    with _connect(path) as connection:
+        assert (
+            connection.execute(
+                "SELECT 1 FROM schema_migration WHERE version=?",
+                (v0028_m4_text_storage.VERSION,),
+            ).fetchone()
+            is None
+        )
+        assert (
+            connection.execute(
+                "SELECT type,name,sql FROM sqlite_master "
+                "WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
+            ).fetchall()
+            == baseline_schema
+        )
+        assert connection.execute(
+            f'SELECT typeof(aliases) FROM "{table}" WHERE id=?', (row_id,)
+        ).fetchone() == ("blob",)
 
 
 def _attack_role_brief(

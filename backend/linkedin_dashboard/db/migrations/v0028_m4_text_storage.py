@@ -85,19 +85,15 @@ def _preflight_storage_classes(connection: Connection) -> None:
         ).first()
         if invalid is not None:
             if isinstance(invalid[2], str) and invalid[2]:
-                purge = (
-                    f"purge affected session {invalid[2]!r} through the supported "
+                recovery = (
+                    f"purge owning session {invalid[2]!r} through the supported "
                     "session-purge workflow"
                 )
             else:
-                purge = (
-                    "purge the session owning the affected brief through the "
-                    "supported session-purge workflow"
-                )
+                recovery = "restore the database from a known-good backup"
             raise RuntimeError(
                 f"cannot apply {VERSION}: {table}.{column} for row {invalid[0]} "
-                f"uses SQLite {invalid[1]} storage; restore canonical TEXT from a "
-                f"known-good value or {purge} before retrying"
+                f"uses SQLite {invalid[1]} storage; {recovery} before retrying"
             )
 
 
