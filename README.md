@@ -104,7 +104,8 @@ both-correct for title and company (90.4762%), passing the strictly >85% gate.
 Exactly one Stage-1 queue job ran per profile (3/3), verbatim `main_profile`
 plus `experience` storage passed 3/3, and raw-before-parse ordering,
 provenance, URN-if-present handling, and exact-span checks passed. Forbidden
-send, search, and draft operation counts were zero. The raw acceptance database
+operation counts were: search=0, connection=0, Stage 2=0, draft=0, dry-run=0,
+message=0, and send=0. The raw acceptance database
 and artifacts were purged after recording the sanitized result and evidence
 digest. The evidence artifact SHA-256 is
 `12c0a5f0ed92fa7e8ad71c7ce21aa25b15b095336f00f15a46a6a1c084b9e6ce`;
