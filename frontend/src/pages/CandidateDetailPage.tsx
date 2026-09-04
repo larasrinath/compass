@@ -133,6 +133,12 @@ export function CandidateDetailPage({
   }
   const promotedSections =
     profileSections.data?.filter((section) => section !== 'experience') ?? []
+  const hasScoreSignals = Boolean(candidate.signals?.length)
+  const allInert = candidate.score?.all_inert_attested ?? false
+  const scoringEmptyState =
+    rankingUnlocked && !candidate.score && !hasScoreSignals
+      ? candidate.scoring_empty_state
+      : null
   return (
     <section aria-labelledby="candidate-title" className="workspace-page">
       <button className="quiet-action back-action" onClick={onBack} type="button">
@@ -197,9 +203,9 @@ export function CandidateDetailPage({
 
       <SectionAvailabilityMap available={candidate.available_sections} />
 
-      {rankingUnlocked && (candidate.score || candidate.signals) ? (
+      {rankingUnlocked && (hasScoreSignals || allInert) ? (
         <EvidencePanel
-          allInert={candidate.score?.all_inert_attested ?? false}
+          allInert={allInert}
           onEvidenceOpen={(sectionName, evidenceId) => {
             setSelectedSectionName(sectionName)
             setSelectedFieldId(evidenceId)
@@ -215,6 +221,18 @@ export function CandidateDetailPage({
           signals={candidate.signals ?? []}
           verifiedEvidenceIds={verifiedEvidenceIds}
         />
+      ) : null}
+
+      {scoringEmptyState ? (
+        <section
+          aria-labelledby="scoring-empty-title"
+          className="panel scoring-empty-state"
+          role="status"
+        >
+          <p className="eyebrow">Scoring</p>
+          <h2 id="scoring-empty-title">Score unavailable</h2>
+          <p>{scoringEmptyState}</p>
+        </section>
       ) : null}
 
       {rankingUnlocked && candidate.score_history?.length ? (

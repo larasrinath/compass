@@ -284,21 +284,21 @@ test('historical queue revisions and candidate remounts preserve score-bound ver
     candidateId: 'first', detailKey: 'detail', currentQueue: historicalQueue,
   })))
   await screen.findByRole('heading', { name: 'First Candidate' })
-  assert.equal(screen.getByRole('checkbox', { name: 'I verified this exact source span' }).checked, true)
+  assert.equal(screen.getByRole('checkbox', { name: /^I verified this exact source span for/ }).checked, true)
   assert.equal(scoreChanges, 0, 'preexisting revision 7 must be the observation baseline')
 
   rendered.rerender(wrapper(React.createElement(Harness, {
     candidateId: 'second', detailKey: 'detail', currentQueue: historicalQueue,
   })))
   await screen.findByRole('heading', { name: 'Second Candidate' })
-  assert.equal(screen.getByRole('checkbox', { name: 'I verified this exact source span' }).checked, true)
+  assert.equal(screen.getByRole('checkbox', { name: /^I verified this exact source span for/ }).checked, true)
   assert.equal(scoreChanges, 0, 'opening a second candidate is not a score mutation')
 
   rendered.rerender(wrapper(React.createElement(Harness, {
     candidateId: 'second', detailKey: 'uncached-remount', currentQueue: historicalQueue,
   })))
   await screen.findByRole('heading', { name: 'Second Candidate' })
-  assert.equal(screen.getByRole('checkbox', { name: 'I verified this exact source span' }).checked, true)
+  assert.equal(screen.getByRole('checkbox', { name: /^I verified this exact source span for/ }).checked, true)
   assert.equal(scoreChanges, 0, 'an uncached remount must retain the historical baseline')
 
   rendered.rerender(wrapper(React.createElement(Harness, {
@@ -307,7 +307,7 @@ test('historical queue revisions and candidate remounts preserve score-bound ver
     currentQueue: { ...historicalQueue, revision: 8, scoringRevision: 4 },
   })))
   await waitFor(() => assert.equal(scoreChanges, 1))
-  assert.equal(screen.getByRole('checkbox', { name: 'I verified this exact source span' }).checked, false)
+  assert.equal(screen.getByRole('checkbox', { name: /^I verified this exact source span for/ }).checked, false)
 })
 
 test('candidate pool renders queued, failed, and focused enqueue errors', { timeout: 5000 }, async () => {

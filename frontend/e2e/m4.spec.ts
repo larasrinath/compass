@@ -122,7 +122,12 @@ const poolCandidate = {
   active_job_id: null, source_count: 0, sources: [],
 }
 
-async function mockApi(page: Page, gateA: boolean, hostileStrings = false) {
+async function mockApi(
+  page: Page,
+  gateA: boolean,
+  hostileStrings = false,
+  detailOverride: Record<string, unknown> | null = null,
+) {
   const hostile = 'HOSTILE'.repeat(240)
   const rankedPayload = hostileStrings
     ? {
@@ -133,8 +138,9 @@ async function mockApi(page: Page, gateA: boolean, hostileStrings = false) {
         non_scoring_hints: [{ kind: 'search_context', label: hostile, value: hostile }],
       }
     : score
-  const detailPayload = hostileStrings
-    ? {
+  const detailPayload = detailOverride ?? (
+    hostileStrings
+      ? {
         ...detail,
         profile_urn: hostile,
         errors: [{ section_name: hostile, error_message: hostile }],
@@ -158,8 +164,9 @@ async function mockApi(page: Page, gateA: boolean, hostileStrings = false) {
             })),
           })),
         })),
-      }
-    : detail
+        }
+      : detail
+  )
   await page.route('**/api/**', async (route) => {
     const url = new URL(route.request().url())
     const path = url.pathname
@@ -203,7 +210,7 @@ test('pre-Gate direct detail route cannot reveal poisoned ranking fields', async
   await expect(page.locator('.score-badge')).toHaveCount(0)
   await expect(page.getByRole('heading', { name: 'Why this score changed' })).toHaveCount(0)
   await expect(page.getByRole('heading', { name: 'Current and previous scores' })).toHaveCount(0)
-  await expect(page.getByRole('checkbox', { name: 'I verified this exact source span' })).toHaveCount(0)
+  await expect(page.getByRole('checkbox', { name: /^I verified this exact source span for/ })).toHaveCount(0)
   await expect(page.getByRole('button', { name: '← Back to search' })).toBeVisible()
 })
 
@@ -242,11 +249,54 @@ test('keyboard evidence flow scrolls the actual far-down astral mark and keeps f
   expect(await raw.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
   const [rawBox, markBox] = await Promise.all([raw.boundingBox(), mark.boundingBox()])
   expect(rawBox && markBox && markBox.y >= rawBox.y && markBox.y < rawBox.y + rawBox.height).toBeTruthy()
-  const verify = page.getByRole('checkbox', { name: 'I verified this exact source span' })
+  const verify = page.getByRole('checkbox', { name: /^I verified this exact source span for/ })
   await verify.focus()
   await page.keyboard.press('Space')
   await expect(verify).toBeChecked()
   await expect(page.getByText('This does not mean the candidate lacks this qualification.')).toBeVisible()
+})
+
+test('ten Gate B evidence controls expose unique names and keyboard toggles', async ({ page }) => {
+  const manyEvidence = Array.from({ length: 10 }, (_, index) => ({
+    ...evidence,
+    id: `evidence-${index + 1}`,
+    snippet: `Alpha evidence ${index + 1}`,
+  }))
+  const manyDetail = {
+    ...detail,
+    signals: [{
+      ...signals[0],
+      claims: [{
+        ...signals[0].claims[0],
+        evidence: manyEvidence,
+      }],
+    }],
+  }
+  await mockApi(page, true, false, manyDetail)
+  await page.goto('/candidates/candidate-1')
+  const checkboxes = page.getByRole('checkbox', {
+    name: /^I verified this exact source span for/,
+  })
+  await expect(checkboxes).toHaveCount(10)
+  const names = await checkboxes.evaluateAll((elements) =>
+    elements.map((element) => element.getAttribute('aria-label')),
+  )
+  expect(new Set(names).size).toBe(10)
+  await checkboxes.nth(9).focus()
+  await page.keyboard.press('Space')
+  await expect(checkboxes.nth(9)).toBeChecked()
+})
+
+test('backend scoring empty state suppresses an empty evidence panel', async ({ page }) => {
+  await mockApi(page, true, false, {
+    ...detail,
+    score: null,
+    signals: [],
+    scoring_empty_state: 'No score is available for the retrieved inputs.',
+  })
+  await page.goto('/candidates/candidate-1')
+  await expect(page.getByText('No score is available for the retrieved inputs.')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Why this score changed' })).toHaveCount(0)
 })
 
 test('ranked and detail layouts stay readable at narrow width with non-color cues', async ({ page }) => {
@@ -280,6 +330,8 @@ test('hostile unbroken API strings never widen the 390px candidate views', async
 })
 
 test('brief preserves experience and credential aliases through create and edit', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  const hostileAlias = 'A'.repeat(160)
   let currentBrief: Record<string, unknown> | null = null
   const writes: Array<Record<string, unknown>> = []
   let rejectProtected = false
@@ -354,14 +406,18 @@ test('brief preserves experience and credential aliases through create and edit'
   await credentials.getByLabel('New required credentials term').fill('AWS Architect')
   await credentials.getByRole('button', { name: 'Add term' }).click()
   await credentials.getByLabel('Aliases for AWS Architect').fill(
-    'SAA, Solutions Architect Associate',
+    `SAA, ${hostileAlias}`,
   )
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy()
+  expect(await credentials.getByLabel('Aliases for AWS Architect').evaluate(
+    (element) => element.getBoundingClientRect().width <= window.innerWidth,
+  )).toBeTruthy()
   await page.getByRole('button', { name: 'Save brief' }).click()
   await expect(page.getByRole('button', { name: 'Save new version' })).toBeVisible()
   expect(writes[0].required_experience_months).toBe(0)
   expect(writes[0].required_credentials).toEqual([{
     term: 'AWS Architect',
-    aliases: ['SAA', 'Solutions Architect Associate'],
+    aliases: ['SAA', hostileAlias],
   }])
 
   await page.reload()
@@ -369,8 +425,12 @@ test('brief preserves experience and credential aliases through create and edit'
   credentials = page.getByRole('group', { name: 'Required credentials' })
   await expect(credentials.getByLabel('Required credentials term 1')).toHaveValue('AWS Architect')
   await expect(credentials.getByLabel('Aliases for AWS Architect')).toHaveValue(
-    'SAA, Solutions Architect Associate',
+    `SAA, ${hostileAlias}`,
   )
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy()
+  expect(await credentials.getByLabel('Aliases for AWS Architect').evaluate(
+    (element) => element.getBoundingClientRect().width <= window.innerWidth,
+  )).toBeTruthy()
 
   await experience.fill('-1')
   expect(await experience.evaluate((element: HTMLInputElement) => element.validity.rangeUnderflow)).toBe(true)

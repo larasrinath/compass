@@ -46,7 +46,7 @@ export function EvidencePanel({
           <section aria-labelledby={`signal-${signal.id}`} className="signal-claim-group" key={signal.id}>
             <h3 id={`signal-${signal.id}`}>{signal.signal_id} · {signal.label}</h3>
             <ol>
-              {signal.claims.map((claim) => (
+              {signal.claims.map((claim, claimIndex) => (
                 <li className={`claim-card ${claim.verdict}`} key={claim.id}>
                   <div className="claim-heading">
                     <strong>{claim.display_term}</strong>
@@ -80,7 +80,7 @@ export function EvidencePanel({
                     </div>
                   ) : (
                     <div className="profile-evidence-list">
-                      {claim.evidence.map((evidence) =>
+                      {claim.evidence.map((evidence, evidenceIndex) =>
                         evidence.availability.state === 'available' ? (
                           <div className="profile-evidence" key={evidence.id}>
                             <button
@@ -95,6 +95,7 @@ export function EvidencePanel({
                             </button>
                             <label className="verify-control">
                               <input
+                                aria-label={`I verified this exact source span for ${claim.display_term} in ${evidence.section_name.replaceAll('_', ' ')} (${signal.signal_id}, claim ${claimIndex + 1}, evidence ${evidenceIndex + 1})`}
                                 checked={verifiedEvidenceIds.has(evidence.id)}
                                 onChange={(event) => onEvidenceVerified(evidence.id, event.target.checked)}
                                 type="checkbox"

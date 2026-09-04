@@ -157,6 +157,16 @@ export interface SearchInput {
   current_company?: string | null
 }
 
+export type SearchRunStatus =
+  | 'queued'
+  | 'running'
+  | 'ok'
+  | 'partial'
+  | 'rate_limited'
+  | 'failed'
+  | 'interrupted'
+  | 'cancelled'
+
 export interface SearchRun {
   id: string
   job_id: string
@@ -166,7 +176,7 @@ export interface SearchRun {
   location: string | null
   network: string[]
   current_company: string | null
-  status: string
+  status: SearchRunStatus
   reference_count: number
   person_reference_count: number
   new_candidate_count: number

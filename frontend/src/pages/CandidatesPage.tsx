@@ -224,16 +224,20 @@ export function CandidatesPage({
 function orderCandidates<T extends {
   id: string
   display_name: string | null
+  username?: string
   score: number | null
   confidence: number
 }>(candidates: T[], sort: string): T[] {
   return [...candidates].sort((left, right) => {
+    if (sort === 'name_asc') {
+      const leftName = left.display_name ?? left.username ?? ''
+      const rightName = right.display_name ?? right.username ?? ''
+      const byName = leftName.localeCompare(rightName)
+      return byName || left.id.localeCompare(right.id)
+    }
     if (left.score === null && right.score !== null) return 1
     if (left.score !== null && right.score === null) return -1
-    if (sort === 'name_asc') {
-      const byName = (left.display_name ?? '').localeCompare(right.display_name ?? '')
-      if (byName !== 0) return byName
-    } else if (sort === 'confidence_desc') {
+    if (sort === 'confidence_desc') {
       const byConfidence = right.confidence - left.confidence
       if (byConfidence !== 0) return byConfidence
     } else if (left.score !== null && right.score !== null) {

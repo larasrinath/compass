@@ -949,10 +949,30 @@ footer strong {
   display: grid;
   gap: 12px;
   min-width: 0;
+  max-width: 100%;
   border: 1px solid var(--line);
   border-radius: 14px;
   padding: 16px;
   background: rgba(255, 255, 255, 0.5);
+}
+.criteria-grid,
+.criteria-grid > *,
+.term-editor > *,
+.term-row > *,
+.term-add-row > *,
+.term-row input,
+.term-add-row input {
+  min-width: 0;
+  max-width: 100%;
+}
+.term-editor,
+.term-editor :where(*) {
+  overflow-wrap: anywhere;
+}
+.term-row input,
+.term-add-row input {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .term-row {
   display: grid;

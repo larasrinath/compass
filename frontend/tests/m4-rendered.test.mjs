@@ -29,6 +29,7 @@ const vite = await createServer({
   server: { hmr: false, middlewareMode: true },
 })
 const { CandidatesPage } = await vite.ssrLoadModule('/src/pages/CandidatesPage.tsx')
+const { CandidateDetailPage } = await vite.ssrLoadModule('/src/pages/CandidateDetailPage.tsx')
 const { EvidencePanel } = await vite.ssrLoadModule('/src/components/EvidencePanel.tsx')
 const { missingReasonCopy } = await vite.ssrLoadModule('/src/components/scoringCopy.ts')
 const { WeightsEditor } = await vite.ssrLoadModule('/src/components/WeightsEditor.tsx')
@@ -111,7 +112,7 @@ test('candidate-pool inspection records Gate A before ranking navigation', async
     if (path.startsWith('/api/searches?')) return json([{
       id: 'run', job_id: 'job', brief_id: 'brief', created_at: '2026-01-01T00:00:00Z',
       keywords: 'platform', location: null, network: ['F', 'S'], current_company: null,
-      status: 'completed', reference_count: 1, person_reference_count: 1,
+      status: 'ok', reference_count: 1, person_reference_count: 1,
       new_candidate_count: 1, existing_candidate_count: 0,
     }])
     if (path.startsWith('/api/candidate-pool?')) return json([])
@@ -132,6 +133,47 @@ test('candidate-pool inspection records Gate A before ranking navigation', async
   await user.keyboard('{Enter}')
   await waitFor(() => assert.equal(changed, true))
   assert.equal(gateBody.note, 'Candidate extraction and dedupe inspected.')
+})
+
+test('Gate A accepts only persisted eligible search outcomes', async () => {
+  const cases = [
+    ['ok', false, 'eligible persisted search result'],
+    ['partial', false, 'eligible persisted search result'],
+    ['rate_limited', false, 'eligible persisted search result'],
+    ['queued', true, 'queued searches have not started'],
+    ['running', true, 'running searches have not finished'],
+    ['failed', true, 'failed searches produced no eligible result'],
+    ['interrupted', true, 'interrupted searches did not persist an eligible result'],
+    ['cancelled', true, 'cancelled searches did not persist an eligible result'],
+  ]
+  for (const [status, disabled, explanation] of cases) {
+    globalThis.fetch = (input) => {
+      const path = String(input)
+      if (path.startsWith('/api/searches?')) return json([{
+        id: `run-${status}`, job_id: `job-${status}`, brief_id: 'brief',
+        created_at: '2026-01-01T00:00:00Z', keywords: status, location: null,
+        network: [], current_company: null, status, reference_count: 0,
+        person_reference_count: 0, new_candidate_count: 0,
+        existing_candidate_count: 0,
+      }])
+      if (path.startsWith('/api/candidate-pool?')) return json([])
+      throw new Error(`unexpected fetch ${path}`)
+    }
+    const rendered = render(wrapper(React.createElement(SearchPage, {
+      session: { id: 'session' }, brief: null, queue,
+      onCandidateOpen() {}, onGateAChanged() {},
+    })))
+    const button = await screen.findByRole('button', {
+      name: /Accept Gate A and unlock ranking/,
+    })
+    await waitFor(() => assert.equal(button.disabled, disabled))
+    assert.equal(
+      document.getElementById('gate-a-eligibility').textContent.includes(explanation),
+      true,
+    )
+    rendered.unmount()
+    cleanup()
+  }
 })
 
 test('ranked list distinguishes stage and both null-score forms without color', async () => {
@@ -181,6 +223,47 @@ test('ranked list distinguishes stage and both null-score forms without color', 
   await waitFor(() => assert.equal(lastUrl.includes('sort=confidence_desc'), true))
 })
 
+test('name sort ignores score nullability and uses stable id ties', async () => {
+  const ada = ranked({
+    id: 'ada-2', username: 'ada', display_name: 'Ada', score: null,
+    score_lower: null, score_upper: null, previous_score: null, delta: null,
+    confidence: 0, confidence_band: null, calculation_status: 'unknown',
+    top_signals: [],
+  })
+  const zoe = ranked({ id: 'zoe', username: 'zoe', display_name: 'Zoe' })
+  const adaTie = ranked({
+    id: 'ada-1', username: 'ada-one', display_name: 'Ada', score: null,
+    score_lower: null, score_upper: null, previous_score: null, delta: null,
+    confidence: 0, confidence_band: null, calculation_status: 'unknown',
+    top_signals: [],
+  })
+  globalThis.fetch = (input) => {
+    const path = String(input)
+    if (path.startsWith('/api/candidates?')) return json([zoe, ada, adaTie])
+    if (path === '/api/weights') return json(config)
+    throw new Error(`unexpected fetch ${path}`)
+  }
+  const user = userEvent.setup({ document: dom.window.document })
+  let opened = null
+  render(wrapper(React.createElement(CandidatesPage, {
+    session, verifiedEvidence: new Map(), onEvidenceReconciled() {},
+    onScoresChanged() {}, onCandidateOpen(id) { opened = id },
+  })))
+  await screen.findByText('Zoe')
+  await user.selectOptions(screen.getByLabelText('Sort order'), 'name_asc')
+  await waitFor(() => {
+    const cards = within(screen.getByLabelText('Ranked candidates')).getAllByRole('article')
+    assert.deepEqual(
+      cards.map((card) => card.querySelector('h3').textContent),
+      ['Ada', 'Ada', 'Zoe'],
+    )
+  })
+  const orderedButtons = within(screen.getByLabelText('Ranked candidates'))
+    .getAllByRole('button', { name: /Open evidence/ })
+  await user.click(orderedButtons[0])
+  assert.equal(opened, 'ada-1')
+})
+
 test('evidence opening and verification are separate; unknown and masked states are exact', async () => {
   const calls = []
   const signals = [{
@@ -227,10 +310,107 @@ test('evidence opening and verification are separate; unknown and masked states 
   evidence.focus()
   await user.keyboard('{Enter}')
   assert.deepEqual(calls, [['open', 'experience', 'e1']])
-  const verify = screen.getByRole('checkbox', { name: 'I verified this exact source span' })
+  const verify = screen.getByRole('checkbox', { name: /^I verified this exact source span for/ })
   verify.focus()
   await user.keyboard(' ')
   assert.deepEqual(calls[1], ['verify', 'e1', true])
+})
+
+test('ten evidence controls have unique accessible names and remain keyboard operable', async () => {
+  const calls = []
+  const evidence = Array.from({ length: 10 }, (_, index) => ({
+    id: `evidence-${index + 1}`,
+    section_name: index % 2 ? 'skills' : 'experience',
+    profile_section_id: `section-${index + 1}`,
+    span_start: index,
+    span_end: index + 1,
+    snippet: `Evidence ${index + 1}`,
+    matched_term: 'Platform',
+    matcher: 'exact',
+    polarity: 'supporting',
+    availability: { state: 'available' },
+  }))
+  const signals = [{
+    id: 'signal-ten', signal_id: 'S-1', label: 'Required skills',
+    rollup: 'matched', weight: 30, raw_subscore: 1, contribution: 30,
+    availability: 1, claims: [{
+      id: 'claim-ten', claim_key: 'required:platform', display_term: 'Platform',
+      verdict: 'matched', evidence, coverage: [], missing_sections: [],
+    }],
+  }]
+  const user = userEvent.setup({ document: dom.window.document })
+  render(React.createElement(EvidencePanel, {
+    signals, allInert: false, verifiedEvidenceIds: new Set(),
+    onEvidenceOpen() {},
+    onEvidenceVerified(id, checked) { calls.push([id, checked]) },
+  }))
+  const checkboxes = screen.getAllByRole('checkbox', {
+    name: /^I verified this exact source span for/,
+  })
+  assert.equal(checkboxes.length, 10)
+  assert.equal(new Set(checkboxes.map((checkbox) => checkbox.getAttribute('aria-label'))).size, 10)
+  assert.equal(screen.getAllByText('I verified this exact source span').length, 10)
+  checkboxes[9].focus()
+  await user.keyboard(' ')
+  assert.deepEqual(calls, [['evidence-10', true]])
+})
+
+test('backend scoring empty state replaces empty evidence while all-inert stays explicit', async () => {
+  const baseDetail = {
+    id: 'empty', username: 'empty', profile_url: '/in/empty',
+    display_name: 'Empty Candidate', profile_urn: null,
+    profile_urn_is_scored: false, profile_urn_quarantined: false,
+    profile_urn_routing_allowed: false, profile_contract_error: null,
+    stage: 'stage1', retrieval_status: 'ok', active_job_id: null,
+    available_sections: {}, fields: [], fetches: [], errors: [], score: null,
+    score_history: [], signals: [], non_scoring_hints: [],
+    scoring_empty_state: 'Backend says scoring input is unavailable.',
+  }
+  const inertDetail = {
+    ...baseDetail,
+    id: 'inert-detail',
+    username: 'inert',
+    display_name: 'Inert Candidate',
+    score: ranked({
+      id: 'inert-detail', username: 'inert', display_name: 'Inert Candidate',
+      score: null, score_lower: null, score_upper: null, previous_score: null,
+      delta: null, confidence: 0, confidence_band: 'low',
+      calculation_status: 'unknown', active_signal_count: 0,
+      all_inert_attested: true, top_signals: [],
+    }),
+    scoring_empty_state: 'This must not replace the all-inert explanation.',
+  }
+  globalThis.fetch = (input) => {
+    const path = String(input)
+    if (path === '/api/profile-sections') return json([])
+    if (path === '/api/candidates/empty') return json(baseDetail)
+    if (path === '/api/candidates/inert-detail') return json(inertDetail)
+    throw new Error(`unexpected fetch ${path}`)
+  }
+  const props = {
+    backDestination: 'candidates', onBack() {}, queue, rankingUnlocked: true,
+    sessionId: 'session', verifiedEvidence: new Map(), onEvidenceVerified() {},
+    onScoreInputsChanged() {},
+  }
+  const rendered = render(wrapper(React.createElement(CandidateDetailPage, {
+    ...props, candidateId: 'empty',
+  })))
+  await screen.findByText('Backend says scoring input is unavailable.')
+  assert.equal(screen.queryByRole('heading', { name: 'Why this score changed' }), null)
+
+  rendered.rerender(wrapper(React.createElement(CandidateDetailPage, {
+    ...props, candidateId: 'empty', rankingUnlocked: false,
+  })))
+  await waitFor(() => assert.equal(
+    screen.queryByText('Backend says scoring input is unavailable.'),
+    null,
+  ))
+
+  rendered.rerender(wrapper(React.createElement(CandidateDetailPage, {
+    ...props, candidateId: 'inert-detail',
+  })))
+  await screen.findByRole('heading', { name: 'No active scoring criteria' })
+  assert.equal(screen.queryByText('This must not replace the all-inert explanation.'), null)
 })
 
 test('Gate B posts only the separately verified exact evidence ids', async () => {

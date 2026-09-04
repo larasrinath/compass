@@ -10,7 +10,12 @@ import {
   runSearch,
   startCompanyLookup,
 } from '../api/client'
-import type { BriefRecord, SessionRecord } from '../api/client'
+import type {
+  BriefRecord,
+  SearchRun,
+  SearchRunStatus,
+  SessionRecord,
+} from '../api/client'
 import { QueueStatus } from '../components/QueueStatus'
 import type { ReturnTypeOfJobEvents } from '../hooks/useJobEvents'
 
@@ -19,6 +24,39 @@ const NETWORKS = [
   { value: 'S', label: '2nd-degree connections' },
   { value: 'O', label: '3rd-degree and beyond' },
 ] as const
+
+const GATE_A_ELIGIBLE_STATUSES = new Set<SearchRunStatus>([
+  'ok',
+  'partial',
+  'rate_limited',
+])
+
+function gateAEligibilityMessage(searchRuns: SearchRun[]): string {
+  if (searchRuns.some((run) => GATE_A_ELIGIBLE_STATUSES.has(run.status))) {
+    return 'An eligible persisted search result is ready for inspection.'
+  }
+  if (!searchRuns.length) {
+    return 'Gate A remains locked until a search persists an eligible result.'
+  }
+  const explanations: Record<
+    Exclude<SearchRunStatus, 'ok' | 'partial' | 'rate_limited'>,
+    string
+  > = {
+    queued: 'queued searches have not started',
+    running: 'running searches have not finished',
+    failed: 'failed searches produced no eligible result',
+    interrupted: 'interrupted searches did not persist an eligible result',
+    cancelled: 'cancelled searches did not persist an eligible result',
+  }
+  const reasons = [
+    ...new Set(
+      searchRuns.map(
+        (run) => explanations[run.status as keyof typeof explanations],
+      ),
+    ),
+  ]
+  return `Gate A remains locked: ${reasons.join('; ')}. Eligible persisted statuses are ok, partial, or rate limited.`
+}
 
 export function SearchPage({
   session,
@@ -115,6 +153,10 @@ export function SearchPage({
     },
     onError: () => requestAnimationFrame(() => errorRef.current?.focus()),
   })
+  const gateAEligible = Boolean(
+    runs.data?.some((run) => GATE_A_ELIGIBLE_STATUSES.has(run.status)),
+  )
+  const gateAEligibility = gateAEligibilityMessage(runs.data ?? [])
 
   function queuePosition(jobId: string): string | null {
     const job = queue.jobs.find((item) => item.id === jobId)
@@ -529,17 +571,16 @@ export function SearchPage({
                 />
               </label>
               <button
+                aria-describedby="gate-a-eligibility"
                 className="primary-action"
-                disabled={
-                  gateA.isPending ||
-                  !runs.data?.some((run) =>
-                    !['queued', 'running'].includes(run.status),
-                  )
-                }
+                disabled={gateA.isPending || !gateAEligible}
                 type="submit"
               >
                 {gateA.isPending ? 'Recording…' : 'Accept Gate A and unlock ranking'}
               </button>
+              <p id="gate-a-eligibility" role="status">
+                {gateAEligibility}
+              </p>
               {gateA.isError ? (
                 <p className="field-error" role="alert">
                   {gateA.error.message}
