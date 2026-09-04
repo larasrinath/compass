@@ -86,11 +86,23 @@ the then-current ≥90% threshold. These sanitized records disclose neither
 profile identities nor raw profile text. The separately reported 89.81% was
 parser-output completeness, not manually annotated accuracy.
 
-This does **not** accept M3 yet. A final sanitized live run of exact parser
-replacement build `d751b79022ef433e18747cd6335c526d6480733f` over all three
-authorized real profiles, with manual annotation proving strictly >85%
-both-correct title-and-company accuracy, is the **sole remaining M3 acceptance
-gate**.
+**M3 accepted by the operator 2026-09-03.** Sanitized live acceptance on exact
+tested build `28c2b8af922a74ffd53eccc6336a999103dfaa6a` covered all three
+authorized real profiles. Manual annotation found **19/21 experience blocks
+both-correct for title and company: 90.4762%**, which passes the strictly >85%
+gate. Exactly one Stage-1 queue job ran for each profile (3/3); verbatim
+`main_profile` plus `experience` storage passed for each profile (3/3); and
+raw-before-parse ordering, provenance, URN-if-present handling, and exact-span
+checks passed. Forbidden send, search, and draft operation counts were zero.
+The raw acceptance database and artifacts were purged after recording the
+sanitized result and evidence digest. The evidence artifact SHA-256 is
+`12c0a5f0ed92fa7e8ad71c7ce21aa25b15b095336f00f15a46a6a1c084b9e6ce`.
+Profile identities and raw profile text are intentionally omitted.
+
+The two non-both-correct blocks were grouped-parent layouts. They remain a
+known, non-blocking parser limitation and are included in the 21-block
+denominator. M3 acceptance satisfies the M4 entry gate, so **M4 is unblocked
+but has not started**.
 
 ### Invariants locked
 
@@ -1740,11 +1752,11 @@ operator acceptance of this milestone.
 
 ### M3 — Retrieval and parsing
 
-**Acceptance status (2026-09-03):** sanitized live Stage-1 retrieval evidence
-passes on two profiles. Historical manually annotated parser runs failed their
-then-current ≥90% gate. M3 remains unaccepted pending the sole remaining gate:
-manual annotation on all three authorized real profiles must confirm strictly
->85% both-correct title-and-company accuracy across experience blocks (see
+**Acceptance status (2026-09-03): ACCEPTED.** Exact tested build
+`28c2b8af922a74ffd53eccc6336a999103dfaa6a` passed the authorized three-profile
+live gate with 19/21 manually annotated experience blocks both-correct for
+title and company (90.4762%, strictly >85%). The two grouped-parent misses are
+a recorded non-blocking limitation. M4 is unblocked but has not started (see
 §1a).
 
 **T-3.1 · Stage-1 enrichment**

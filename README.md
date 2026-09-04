@@ -90,15 +90,29 @@ stored 4/4 required sections verbatim, passed URN-if-present handling 2/2, and
 recorded zero forbidden send, search, or draft operations. The evidence
 artifact SHA-256 is
 `284ee3635b3c2c28a67fe77350ab9c3e6dc9ed92f6ee76f7d0db925e5add5b61`;
-profile names and raw data are intentionally omitted. M3 is not yet accepted:
-the manually annotated both-correct results of 70.5882% on exact build
+profile names and raw data are intentionally omitted. The manually annotated
+both-correct results of 70.5882% on exact build
 `e3240dc42f0158b6f5a7dfb9cbe0cb2eaf42eaf3` and 88.2353% on build `944cd55`
 were historical failures under the then-current ≥90% threshold. The separately
 reported 89.81% was parser-output completeness, not manually annotated
-accuracy. A sanitized final run of exact parser replacement build
-`d751b79022ef433e18747cd6335c526d6480733f` across all three authorized real
-profiles, manually annotated at strictly >85% both-correct title-and-company
-accuracy, remains the sole M3 acceptance gate.
+accuracy.
+
+**M3 was accepted by the operator on 2026-09-03.** Sanitized live acceptance on
+exact tested build `28c2b8af922a74ffd53eccc6336a999103dfaa6a` covered all three
+authorized real profiles. Manual annotation found 19/21 experience blocks
+both-correct for title and company (90.4762%), passing the strictly >85% gate.
+Exactly one Stage-1 queue job ran per profile (3/3), verbatim `main_profile`
+plus `experience` storage passed 3/3, and raw-before-parse ordering,
+provenance, URN-if-present handling, and exact-span checks passed. Forbidden
+send, search, and draft operation counts were zero. The raw acceptance database
+and artifacts were purged after recording the sanitized result and evidence
+digest. The evidence artifact SHA-256 is
+`12c0a5f0ed92fa7e8ad71c7ce21aa25b15b095336f00f15a46a6a1c084b9e6ce`;
+profile identities and raw data remain omitted.
+
+The two non-both-correct blocks were grouped-parent layouts and remain a known,
+non-blocking parser limitation included in the 21-block denominator. M3
+acceptance unblocks M4; no M4 work has started.
 
 ## Prerequisites
 
