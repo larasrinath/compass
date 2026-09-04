@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 
@@ -8,6 +9,9 @@ import React from 'react'
 import { createServer } from 'vite'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
+const canonicalRanking = JSON.parse(readFileSync(
+  new URL('./fixtures/canonical-ranking.json', import.meta.url), 'utf8',
+))
 const dom = new JSDOM('<!doctype html><html><body></body></html>', {
   url: 'http://127.0.0.1:5173',
 })
@@ -223,46 +227,69 @@ test('ranked list distinguishes stage and both null-score forms without color', 
   await waitFor(() => assert.equal(lastUrl.includes('sort=confidence_desc'), true))
 })
 
-test('name sort ignores score nullability and uses stable id ties', async () => {
-  const ada = ranked({
-    id: 'ada-2', username: 'ada', display_name: 'Ada', score: null,
-    score_lower: null, score_upper: null, previous_score: null, delta: null,
-    confidence: 0, confidence_band: null, calculation_status: 'unknown',
-    top_signals: [],
+for (const [sort, expectedIds] of Object.entries(canonicalRanking.orders)) {
+  test(`ranked list preserves canonical API ${sort} order and filter controls`, async () => {
+    const records = canonicalRanking.candidates.map((candidate) => ranked({
+      ...candidate,
+      score_id: `score-${candidate.id}`, input_fingerprint: `input-${candidate.id}`,
+      score_lower: candidate.score, score_upper: candidate.score,
+      previous_score: null, delta: null,
+      confidence_band: candidate.score === null
+        ? candidate.all_inert_attested ? 'low' : null
+        : candidate.confidence >= 0.8 ? 'high' : 'medium',
+      calculation_status: candidate.score === null ? 'unknown' : 'scored',
+      top_signals: [],
+    }))
+    let lastQuery = null
+    globalThis.fetch = (input) => {
+      const url = new URL(String(input), 'http://localhost')
+      if (url.pathname === '/api/candidates') {
+        lastQuery = Object.fromEntries(url.searchParams)
+        const ids = canonicalRanking.orders[lastQuery.sort]
+        return json(ids.map((id) => records.find((row) => row.id === id)).filter((row) =>
+          (!lastQuery.stage || row.stage === lastQuery.stage) &&
+          (!lastQuery.confidence || row.confidence_band === lastQuery.confidence) &&
+          (!lastQuery.min_score || row.score !== null && row.score >= Number(lastQuery.min_score)),
+        ))
+      }
+      if (url.pathname === '/api/weights') return json(config)
+      throw new Error(`unexpected fetch ${url}`)
+    }
+    const user = userEvent.setup({ document: dom.window.document })
+    const opened = []
+    render(wrapper(React.createElement(CandidatesPage, {
+      session, verifiedEvidence: new Map(), onEvidenceReconciled() {},
+      onScoresChanged() {}, onCandidateOpen(id) { opened.push(id) },
+    })))
+    await screen.findByLabelText('Ranked candidates')
+    await user.selectOptions(screen.getByLabelText('Sort order'), sort)
+    await waitFor(() => {
+      assert.equal(lastQuery.sort, sort)
+      const cards = within(screen.getByLabelText('Ranked candidates')).getAllByRole('article')
+      assert.deepEqual(
+        cards.map((card) => card.querySelector('h3').textContent),
+        expectedIds.map((id) => {
+          const row = records.find((candidate) => candidate.id === id)
+          return row.display_name ?? row.username
+        }),
+      )
+    })
+    for (const button of within(screen.getByLabelText('Ranked candidates'))
+      .getAllByRole('button', { name: /Open evidence/ })) await user.click(button)
+    assert.deepEqual(opened, expectedIds, 'evidence actions retain each ordered candidate identity')
+
+    await user.selectOptions(screen.getByLabelText('Retrieval stage'), 'enriched')
+    await user.selectOptions(screen.getByLabelText('Confidence', { exact: true }), 'high')
+    await user.type(screen.getByLabelText('Minimum numeric score'), '80')
+    await waitFor(() => {
+      assert.deepEqual(lastQuery, {
+        session_id: 'session', stage: 'enriched', min_score: '80', confidence: 'high', sort,
+      })
+      const cards = within(screen.getByLabelText('Ranked candidates')).getAllByRole('article')
+      assert.deepEqual(cards.map((card) => card.querySelector('h3').textContent), ['ada', 'ß'])
+    })
   })
-  const zoe = ranked({ id: 'zoe', username: 'zoe', display_name: 'Zoe' })
-  const adaTie = ranked({
-    id: 'ada-1', username: 'ada-one', display_name: 'Ada', score: null,
-    score_lower: null, score_upper: null, previous_score: null, delta: null,
-    confidence: 0, confidence_band: null, calculation_status: 'unknown',
-    top_signals: [],
-  })
-  globalThis.fetch = (input) => {
-    const path = String(input)
-    if (path.startsWith('/api/candidates?')) return json([zoe, ada, adaTie])
-    if (path === '/api/weights') return json(config)
-    throw new Error(`unexpected fetch ${path}`)
-  }
-  const user = userEvent.setup({ document: dom.window.document })
-  let opened = null
-  render(wrapper(React.createElement(CandidatesPage, {
-    session, verifiedEvidence: new Map(), onEvidenceReconciled() {},
-    onScoresChanged() {}, onCandidateOpen(id) { opened = id },
-  })))
-  await screen.findByText('Zoe')
-  await user.selectOptions(screen.getByLabelText('Sort order'), 'name_asc')
-  await waitFor(() => {
-    const cards = within(screen.getByLabelText('Ranked candidates')).getAllByRole('article')
-    assert.deepEqual(
-      cards.map((card) => card.querySelector('h3').textContent),
-      ['Ada', 'Ada', 'Zoe'],
-    )
-  })
-  const orderedButtons = within(screen.getByLabelText('Ranked candidates'))
-    .getAllByRole('button', { name: /Open evidence/ })
-  await user.click(orderedButtons[0])
-  assert.equal(opened, 'ada-1')
-})
+}
 
 test('evidence opening and verification are separate; unknown and masked states are exact', async () => {
   const calls = []

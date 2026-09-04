@@ -1,0 +1,20 @@
+{
+  "description": "Frozen API order from scoring._sort_ranked_records: score/confidence ties, Unicode casefold names, null names last for name sort, and both null-score forms last for numeric sorts. Expected orders are explicit, never computed by a browser comparator.",
+  "candidates": [
+    { "id": "candidate-01", "display_name": "Ada", "username": "ada-upper", "score": 80, "confidence": 0.8, "stage": "provisional" },
+    { "id": "candidate-02", "display_name": "ada", "username": "ada-lower", "score": 90, "confidence": 0.8, "stage": "enriched" },
+    { "id": "candidate-03", "display_name": "SS", "username": "ss-upper", "score": 90, "confidence": 0.8, "stage": "provisional" },
+    { "id": "candidate-04", "display_name": "ß", "username": "sharp-s", "score": 90, "confidence": 0.8, "stage": "enriched" },
+    { "id": "candidate-05", "display_name": "Åke", "username": "ake", "score": 75, "confidence": 0.9, "stage": "enriched" },
+    { "id": "candidate-06", "display_name": "Zoe", "username": "zoe-upper", "score": 75, "confidence": 0.7, "stage": "provisional" },
+    { "id": "candidate-07", "display_name": null, "username": "aaron", "score": 85, "confidence": 0.8, "stage": "provisional" },
+    { "id": "candidate-08", "display_name": "Aaron", "username": "aaron-unknown", "score": null, "confidence": 0, "stage": "enriched" },
+    { "id": "candidate-09", "display_name": null, "username": "amy", "score": null, "confidence": 0, "stage": "enriched", "active_signal_count": 0, "all_inert_attested": true },
+    { "id": "candidate-10", "display_name": "zoe", "username": "zoe-lower", "score": 75, "confidence": 0.7, "stage": "provisional" }
+  ],
+  "orders": {
+    "score_desc": ["candidate-02", "candidate-03", "candidate-04", "candidate-07", "candidate-01", "candidate-05", "candidate-06", "candidate-10", "candidate-08", "candidate-09"],
+    "confidence_desc": ["candidate-05", "candidate-02", "candidate-03", "candidate-04", "candidate-07", "candidate-01", "candidate-06", "candidate-10", "candidate-08", "candidate-09"],
+    "name_asc": ["candidate-08", "candidate-01", "candidate-02", "candidate-03", "candidate-04", "candidate-06", "candidate-10", "candidate-05", "candidate-07", "candidate-09"]
+  }
+}

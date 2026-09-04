@@ -83,7 +83,8 @@ export function CandidatesPage({
     mutationFn: () => acceptPhaseGateB([...eligibleEvidence.keys()], gateNote),
     onSuccess: async () => client.invalidateQueries({ queryKey: ['session'] }),
   })
-  const orderedCandidates = orderCandidates(candidates.data ?? [], sort)
+  // The API owns the canonical ordering, including score ties and Unicode names.
+  const orderedCandidates = candidates.data ?? []
 
   if (!session.phase_gates?.A) {
     return (
@@ -105,7 +106,7 @@ export function CandidatesPage({
           <h1 id="ranked-title">Compare explainable matches.</h1>
           <p>
             Scores summarize only retrieved sections against your saved role brief.
-            Unknown evidence stays unknown and always sorts after numeric results.
+            Unknown evidence stays unknown and sorts after numeric results when ranking by score or confidence.
           </p>
         </div>
         <div className="version-card">
@@ -219,33 +220,4 @@ export function CandidatesPage({
       </section>
     </section>
   )
-}
-
-function orderCandidates<T extends {
-  id: string
-  display_name: string | null
-  username?: string
-  score: number | null
-  confidence: number
-}>(candidates: T[], sort: string): T[] {
-  return [...candidates].sort((left, right) => {
-    if (sort === 'name_asc') {
-      const leftName = left.display_name ?? left.username ?? ''
-      const rightName = right.display_name ?? right.username ?? ''
-      const byName = leftName.localeCompare(rightName)
-      return byName || left.id.localeCompare(right.id)
-    }
-    if (left.score === null && right.score !== null) return 1
-    if (left.score !== null && right.score === null) return -1
-    if (sort === 'confidence_desc') {
-      const byConfidence = right.confidence - left.confidence
-      if (byConfidence !== 0) return byConfidence
-    } else if (left.score !== null && right.score !== null) {
-      const byScore = right.score - left.score
-      if (byScore !== 0) return byScore
-      const byConfidence = right.confidence - left.confidence
-      if (byConfidence !== 0) return byConfidence
-    }
-    return left.id.localeCompare(right.id)
-  })
 }

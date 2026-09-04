@@ -761,6 +761,7 @@ footer strong {
   font-weight: 800;
   text-transform: capitalize;
 }
+.verdict-symbol.unknown { text-transform: none; }
 .verdict-symbol.not_matched,
 .verdict-symbol.unknown { text-decoration: underline dotted; text-underline-offset: 3px; }
 .signal-claims,

@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import canonicalRanking from '../tests/fixtures/canonical-ranking.json' with { type: 'json' }
 
 const filler = Array.from({ length: 180 }, (_, index) => `experience line ${index}`).join('\n')
 const rawText = `${filler}\n🚀 Alpha first\nmore context\n🚀 Alpha target evidence`
@@ -234,6 +235,78 @@ test('detail routes survive reload and participate in browser history', async ({
   await expect(page).toHaveURL(/\/candidates$/)
   await page.goBack()
   await expect(page).toHaveURL(/\/candidates\/candidate-1$/)
+})
+
+for (const [sort, expectedIds] of Object.entries(canonicalRanking.orders)) {
+  test(`Chrome preserves canonical API ${sort} ranking across ties and nulls`, async ({ page }) => {
+    await mockApi(page, true)
+    const records = canonicalRanking.candidates.map((candidate) => ({
+      ...score, ...candidate,
+      score_id: `score-${candidate.id}`, input_fingerprint: `input-${candidate.id}`,
+      score_lower: candidate.score, score_upper: candidate.score,
+      previous_score: null, delta: null,
+      confidence_band: candidate.score === null
+        ? candidate.all_inert_attested ? 'low' : null
+        : candidate.confidence >= 0.8 ? 'high' : 'medium',
+      calculation_status: candidate.score === null ? 'unknown' : 'scored',
+      top_signals: [],
+    }))
+    let requestedSort: string | null = null
+    await page.route(/\/api\/candidates\?/, async (route) => {
+      requestedSort = new URL(route.request().url()).searchParams.get('sort')
+      const ids = canonicalRanking.orders[requestedSort as keyof typeof canonicalRanking.orders]
+      await route.fulfill({
+        status: 200, contentType: 'application/json',
+        body: JSON.stringify(ids.map((id) => records.find((row) => row.id === id))),
+      })
+    })
+    await page.goto('/candidates')
+    await expect(page.getByLabel('Ranked candidates')).toBeVisible()
+    await page.getByLabel('Sort order').selectOption(sort)
+    await expect.poll(() => requestedSort).toBe(sort)
+    await expect(page.locator('.ranked-candidate h3')).toHaveText(expectedIds.map((id) => {
+      const row = records.find((candidate) => candidate.id === id)!
+      return row.display_name ?? row.username
+    }))
+  })
+}
+
+test('Chrome renders unknown claim and signal verdicts in exact lowercase', async ({ page, browser }, testInfo) => {
+  await mockApi(page, true, false, {
+    ...detail,
+    signals: [signals[0], {
+      ...signals[0], id: 'signal-unknown', signal_id: 'S-2', label: 'Optional skills',
+      rollup: 'unknown', raw_subscore: 0, contribution: 0, availability: 0,
+      claims: [{ ...signals[0].claims[1], id: 'claim-unknown-optional' }],
+    }],
+  })
+  await page.goto('/candidates/candidate-1')
+  const unknown = page.locator('.verdict-symbol.unknown')
+  await expect(unknown).toHaveCount(3)
+  for (const verdict of await unknown.all()) {
+    await expect(verdict).toBeVisible()
+    await expect(verdict).toHaveCSS('text-transform', 'none')
+    // innerText reflects Chrome's CSS text transformation; textContent does not.
+    expect(await verdict.innerText()).toBe('? not found in the retrieved data')
+  }
+  const unknownClaim = page.locator('.claim-card.unknown').first()
+  const absentClaim = page.locator('.claim-card.not_matched')
+  await expect(unknownClaim).toHaveCSS('border-left-style', 'dashed')
+  await expect(absentClaim).toHaveCSS('border-left-style', 'solid')
+  await expect(absentClaim.locator('.verdict-symbol')).toContainText('○ not matched')
+  const rendering = await unknown.evaluateAll((elements) => elements.map((element) => ({
+    context: element.closest('table') ? 'signal' : 'claim',
+    textContent: element.textContent,
+    renderedText: (element as HTMLElement).innerText,
+    textTransform: getComputedStyle(element).textTransform,
+  })))
+  await testInfo.attach('unknown-rendered-copy', {
+    body: JSON.stringify({ browserVersion: browser.version(), verdicts: rendering }, null, 2),
+    contentType: 'application/json',
+  })
+  await page.screenshot({
+    path: testInfo.outputPath('unknown-lowercase.png'), fullPage: true,
+  })
 })
 
 test('keyboard evidence flow scrolls the actual far-down astral mark and keeps focus', async ({ page }) => {
