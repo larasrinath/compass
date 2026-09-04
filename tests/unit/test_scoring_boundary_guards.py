@@ -19,6 +19,7 @@ from linkedin_dashboard.db.migrations import (
     v0025_m4_semantic_integrity,
     v0026_m4_manifest_convergence,
     v0027_m4_bounded_manifests,
+    v0028_m4_text_storage,
 )
 from linkedin_dashboard.db.models import (
     BriefCredential,
@@ -147,6 +148,8 @@ def _profile_result(**sections: str) -> dict[str, Any]:
 
 
 def _downgrade_v25_schema_to_v24(connection: sqlite3.Connection) -> None:
+    for name in v0028_m4_text_storage.TRIGGER_NAMES:
+        connection.execute(f'DROP TRIGGER "{name}"')
     for name in v0027_m4_bounded_manifests.TRIGGER_NAMES:
         connection.execute(f'DROP TRIGGER "{name}"')
     for name in (
@@ -176,11 +179,12 @@ def _downgrade_v25_schema_to_v24(connection: sqlite3.Connection) -> None:
         )
     )
     connection.execute(
-        "DELETE FROM schema_migration WHERE version IN (?,?,?)",
+        "DELETE FROM schema_migration WHERE version IN (?,?,?,?)",
         (
             v0025_m4_semantic_integrity.VERSION,
             v0026_m4_manifest_convergence.VERSION,
             v0027_m4_bounded_manifests.VERSION,
+            v0028_m4_text_storage.VERSION,
         ),
     )
 

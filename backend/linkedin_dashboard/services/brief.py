@@ -85,6 +85,8 @@ def _clean_terms(values: tuple[TermValue, ...]) -> tuple[TermValue, ...]:
     displays: dict[str, set[str]] = {}
     aliases: dict[str, dict[str, str]] = {}
     for item in values:
+        if type(item.term) is not str:
+            raise ValueError("brief terms must be strings")
         if "\x00" in item.term:
             raise ValueError("brief terms cannot contain NUL")
         term = " ".join(item.term.strip().split())
@@ -94,6 +96,8 @@ def _clean_terms(values: tuple[TermValue, ...]) -> tuple[TermValue, ...]:
         displays.setdefault(key, set()).add(term)
         owned_aliases = aliases.setdefault(key, {})
         for raw_alias in item.aliases:
+            if type(raw_alias) is not str:
+                raise ValueError("brief aliases must be strings")
             if "\x00" in raw_alias:
                 raise ValueError("brief aliases cannot contain NUL")
             alias = " ".join(raw_alias.strip().split())
@@ -128,6 +132,8 @@ def _clean_strings(values: tuple[str, ...]) -> tuple[str, ...]:
     result: list[str] = []
     seen: set[str] = set()
     for value in values:
+        if type(value) is not str:
+            raise ValueError("brief text values must be strings")
         if "\x00" in value:
             raise ValueError("brief text cannot contain NUL")
         cleaned = value.strip()
@@ -139,6 +145,11 @@ def _clean_strings(values: tuple[str, ...]) -> tuple[str, ...]:
 
 
 def normalize_brief(value: BriefValue) -> BriefValue:
+    if not all(
+        type(text) is str
+        for text in (value.job_description, value.location, value.message_tone)
+    ):
+        raise ValueError("brief text fields must be strings")
     if any(
         "\x00" in text
         for text in (value.job_description, value.location, value.message_tone)

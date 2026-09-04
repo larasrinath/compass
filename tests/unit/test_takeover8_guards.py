@@ -19,6 +19,7 @@ from linkedin_dashboard.db.migrations import (
     v0025_m4_semantic_integrity,
     v0026_m4_manifest_convergence,
     v0027_m4_bounded_manifests,
+    v0028_m4_text_storage,
 )
 from linkedin_dashboard.db.session import Database
 from linkedin_dashboard.db.unicode_identity import register_sqlite_unicode_casefold
@@ -313,7 +314,7 @@ def test_migrated_v22_score_signal_is_immutable_until_session_purge(
     legacy = Database(path)
     try:
         with monkeypatch.context() as patch:
-            patch.setattr(db_session, "_MIGRATION_MODULES", modules[:-5])
+            patch.setattr(db_session, "_MIGRATION_MODULES", modules[:-6])
             legacy.initialize()
             with legacy.engine.begin() as connection:
                 connection.exec_driver_sql(
@@ -425,7 +426,7 @@ def _initialize_v23_database(
     database = Database(path)
     try:
         with monkeypatch.context() as patch:
-            patch.setattr(db_session, "_MIGRATION_MODULES", modules[:-4])
+            patch.setattr(db_session, "_MIGRATION_MODULES", modules[:-5])
             database.initialize()
             if populated:
                 with database.engine.begin() as connection:
@@ -574,7 +575,7 @@ def test_exact_v23_database_upgrades_through_v25_without_data_loss(
     with _maintenance_connect(path) as connection:
         assert connection.execute(
             "SELECT count(*) FROM schema_migration"
-        ).fetchone() == (27,)
+        ).fetchone() == (28,)
         assert connection.execute(
             "SELECT 1 FROM schema_migration WHERE version=?",
             (v0024_m4_integrity_upgrade.VERSION,),
@@ -688,7 +689,7 @@ def _initialize_exact_v24_database(
     database = Database(path)
     try:
         with monkeypatch.context() as patch:
-            patch.setattr(db_session, "_MIGRATION_MODULES", modules[:-3])
+            patch.setattr(db_session, "_MIGRATION_MODULES", modules[:-4])
             database.initialize()
             with database.engine.connect() as connection:
                 assert (
@@ -741,7 +742,7 @@ def test_exact_v24_database_upgrades_to_v25_atomically(
     with _maintenance_connect(path) as connection:
         assert connection.execute(
             "SELECT count(*) FROM schema_migration"
-        ).fetchone() == (27,)
+        ).fetchone() == (28,)
         assert connection.execute(
             "SELECT 1 FROM schema_migration WHERE version=?",
             (v0025_m4_semantic_integrity.VERSION,),
@@ -929,7 +930,7 @@ def test_v25_preflights_unsealed_briefs_without_rewriting(
     failed = Database(path)
     try:
         with monkeypatch.context() as patch:
-            patch.setattr(db_session, "_MIGRATION_MODULES", modules[:-2])
+            patch.setattr(db_session, "_MIGRATION_MODULES", modules[:-3])
             with pytest.raises(RuntimeError, match="invalid scoring sources"):
                 failed.initialize()
     finally:
@@ -1007,6 +1008,12 @@ def test_exact_v26_history_receives_v27_without_data_loss(tmp_path: Path) -> Non
     database.initialize()
     database.dispose()
     with _maintenance_connect(path) as connection:
+        connection.execute(
+            "DELETE FROM schema_migration WHERE version=?",
+            (v0028_m4_text_storage.VERSION,),
+        )
+        for name in v0028_m4_text_storage.TRIGGER_NAMES:
+            connection.execute(f'DROP TRIGGER "{name}"')
         connection.execute(
             "DELETE FROM schema_migration WHERE version=?",
             (v0027_m4_bounded_manifests.VERSION,),
@@ -1096,7 +1103,7 @@ def _initialize_rejected_v25_database(
     database = Database(path)
     try:
         with monkeypatch.context() as patch:
-            patch.setattr(db_session, "_MIGRATION_MODULES", modules[:-2])
+            patch.setattr(db_session, "_MIGRATION_MODULES", modules[:-3])
             database.initialize()
             with database.engine.connect() as connection:
                 assert (
@@ -1173,7 +1180,7 @@ def test_v26_converges_recorded_rejected_v25_database(
     with _maintenance_connect(path) as connection:
         assert connection.execute(
             "SELECT count(*) FROM schema_migration"
-        ).fetchone() == (27,)
+        ).fetchone() == (28,)
         manifest = json.loads(
             connection.execute(
                 "SELECT scoring_inputs FROM role_brief WHERE id='v23-brief'"

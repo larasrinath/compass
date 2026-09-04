@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict, Field, StrictInt
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
 from sqlalchemy import select
 
 from linkedin_dashboard.api._filters import (
@@ -53,8 +53,8 @@ class SessionRecord(BaseModel):
 class BriefTermInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    term: str = Field(max_length=160)
-    aliases: list[Annotated[str, Field(max_length=160)]] = Field(
+    term: StrictStr = Field(max_length=160)
+    aliases: list[Annotated[StrictStr, Field(max_length=160)]] = Field(
         default_factory=list, max_length=30
     )
 
@@ -67,7 +67,7 @@ class BriefInput(BaseModel):
     required_skills: list[BriefTermInput] = Field(default_factory=list, max_length=100)
     optional_skills: list[BriefTermInput] = Field(default_factory=list, max_length=100)
     target_titles: list[BriefTermInput] = Field(default_factory=list, max_length=100)
-    location: str = Field(default="", max_length=240)
+    location: StrictStr = Field(default="", max_length=240)
     industries: list[BriefTermInput] = Field(default_factory=list, max_length=100)
     positive_keywords: list[Annotated[str, Field(max_length=160)]] = Field(
         default_factory=list, max_length=100
