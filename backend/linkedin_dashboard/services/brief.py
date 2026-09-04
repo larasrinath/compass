@@ -82,32 +82,54 @@ class ProtectedTermError(ValueError):
 
 
 def _clean_terms(values: tuple[TermValue, ...]) -> tuple[TermValue, ...]:
-    result: list[TermValue] = []
-    seen: set[str] = set()
+    displays: dict[str, set[str]] = {}
+    aliases: dict[str, dict[str, str]] = {}
     for item in values:
-        term = item.term.strip()
-        if not term:
-            continue
+        if "\x00" in item.term:
+            raise ValueError("brief terms cannot contain NUL")
+        term = " ".join(item.term.strip().split())
         key = normalize_text(term)
-        if key in seen:
+        if not key:
             continue
-        seen.add(key)
-        aliases: list[str] = []
-        alias_seen = {key}
+        displays.setdefault(key, set()).add(term)
+        owned_aliases = aliases.setdefault(key, {})
         for raw_alias in item.aliases:
-            alias = raw_alias.strip()
+            if "\x00" in raw_alias:
+                raise ValueError("brief aliases cannot contain NUL")
+            alias = " ".join(raw_alias.strip().split())
             alias_key = normalize_text(alias)
-            if alias and alias_key not in alias_seen:
-                alias_seen.add(alias_key)
-                aliases.append(alias)
-        result.append(TermValue(term=term, aliases=tuple(aliases)))
-    return tuple(result)
+            if not alias_key or alias_key == key:
+                continue
+            previous = owned_aliases.get(alias_key)
+            if previous is None or alias < previous:
+                owned_aliases[alias_key] = alias
+
+    primary_keys = set(displays)
+    alias_owners: dict[str, str] = {}
+    for owner in sorted(aliases):
+        for alias_key in aliases[owner]:
+            if alias_key in primary_keys:
+                raise ValueError("an alias cannot equal another primary term")
+            previous = alias_owners.get(alias_key)
+            if previous is not None and previous != owner:
+                raise ValueError("an alias cannot belong to multiple primary terms")
+            alias_owners[alias_key] = owner
+
+    return tuple(
+        TermValue(
+            term=min(displays[key]),
+            aliases=tuple(aliases[key][alias] for alias in sorted(aliases[key])),
+        )
+        for key in sorted(displays)
+    )
 
 
 def _clean_strings(values: tuple[str, ...]) -> tuple[str, ...]:
     result: list[str] = []
     seen: set[str] = set()
     for value in values:
+        if "\x00" in value:
+            raise ValueError("brief text cannot contain NUL")
         cleaned = value.strip()
         key = normalize_text(cleaned)
         if cleaned and key not in seen:
@@ -117,6 +139,11 @@ def _clean_strings(values: tuple[str, ...]) -> tuple[str, ...]:
 
 
 def normalize_brief(value: BriefValue) -> BriefValue:
+    if any(
+        "\x00" in text
+        for text in (value.job_description, value.location, value.message_tone)
+    ):
+        raise ValueError("brief text cannot contain NUL")
     normalized = BriefValue(
         job_description=value.job_description.strip(),
         required_skills=_clean_terms(value.required_skills),

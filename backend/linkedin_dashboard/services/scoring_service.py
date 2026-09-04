@@ -267,6 +267,9 @@ class ScoringService:
             if session_id is None:
                 dashboard_session = session.scalar(
                     select(DashboardSession)
+                    .where(
+                        DashboardSession.id != "00000000-0000-0000-0000-000000000000"
+                    )
                     .order_by(
                         DashboardSession.created_at.desc(), DashboardSession.id.desc()
                     )

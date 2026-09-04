@@ -802,7 +802,17 @@ def test_exact_v24_database_upgrades_to_v25_atomically(
                 ).fetchone() == (0,)
 
 
-@pytest.mark.parametrize("defect", ("whitespace_term", "aliases_object", "alias_owner"))
+@pytest.mark.parametrize(
+    "defect",
+    (
+        "whitespace_term",
+        "aliases_object",
+        "alias_owner",
+        "nul_term",
+        "nul_alias",
+        "nul_location",
+    ),
+)
 def test_v25_rejects_every_invalid_v24_brief_source_without_rewriting(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, defect: str
 ) -> None:
@@ -813,6 +823,10 @@ def test_v25_rejects_every_invalid_v24_brief_source_without_rewriting(
             "SELECT sql FROM sqlite_master WHERE type='trigger' "
             "AND name='brief_skill_is_immutable'"
         ).fetchone()[0]
+        brief_immutable_sql = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='trigger' "
+            "AND name='role_brief_append_only'"
+        ).fetchone()[0]
         connection.execute("DROP TRIGGER brief_skill_is_immutable")
         if defect == "whitespace_term":
             connection.execute(
@@ -822,15 +836,35 @@ def test_v25_rejects_every_invalid_v24_brief_source_without_rewriting(
             connection.execute(
                 "UPDATE brief_skill SET aliases='{}' WHERE id='v23-skill-python'"
             )
-        else:
+        elif defect == "alias_owner":
             connection.execute(
                 "UPDATE brief_skill SET aliases=? WHERE id='v23-skill-go'",
                 (json.dumps(["\uff33\uff28\uff21\uff32\uff25\uff24"]),),
             )
+        elif defect == "nul_term":
+            connection.execute(
+                "UPDATE brief_skill SET term=? WHERE id='v23-skill-python'",
+                ("Py\x00" + "x" * 1_000,),
+            )
+        elif defect == "nul_alias":
+            connection.execute(
+                "UPDATE brief_skill SET aliases=? WHERE id='v23-skill-python'",
+                (json.dumps(["Py\x00" + "x" * 1_000]),),
+            )
+        else:
+            connection.execute("DROP TRIGGER role_brief_append_only")
+            connection.execute(
+                "UPDATE role_brief SET location=? WHERE id='v23-brief'",
+                ("Austin\x00" + "x" * 1_000,),
+            )
+            connection.execute(brief_immutable_sql)
         connection.execute(immutable_sql)
         baseline = connection.execute(
             "SELECT id,term,aliases FROM brief_skill ORDER BY id"
         ).fetchall()
+        baseline_location = connection.execute(
+            "SELECT location FROM role_brief WHERE id='v23-brief'"
+        ).fetchone()
 
     failed = Database(path)
     with pytest.raises(
@@ -845,6 +879,12 @@ def test_v25_rejects_every_invalid_v24_brief_source_without_rewriting(
                 "SELECT id,term,aliases FROM brief_skill ORDER BY id"
             ).fetchall()
             == baseline
+        )
+        assert (
+            connection.execute(
+                "SELECT location FROM role_brief WHERE id='v23-brief'"
+            ).fetchone()
+            == baseline_location
         )
         assert "scoring_inputs" not in {
             row[1] for row in connection.execute("PRAGMA table_info(role_brief)")

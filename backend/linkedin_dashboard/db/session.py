@@ -215,11 +215,16 @@ class Database:
                 _require_same_file(self.path, database_fd)
                 _secure_existing_sidecars(self.path)
                 self._initialized = True
-            except BaseException:
+            except BaseException as error:
                 self.engine.dispose()
                 if database_fd is not None:
                     os.close(database_fd)
                 self._database_fd = None
+                if _is_malformed_schema_error(error):
+                    raise RuntimeError(
+                        "SQLite schema does not match the required manifest "
+                        "(malformed schema)"
+                    ) from error
                 raise
             finally:
                 self._initializing = False
@@ -477,6 +482,18 @@ def _configure_required_pragmas(dbapi_connection: Any) -> None:
 
     finally:
         cursor.close()
+
+
+def _is_malformed_schema_error(error: BaseException) -> bool:
+    """Recognize SQLite rejecting a tampered schema before it can be inspected."""
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if "malformed database schema" in str(current).casefold():
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def _revalidate_storage(dbapi_connection: Any, path: Path, expected_fd: int) -> None:

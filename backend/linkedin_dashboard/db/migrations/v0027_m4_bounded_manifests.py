@@ -63,6 +63,7 @@ def _child_invalid(table: str, kind: str | None) -> str:
     return f"""
 CASE
 WHEN typeof(NEW.term) IS NOT 'text'
+  OR instr(CAST(NEW.term AS BLOB),x'00')>0
   OR length(NEW.term) NOT BETWEEN 1 AND {MAX_TERM_LENGTH}
   OR NEW.term='' COLLATE scoring_normalized_v1 THEN 1
 WHEN json_valid(NEW.aliases) IS NOT 1 THEN 1
@@ -71,6 +72,7 @@ ELSE COALESCE((
   json_array_length(NEW.aliases)>{MAX_ALIASES_PER_TERM}
   OR EXISTS (SELECT 1 FROM json_each(NEW.aliases) alias
              WHERE alias.type IS NOT 'text'
+               OR instr(CAST(alias.value AS BLOB),x'00')>0
                OR length(alias.value) NOT BETWEEN 1 AND {MAX_ALIAS_LENGTH}
                OR alias.value='' COLLATE scoring_normalized_v1)
   OR {_source_collision_invalid(table, kind)}

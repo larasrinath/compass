@@ -400,7 +400,9 @@ def update_weights(
         raise HTTPException(409, str(error)) from error
     except IntegrityError as error:
         raise HTTPException(409, "scoring configuration changed; reload it") from error
-    except (LookupError, ScoringValidationError, ValueError) as error:
+    except LookupError as error:
+        raise HTTPException(404, str(error)) from error
+    except (ScoringValidationError, ValueError) as error:
         raise HTTPException(422, str(error)) from error
 
 

@@ -44,6 +44,12 @@ def _signal_source(signal_id: str, brief: str) -> str:
     return sources[signal_id]
 
 
+def _contains_nul(expression: str) -> str:
+    # SQLite's text length stops at NUL. Inspect the UTF-8 bytes first so a
+    # short visible prefix cannot hide an unbounded suffix from later checks.
+    return f"instr(CAST({expression} AS BLOB),x'00')>0"
+
+
 def _signal_manifest_invalid(signal_id: str, brief: str) -> str:
     path = f"'$.\"{signal_id}\"'"
     source = _signal_source(signal_id, brief)
@@ -75,18 +81,20 @@ EXISTS (
     OR (SELECT count(*) FROM json_each(item.value) member
         WHERE member.key='aliases')<>1
     OR json_type(item.value,'$.display') IS NOT 'text'
+    OR {_contains_nul("json_extract(item.value,'$.display')")}
     OR length(json_extract(item.value,'$.display')) NOT BETWEEN 1 AND {MAX_TERM_LENGTH}
     OR NOT (json_extract(item.value,'$.display')=
             '{SCORING_DISPLAY_CANONICAL_SENTINEL}'
               COLLATE scoring_display_canonical_v1)
     OR json_type(item.value,'$.term') IS NOT 'text'
+    OR {_contains_nul("json_extract(item.value,'$.term')")}
     OR length(json_extract(item.value,'$.term')) NOT BETWEEN 1 AND {MAX_TERM_LENGTH}
     OR NOT (json_extract(item.value,'$.term')=
             '{SCORING_CANONICAL_SENTINEL}' COLLATE scoring_canonical_v1)
     OR json_type(item.value,'$.aliases') IS NOT 'array'
     OR json_array_length(item.value,'$.aliases')>{MAX_ALIASES_PER_TERM}
     OR EXISTS (SELECT 1 FROM json_each(item.value,'$.aliases') alias
-      WHERE alias.type IS NOT 'text'
+      WHERE alias.type IS NOT 'text' OR {_contains_nul("alias.value")}
         OR length(alias.value) NOT BETWEEN 1 AND {MAX_ALIAS_LENGTH} OR NOT (
         alias.value='{SCORING_CANONICAL_SENTINEL}' COLLATE scoring_canonical_v1))
     OR EXISTS (SELECT 1 FROM json_each(item.value,'$.aliases') current
@@ -165,10 +173,13 @@ def _manifest_invalid(brief: str) -> str:
     return f"""
 CASE
 WHEN {brief}.scoring_inputs IS NULL THEN 1
+WHEN {_contains_nul(f"{brief}.scoring_inputs")} THEN 1
 WHEN json_valid({brief}.scoring_inputs) IS NOT 1 THEN 1
 WHEN json_type({brief}.scoring_inputs) IS NOT 'object' THEN 1
 ELSE COALESCE((
-  json_type({brief}.scoring_inputs,'$.matcher_version') IS NOT 'text'
+  {_contains_nul(f"{brief}.location")}
+  OR json_type({brief}.scoring_inputs,'$.matcher_version') IS NOT 'text'
+  OR {_contains_nul(f"json_extract({brief}.scoring_inputs,'$.matcher_version')")}
   OR json_extract({brief}.scoring_inputs,'$.matcher_version') IS NOT 'scoring-v1'
   OR (SELECT count(*) FROM json_each({brief}.scoring_inputs))<>8
   OR EXISTS (SELECT 1 FROM json_each({brief}.scoring_inputs) item
@@ -231,11 +242,11 @@ _CLAIM_IS_BRIEF_BOUND = """
    AND coalesce(rb.required_experience_months,0)>0))
 """
 
-_COVERAGE_SHAPE_INVALID = """
+_COVERAGE_SHAPE_INVALID = f"""
 json_type(coverage.normalized_terms)<>'array'
 OR json_array_length(coverage.normalized_terms)=0
 OR EXISTS (SELECT 1 FROM json_each(coverage.normalized_terms) term
-  WHERE term.type<>'text' OR NOT (
+  WHERE term.type<>'text' OR {_contains_nul("term.value")} OR NOT (
     term.value='__linkedin_dashboard_scoring_v1_canonical__'
       COLLATE scoring_canonical_v1))
 OR EXISTS (SELECT 1 FROM json_each(coverage.normalized_terms) current
@@ -244,7 +255,7 @@ OR EXISTS (SELECT 1 FROM json_each(coverage.normalized_terms) current
   WHERE previous.value>=current.value)
 OR json_type(coverage.aliases)<>'array'
 OR EXISTS (SELECT 1 FROM json_each(coverage.aliases) alias
-  WHERE alias.type<>'text' OR NOT (
+  WHERE alias.type<>'text' OR {_contains_nul("alias.value")} OR NOT (
     alias.value='__linkedin_dashboard_scoring_v1_canonical__'
       COLLATE scoring_canonical_v1))
 OR EXISTS (SELECT 1 FROM json_each(coverage.aliases) current
@@ -472,6 +483,7 @@ def _array(value: Any) -> list[str]:
         or len(decoded) > MAX_ALIASES_PER_TERM
         or not all(
             type(item) is str
+            and "\x00" not in item
             and 0 < len(item) <= MAX_ALIAS_LENGTH
             and 0 < len(normalize(item)) <= MAX_ALIAS_LENGTH
             for item in decoded

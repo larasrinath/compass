@@ -25,9 +25,20 @@ def normalize(value: str) -> str:
 
 def canonical_entries(values: Iterable[RawTerm]) -> list[dict[str, Any]]:
     grouped: dict[str, dict[str, set[str]]] = {}
-    for raw_term, raw_aliases in values:
+    for index, raw_entry in enumerate(values):
+        if index >= MAX_BRIEF_VOCABULARY:
+            raise ValueError("brief has too many term entries")
+        if type(raw_entry) not in (tuple, list) or len(raw_entry) != 2:
+            raise ValueError("brief term entries must be two-item sequences")
+        raw_term, raw_aliases = raw_entry
         if type(raw_term) is not str:
             raise ValueError("brief terms must be strings")
+        if "\x00" in raw_term:
+            raise ValueError("brief terms cannot contain NUL")
+        if type(raw_aliases) not in (tuple, list):
+            raise ValueError("brief aliases must be sequences of strings")
+        if len(raw_aliases) > MAX_ALIASES_PER_TERM:
+            raise ValueError("brief terms have too many aliases")
         display = " ".join(raw_term.strip().split())
         key = normalize(display)
         if not key:
@@ -35,13 +46,13 @@ def canonical_entries(values: Iterable[RawTerm]) -> list[dict[str, Any]]:
         if len(raw_term) > MAX_TERM_LENGTH or len(key) > MAX_TERM_LENGTH:
             raise ValueError("brief terms exceed the supported length")
         aliases = tuple(raw_aliases)
-        if len(aliases) > MAX_ALIASES_PER_TERM:
-            raise ValueError("brief terms have too many aliases")
         group = grouped.setdefault(key, {"displays": set(), "aliases": set()})
         group["displays"].add(display)
         for alias in aliases:
             if type(alias) is not str:
                 raise ValueError("brief aliases must be strings")
+            if "\x00" in alias:
+                raise ValueError("brief aliases cannot contain NUL")
             alias_key = normalize(alias)
             if not alias_key:
                 raise ValueError("brief aliases must be canonicalizable")
@@ -136,20 +147,19 @@ def build_manifest(
     location: str,
     required_credentials: Iterable[RawTerm],
 ) -> dict[str, object]:
-    required = tuple(required_skills)
-    optional = tuple(optional_skills)
-    titles = tuple(target_titles)
-    industry_values = tuple(industries)
-    credentials = tuple(required_credentials)
+    if type(location) is not str:
+        raise ValueError("brief location must be a string")
+    if "\x00" in location:
+        raise ValueError("brief location cannot contain NUL")
     location_values: tuple[RawTerm, ...] = (
         ((location, ()),) if normalize(location) else ()
     )
-    required_entries = canonical_entries(required)
-    optional_entries = canonical_entries(optional)
-    title_entries = canonical_entries(titles)
-    industry_entries = canonical_entries(industry_values)
+    required_entries = canonical_entries(required_skills)
+    optional_entries = canonical_entries(optional_skills)
+    title_entries = canonical_entries(target_titles)
+    industry_entries = canonical_entries(industries)
     location_entries = canonical_entries(location_values)
-    credential_entries = canonical_entries(credentials)
+    credential_entries = canonical_entries(required_credentials)
     validate_manifest_budget(
         (
             required_entries,
