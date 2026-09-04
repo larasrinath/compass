@@ -1231,9 +1231,15 @@ Penalties (applied after normalization, not weighted):
   signal may therefore contain matched, not-matched and unknown claims concurrently.
 - **S-3:** when `required_experience_months > 0`,
   `min(1.0, relevant_months / required_experience_months)`, where a role counts as relevant when
-  its title or description matches a target title or a required skill. Roles whose date range
-  does not parse contribute to a separate `unparsed_roles` count and push availability toward
-  0.5. When the input is `null` or `0`, S-3 is inactive and excluded from every denominator.
+  its title or description matches a normalized target-title or required-skill term. If there
+  are no normalized target-title or required-skill terms, every parsed role is relevant; an
+  empty relevance-filter term set never creates absence coverage. Optional skills, positive
+  keywords and job-description prose are not S-3 relevance filters. Only relevant roles whose
+  duration does not parse contribute to `unparsed_roles` and reduce availability; an
+  unparseable duration on an irrelevant role does neither. If no roles parse reliably, the S-3
+  claim is `unknown` with canonical `unparseable` missing provenance, never absence coverage or
+  `not_matched`. When the input is `null` or `0`, S-3 is inactive and excluded from every
+  denominator.
 - **S-4:** when input-active, best-match over target titles using token overlap of head nouns (e.g. "Staff Backend
   Engineer" vs "Backend Engineer" → 0.8). Exact 1.0, no match 0.0.
 - **S-5:** when input-active, fraction of brief industries evidenced by employer names or description text.
@@ -2166,8 +2172,13 @@ WP2/WP3 integration boundary. No file or named test target is shared between wor
   calculation, permanently weight 0. The §14.1 activity derivation runs before signal creation;
   every inert signal emits no aggregate, claim or provenance child.
 - *Acceptance:* each active signal has fixtures for every valid verdict; S-3 covers
-  `required_experience_months` null/0/positive, S-6 covers empty and populated equivalence
-  tables, and S-8 covers empty credentials plus exact/alias requirements. S-1/S-2 fixtures
+  `required_experience_months` null/0/positive and a months-only brief with no normalized target
+  titles or required skills, where every parsed role is relevant. Its mutation test must fail if
+  optional skills, positive keywords or job-description prose become relevance filters, if an
+  irrelevant role's unparseable duration reduces availability, if an empty relevance-filter term
+  set creates absence coverage, or if no parseable roles yields anything except
+  `unknown`/`unparseable`. S-6 covers empty and populated equivalence tables, and S-8 covers empty
+  credentials plus exact/alias requirements. S-1/S-2 fixtures
   produce matched + not-matched + unknown claims in one aggregate whose rollup is `mixed`;
   scalar signals emit exactly one claim. An executable matrix independently empties S-1 required
   skills, S-2 optional skills, S-3 months, S-4 titles, S-5 industries, S-6 location and S-8
