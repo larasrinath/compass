@@ -132,7 +132,9 @@ def _headline(session: Session, candidate_id: str) -> str | None:
         .limit(1)
     )
     if field is None or not (
-        0 <= field.span_start < field.span_end <= len(latest.raw_text)
+        type(field.span_start) is int
+        and type(field.span_end) is int
+        and 0 <= field.span_start < field.span_end <= len(latest.raw_text)
         and latest.raw_text[field.span_start : field.span_end] == field.snippet
     ):
         return None

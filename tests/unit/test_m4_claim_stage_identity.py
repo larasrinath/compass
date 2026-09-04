@@ -225,6 +225,62 @@ def test_ranked_headline_is_display_data_without_scoring_sources(
         ).fetchone() == (0,)
 
 
+@pytest.mark.parametrize(
+    ("span_start", "span_end"),
+    ((12.5, 28.5), (12.5, 29), (12, 28.5), ("12.5", "28.5")),
+)
+def test_ranked_headline_rejects_noninteger_stored_offsets(
+    scored: tuple[Any, TestClient, str, str],
+    span_start: float | str,
+    span_end: float | str,
+) -> None:
+    app, client, session_id, candidate_id = scored
+    params = {"session_id": session_id}
+    assert client.get("/api/candidates", params=params).json()[0]["headline"] == (
+        "Platform Engineer"
+    )
+    with _connect(app.state.database.path) as connection:
+        original_id = connection.execute(
+            "SELECT id FROM parsed_field WHERE candidate_id=? "
+            "AND field_key='headline' ORDER BY created_at DESC,id DESC LIMIT 1",
+            (candidate_id,),
+        ).fetchone()[0]
+        insert = (
+            "INSERT INTO parsed_field (id,candidate_id,field_key,value,section_name,"
+            "span_start,span_end,snippet,origin,parser_version,created_at,"
+            "profile_section_id) SELECT ?,candidate_id,field_key,"
+            "'Platform Enginee',section_name,?,?,'Platform Enginee',origin,"
+            "parser_version,'9999',profile_section_id FROM parsed_field WHERE id=?"
+        )
+        # Existing database guards already reject these other malformed storage
+        # values. REAL fractional offsets, including numeric TEXT coerced by
+        # INTEGER affinity, pass SQLite's substring check and need the API guard.
+        for index, (bad_start, bad_end) in enumerate(
+            (
+                (float("inf"), 28.5),
+                (12, float("inf")),
+                (float("nan"), 28.5),
+                ("twelve", 28.5),
+                (sqlite3.Binary(b"12"), 28.5),
+            )
+        ):
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute(
+                    insert, (f"invalid-offset-{index}", bad_start, bad_end, original_id)
+                )
+        connection.execute(
+            insert, ("fractional-headline", span_start, span_end, original_id)
+        )
+        storage = connection.execute(
+            "SELECT typeof(span_start),typeof(span_end) FROM parsed_field "
+            "WHERE id='fractional-headline'"
+        ).fetchone()
+        assert "real" in storage
+    response = client.get("/api/candidates", params=params)
+    assert response.status_code == 200
+    assert response.json()[0]["headline"] is None
+
+
 def test_rescore_stage_is_an_immutable_input(
     scored: tuple[Any, TestClient, str, str],
 ) -> None:
