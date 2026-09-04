@@ -29,7 +29,7 @@ export function WeightsEditor({
       <summary>
         <span>
           <strong>Scoring weights</strong>
-          <small>Immutable config {config.data?.version ?? 'loading'}</small>
+          <small>Saved version {config.data?.version ?? 'loading'}</small>
         </span>
         <span>Edit</span>
       </summary>

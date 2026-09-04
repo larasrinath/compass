@@ -6,6 +6,44 @@ over loopback streamable HTTP. The MCP server remains an unchanged sibling
 service; this project never imports it, reads its browser profile, or manages
 its process.
 
+## Daily use
+
+Open **http://127.0.0.1:5173/search** while the local services are running.
+Start the independent LinkedIn connector in its own terminal:
+
+```bash
+cd linkedin-mcp-server
+uv run -m linkedin_mcp_server --transport streamable-http --host 127.0.0.1 --port 8000 --no-auto-import
+```
+
+From this dashboard directory, start the API in a second terminal:
+
+```bash
+MCP_URL=http://127.0.0.1:8000/mcp uv run -m linkedin_dashboard
+```
+
+Start the interface in a third terminal:
+
+```bash
+cd frontend
+npm run dev
+```
+
+Use **Role brief → Find candidates → Review list to compare → Compare matches**.
+Download profile evidence before comparing. Confirm the candidate-list review
+with your own note; opening a profile does not confirm a review. Saved profiles,
+role edits, and scoring work offline. New searches and downloads require the
+connector; the connection strip provides an explicit reconnect check.
+
+Location is a search preference passed to LinkedIn, not a guaranteed geographic
+filter. Verify the location in the downloaded profile. Keep required skills and
+experience specific in your role brief to make comparison useful.
+
+The September 2026 refresh adds a compact responsive layout, saved-candidate
+filtering, clearer queue recovery, conflicting-keyword validation, duplicate
+search-result handling, and corrected profile-header/grouped-employment parsing.
+Raw source text and previous scores remain stored for review.
+
 The implementation follows [PROJECT_PLAN.md](PROJECT_PLAN.md). M0 establishes
 the loopback-only application shell, protected SQLite schema, append-only audit
 log, and response privacy boundary. The M1 client boundary uses a fresh
@@ -111,9 +149,11 @@ digest. The evidence artifact SHA-256 is
 `12c0a5f0ed92fa7e8ad71c7ce21aa25b15b095336f00f15a46a6a1c084b9e6ce`;
 profile identities and raw data remain omitted.
 
-The two non-both-correct blocks were grouped-parent layouts and remain a known,
-non-blocking parser limitation included in the 21-block denominator. M3
-acceptance unblocks M4; no M4 work has started.
+The two non-both-correct blocks in that historical sample were grouped-parent
+layouts. M4 comparison and evidence review are now implemented. The September
+2026 refresh adds regression coverage and fixes for grouped employers with
+employment-type headers; it does not claim a new accuracy rate for the historical
+21-block sample. See the current delivery verification in PROJECT_PLAN.md.
 
 ## Prerequisites
 

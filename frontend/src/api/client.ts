@@ -593,3 +593,7 @@ export const getCompanyLookup = (lookupId: string) =>
   requestJson<CompanyLookup>(
     `/api/companies/urn-lookups/${encodeURIComponent(lookupId)}`,
   )
+
+export async function cancelQueuedJob(jobId: string): Promise<QueueJob> {
+  return requestJson(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' })
+}

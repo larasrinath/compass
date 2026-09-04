@@ -30,9 +30,10 @@ const { cleanup, render, screen, waitFor, within } = await import(
 const userEvent = (await import('@testing-library/user-event')).default
 const vite = await createServer({
   root,
+  cacheDir: `node_modules/.vite-test-${process.pid}`,
   appType: 'custom',
   optimizeDeps: { noDiscovery: true },
-  server: { middlewareMode: true },
+  server: { hmr: false, middlewareMode: true },
 })
 const { RawTextViewer } = await vite.ssrLoadModule(
   '/src/components/RawTextViewer.tsx',
@@ -44,6 +45,7 @@ const { useNewRevisionEffect } = await vite.ssrLoadModule(
   '/src/scoreVerification.ts',
 )
 const { SearchPage } = await vite.ssrLoadModule('/src/pages/SearchPage.tsx')
+const { QueueStatus } = await vite.ssrLoadModule('/src/components/QueueStatus.tsx')
 await vite.close()
 
 test.after(async () => {
@@ -197,6 +199,8 @@ test('candidate detail opens zero-field sections and exact field evidence', asyn
     (await screen.findByLabelText('Raw honors profile text')).textContent,
     'Grace Hopper Award',
   )
+  assert.equal(screen.queryByRole('button', { name: /🚀 Alpha/ }), null)
+  await user.click(screen.getByRole('button', { name: 'experience', exact: true }))
   await user.click(screen.getByRole('button', { name: /🚀 Alpha/ }))
   await waitFor(() => assert.equal(document.querySelector('mark')?.textContent, '🚀 Alpha'))
 })
@@ -335,9 +339,61 @@ test('candidate pool renders queued, failed, and focused enqueue errors', { time
   assert.equal(queued.disabled, true)
   await user.click(screen.getByRole('button', { name: 'Review retrieval failure' }))
   assert.equal(opened, 'failed')
-  await user.click(screen.getByRole('button', { name: 'Retrieve main profile + experience' }))
+  await user.click(screen.getByRole('button', { name: 'Download profile & experience' }))
   const alert = await screen.findByRole('alert')
   assert.equal(alert.textContent.includes('Profile retrieval was not queued'), true)
   await waitFor(() => assert.equal(document.activeElement, alert))
   assert.equal(within(alert).getByText(/already has a queued/).textContent.length > 0, true)
+})
+
+test('offline discovery keeps saved profiles browseable and filters names locally', async () => {
+  let opened = null
+  let writes = 0
+  const pool = ['Ada', 'Grace'].map((name, index) => ({
+    id: name, username: name.toLowerCase(), display_name: name,
+    profile_url: `https://www.linkedin.com/in/${name.toLowerCase()}/`,
+    stage: index ? 'discovered' : 'stage1', retrieval_status: index ? 'pending' : 'ok',
+    active_job_id: null, source_count: 0, sources: [],
+  }))
+  globalThis.fetch = (input, init) => {
+    if (init?.method === 'POST') writes += 1
+    const path = String(input)
+    if (path.startsWith('/api/searches?')) return json([])
+    if (path.startsWith('/api/candidate-pool?')) return json(pool)
+    throw new Error(`Unexpected request: ${path}`)
+  }
+  const user = userEvent.setup({ document: dom.window.document })
+  render(wrapper(React.createElement(SearchPage, {
+    session: { id: 'session' },
+    brief: { id: 'brief', version: 1, target_titles: [], positive_keywords: ['platform'], negative_keywords: [], location: '' },
+    queue, retrievalReady: false, onCandidateOpen(id) { opened = id },
+  })))
+  await screen.findByRole('heading', { name: 'Ada' })
+  assert.equal(screen.getByRole('button', { name: 'Run search' }).disabled, true)
+  assert.equal(screen.getByRole('button', { name: 'Download profile & experience' }).disabled, true)
+  await user.click(screen.getByRole('button', { name: 'Review retrieved details' }))
+  assert.equal(opened, 'Ada')
+  await user.type(screen.getByLabelText('Find a saved candidate'), 'ada')
+  assert.equal(screen.queryByRole('heading', { name: 'Grace' }), null)
+  assert.ok(screen.getByRole('heading', { name: 'Ada' }))
+  assert.equal(writes, 0)
+})
+
+test('queue recovery surfaces a failed resume instead of silently doing nothing', async () => {
+  let resumes = 0
+  globalThis.fetch = (input, init) => {
+    assert.equal(String(input), '/api/queue/resume')
+    assert.equal(init.method, 'POST')
+    resumes += 1
+    return json({ detail: 'Resume unavailable' }, 503)
+  }
+  const user = userEvent.setup({ document: dom.window.document })
+  render(wrapper(React.createElement(QueueStatus, {
+    queue: { ...queue, state: 'paused', pause_reason: 'TRANSPORT' },
+  })))
+  assert.equal(resumes, 0)
+  assert.ok(screen.getByText(/connector is not reachable/))
+  await user.click(screen.getByRole('button', { name: 'Resume downloads' }))
+  await screen.findByText(/Request failed|Queue resume failed/)
+  assert.equal(resumes, 1)
 })

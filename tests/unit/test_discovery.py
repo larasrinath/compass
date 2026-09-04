@@ -708,3 +708,22 @@ def test_person_identifier_parity_accepts_server_reference_forms(
 def test_person_identifier_parity_refuses_unsafe_forms(value: str) -> None:
     with pytest.raises(InvalidPersonReference):
         normalize_person_reference(value)
+
+
+def test_conflicting_keywords_rejected_without_losing_saved_brief(tmp_path) -> None:
+    app = create_app(
+        settings(tmp_path / "conflicts.db"), queue_executor=FixtureExecutor()
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        session_id = start_session(client)
+        payload = brief_payload(session_id)
+        saved = client.post("/api/briefs", json=payload)
+        assert saved.status_code == 201
+        payload["positive_keywords"] = ["Anaplan"]
+        payload["negative_keywords"] = ["  ANAPLAN  "]
+        rejected = client.put("/api/briefs/current", json=payload)
+        assert rejected.status_code == 422
+        assert "both positive and excluded" in rejected.json()["detail"]
+        current = client.get("/api/briefs/current", params={"session_id": session_id})
+        assert current.json()["id"] == saved.json()["id"]
+        assert current.json()["version"] == 1

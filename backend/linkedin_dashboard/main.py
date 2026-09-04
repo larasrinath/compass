@@ -209,4 +209,5 @@ def run() -> None:
         port=settings.port,
         access_log=False,
         server_header=False,
+        timeout_graceful_shutdown=5,
     )

@@ -33,10 +33,10 @@ const GATE_A_ELIGIBLE_STATUSES = new Set<SearchRunStatus>([
 
 function gateAEligibilityMessage(searchRuns: SearchRun[]): string {
   if (searchRuns.some((run) => GATE_A_ELIGIBLE_STATUSES.has(run.status))) {
-    return 'An eligible persisted search result is ready for inspection.'
+    return 'A saved search is ready for your review.'
   }
   if (!searchRuns.length) {
-    return 'Gate A remains locked until a search persists an eligible result.'
+    return 'Complete a search to review your candidate list.'
   }
   const explanations: Record<
     Exclude<SearchRunStatus, 'ok' | 'partial' | 'rate_limited'>,
@@ -55,7 +55,7 @@ function gateAEligibilityMessage(searchRuns: SearchRun[]): string {
       ),
     ),
   ]
-  return `Gate A remains locked: ${reasons.join('; ')}. Eligible persisted statuses are ok, partial, or rate limited.`
+  return `Comparison is locked: ${reasons.join('; ')}. Finish a search, then review the saved results.`
 }
 
 export function SearchPage({
@@ -64,16 +64,21 @@ export function SearchPage({
   onCandidateOpen,
   onGateAChanged,
   queue,
+  retrievalReady = true,
+  onEditBrief,
 }: {
   session: SessionRecord
   brief: BriefRecord | null | undefined
   onCandidateOpen: (candidateId: string) => void
   onGateAChanged?: () => void
   queue: ReturnTypeOfJobEvents
+  retrievalReady?: boolean
+  onEditBrief?: () => void
 }) {
   const client = useQueryClient()
   const errorRef = useRef<HTMLDivElement>(null)
   const enrichmentErrorRef = useRef<HTMLDivElement>(null)
+  const [nameFilter, setNameFilter] = useState('')
   const [keywords, setKeywords] = useState(() =>
     brief
       ? [
@@ -90,7 +95,7 @@ export function SearchPage({
   const [companySlug, setCompanySlug] = useState('')
   const [lookupId, setLookupId] = useState<string | null>(null)
   const [selectedRun, setSelectedRun] = useState<string | null>(null)
-  const [gateNote, setGateNote] = useState('Candidate extraction and dedupe inspected.')
+  const [gateNote, setGateNote] = useState('')
 
   const runs = useQuery({
     queryKey: ['searches', session.id],
@@ -158,6 +163,11 @@ export function SearchPage({
   )
   const gateAEligibility = gateAEligibilityMessage(runs.data ?? [])
 
+  const positiveSet = new Set((brief?.positive_keywords ?? []).map((term) => term.normalize('NFKC').toLowerCase()))
+  const hasConflicts = (brief?.negative_keywords ?? []).some((term) => positiveSet.has(term.normalize('NFKC').toLowerCase()))
+  const downloadsBlocked = !retrievalReady || hasConflicts
+  const filteredCandidates = (candidates.data ?? []).filter((candidate) => `${candidate.display_name} ${candidate.username}`.toLowerCase().includes(nameFilter.toLowerCase()))
+
   function queuePosition(jobId: string): string | null {
     const job = queue.jobs.find((item) => item.id === jobId)
     if (!job) return null
@@ -166,23 +176,23 @@ export function SearchPage({
   }
 
   return (
-    <section aria-labelledby="search-title" className="workspace-page">
+    <section aria-labelledby="search-title" className="workspace-page search-workspace">
       <div className="page-intro">
         <div>
           <p className="eyebrow">Step 2 · Find candidates</p>
-          <h1 id="search-title">Build a pool with narrow searches.</h1>
+          <h1 id="search-title">Find candidates</h1>
           <p>
-            Each run reads one results page. Several focused searches accumulate
-            here; there is no hidden pagination.
+            Search LinkedIn, save promising profiles, and review the evidence.
           </p>
         </div>
         <div className="version-card">
           <strong>{candidates.data?.length ?? 0} discovered</strong>
-          <span>Unscored · profiles not retrieved</span>
+          <span>Saved in this workspace</span>
         </div>
       </div>
 
       <QueueStatus queue={queue} />
+      {hasConflicts ? <div className="form-error brief-conflict" role="alert"><strong>Your role brief has conflicting keywords.</strong><span>A keyword is both included and excluded. Correct the brief before searching.</span>{onEditBrief ? <button className="quiet-action" onClick={onEditBrief} type="button">Edit role brief</button> : null}</div> : null}
 
       {!brief ? (
         <div className="empty-card" role="status">
@@ -195,6 +205,7 @@ export function SearchPage({
             className="search-form panel"
             onSubmit={(event) => {
               event.preventDefault()
+              if (downloadsBlocked) return
               search.mutate({
                 session_id: session.id,
                 brief_id: brief.id,
@@ -208,7 +219,7 @@ export function SearchPage({
             <div className="section-heading">
               <div>
                 <p className="eyebrow">Search parameters</p>
-                <h2>Run one focused search</h2>
+                <h2>Search LinkedIn</h2>
               </div>
               <span className="saved-brief-chip">Brief v{brief.version}</span>
             </div>
@@ -227,14 +238,17 @@ export function SearchPage({
               />
             </label>
             <label className="field">
-              <span>Location</span>
+              <span>Location preference</span>
               <input
                 onChange={(event) => setLocation(event.target.value)}
                 value={location}
               />
+              <small className="field-help">Passed to LinkedIn; results may include other locations. Verify location in the downloaded profile.</small>
             </label>
+            <details className="advanced-search">
+              <summary>Network & company filters</summary>
             <label className="field">
-              <span>Current company numeric URN ID</span>
+              <span>Company ID (optional)</span>
               <input
                 inputMode="numeric"
                 onChange={(event) => setCompanyId(event.target.value)}
@@ -259,40 +273,43 @@ export function SearchPage({
                     type="checkbox"
                   />
                   <span>
-                    <strong>{option.value}</strong> · {option.label}
+                    {option.label}
                   </span>
                 </label>
               ))}
               <p className="field-help">
-                F and S are selected by default. Only F is reliably messageable. This
-                search context is retained as provenance and never affects a score.
+                Search your connections or expand your reach. Network distance never affects match scores.
               </p>
             </fieldset>
-            <button className="primary-action" disabled={search.isPending} type="submit">
+            </details>
+            <button className="primary-action" disabled={search.isPending || downloadsBlocked} type="submit">
               {search.isPending ? 'Queueing…' : 'Run search'}
             </button>
+            {!retrievalReady ? <p className="field-help download-help">Downloads are paused or offline. Check the connector and resume paused downloads above. Saved candidates remain available.</p> : null}
             {search.data ? (
               <p aria-live="polite" className="queued-confirmation">
-                Queued job <code>{search.data.job_id}</code> · run{' '}
-                <code>{search.data.search_run_id}</code>
+                Search queued. Results will appear automatically in your candidate list.
               </p>
             ) : null}
           </form>
 
+          <details className="company-disclosure panel">
+          <summary>Filter by a company</summary>
           <form
-            className="lookup-card panel"
+            className="lookup-card"
             onSubmit={(event) => {
               event.preventDefault()
+              if (downloadsBlocked) return
               company.mutate()
             }}
           >
             <p className="eyebrow">Optional company lookup</p>
-            <h2>Find a company URN</h2>
+            <h2>Find a company ID</h2>
             <p>
-              Enter the slug after /company/. This creates its own serialized read.
+              Enter the company name from its LinkedIn URL, then use the returned ID in your search.
             </p>
             <label className="field">
-              <span>Company slug</span>
+              <span>Company URL name</span>
               <input
                 onChange={(event) => setCompanySlug(event.target.value)}
                 placeholder="microsoft"
@@ -300,7 +317,7 @@ export function SearchPage({
                 value={companySlug}
               />
             </label>
-            <button disabled={company.isPending} type="submit">
+            <button disabled={company.isPending || downloadsBlocked} type="submit">
               {company.isPending ? 'Queueing…' : 'Look up numeric ID'}
             </button>
             {lookup.data ? (
@@ -320,13 +337,180 @@ export function SearchPage({
                 )}
               </div>
             ) : lookupId ? (
-              <p aria-live="polite">Company lookup queued. Waiting for its SSE update.</p>
+              <p aria-live="polite">Company lookup queued. Results will appear automatically.</p>
             ) : null}
           </form>
+          </details>
         </div>
       )}
 
-      <section aria-labelledby="runs-title" className="discovery-section">
+      <section aria-labelledby="pool-title" className="discovery-section candidate-pool">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Saved candidates</p>
+            <h2 id="pool-title">Candidate pool</h2>
+          </div>
+          <div className="pool-heading-meta"><span>{filteredCandidates.length} shown · first-seen order</span>{gateAEligible && !session.phase_gates?.A ? <a href="#pool-review">Review list to compare →</a> : null}</div>
+        </div>
+        <label className="field pool-filter"><span>Find a saved candidate</span><input placeholder="Search by name" value={nameFilter} onChange={(event) => setNameFilter(event.target.value)} /></label>
+        {candidates.isError ? <div className="form-error" role="alert">Saved candidates could not be loaded. <button className="quiet-action" onClick={() => void candidates.refetch()} type="button">Try again</button></div> : null}
+        {enrich.isError ? (
+          <div
+            className="form-error"
+            ref={enrichmentErrorRef}
+            role="alert"
+            tabIndex={-1}
+          >
+            <strong>Profile retrieval was not queued.</strong>
+            <span>{enrich.error.message}</span>
+          </div>
+        ) : null}
+        {candidates.isPending ? <p role="status">Loading saved candidates…</p> : filteredCandidates.length ? (
+          <div className="candidate-grid">
+            {filteredCandidates.map((candidate) => (
+              <article className="candidate-card" key={candidate.id}>
+                <div>
+                  <span className={`status-label ${candidate.stage}`}>
+                    {candidate.stage === 'discovered' ? 'Discovered' : candidate.stage === 'stage1' ? 'Profile saved' : 'More details saved'}
+                  </span>
+                  <h3>{candidate.display_name || candidate.username}</h3>
+                  <p>
+                    {candidate.active_job_id
+                      ? 'Profile retrieval queued'
+                      : candidate.retrieval_status === 'failed'
+                        ? 'Profile retrieval failed'
+                        : candidate.stage === 'discovered'
+                          ? 'Profile not retrieved'
+                      : `Profile ${candidate.retrieval_status}`}{' '}
+                    · found in {candidate.source_count} {candidate.source_count === 1 ? 'search' : 'searches'}
+                  </p>
+                </div>
+                {candidate.active_job_id ? (
+                  <button className="primary-action" disabled type="button">
+                    Retrieval queued
+                  </button>
+                ) : candidate.retrieval_status === 'failed' ? (
+                  <button
+                    className="quiet-action"
+                    onClick={() => onCandidateOpen(candidate.id)}
+                    type="button"
+                  >
+                    Review retrieval failure
+                  </button>
+                ) : candidate.stage === 'discovered' ? (
+                  <button
+                    className="primary-action"
+                    disabled={
+                      downloadsBlocked || (enrich.isPending && enrich.variables === candidate.id)
+                    }
+                    onClick={() => enrich.mutate(candidate.id)}
+                    type="button"
+                  >
+                    Download profile & experience
+                  </button>
+                ) : (
+                  <button
+                    className="quiet-action"
+                    onClick={() => onCandidateOpen(candidate.id)}
+                    type="button"
+                  >
+                    Review retrieved details
+                  </button>
+                )}
+                <a
+                  href={candidate.profile_url}
+                  rel="noopener noreferrer"
+                  target="_blank"
+                  aria-label={`Open ${candidate.display_name || candidate.username} on LinkedIn (new tab)`}
+                >
+                  LinkedIn profile ↗
+                </a>
+                <details>
+                  <summary>{candidate.source_count} source {candidate.source_count === 1 ? 'search' : 'searches'}</summary>
+                  <ol className="source-list">
+                    {candidate.sources.map((source) => (
+                      <li key={source.search_run_id}>
+                        <strong>{source.keywords}</strong>
+                        <span>{source.reference_context || source.reference_text}</span>
+                        <span>
+                          {new Date(source.created_at).toLocaleString()} · reference{' '}
+                          {source.reference_position + 1} ·{' '}
+                          {source.location || 'any location'} ·{' '}
+                          {source.network_filter.length
+                            ? `network ${source.network_filter.join('/')}`
+                            : 'any network'}
+                          {source.current_company
+                            ? ` · company ${source.current_company}`
+                            : ''}
+                        </span>
+                        <small>{source.notice}</small>
+                      </li>
+                    ))}
+                  </ol>
+                </details>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <div className="empty-card">
+            <h3>{nameFilter ? 'No matching names' : 'Your next hire starts with a search'}</h3>
+            <p>{nameFilter ? 'Try a different name or clear the filter.' : 'Run a focused LinkedIn search. Candidates are saved here with their source, ready to review and compare.'}</p>
+          </div>
+        )}
+        <details id="pool-review" className="pool-review phase-gate-card panel" open={gateAEligible && !session.phase_gates?.A}>
+          <summary>Review candidate list & unlock comparison</summary>
+          <div>
+          <div>
+            <p className="eyebrow">Candidate review</p>
+            <h3>Check names and duplicates</h3>
+            <p>
+              Inspect names, source searches, and repeated profiles above. Ranking stays
+              unavailable until you explicitly accept this pool.
+            </p>
+          </div>
+          {session.phase_gates?.A ? (
+            <p className="gate-accepted" role="status">
+              ✓ Candidate list reviewed · comparison unlocked
+            </p>
+          ) : (
+            <form
+              onSubmit={(event) => {
+                event.preventDefault()
+                gateA.mutate()
+              }}
+            >
+              <label className="field">
+                <span>Inspection note</span>
+                <textarea
+                  onChange={(event) => setGateNote(event.target.value)}
+                  required
+                  rows={2}
+                  value={gateNote}
+                />
+              </label>
+              <button
+                aria-describedby="gate-a-eligibility"
+                className="primary-action"
+                disabled={gateA.isPending || !gateAEligible}
+                type="submit"
+              >
+                {gateA.isPending ? 'Recording…' : 'Confirm review & compare'}
+              </button>
+              <p id="gate-a-eligibility" role="status">
+                {gateAEligibility}
+              </p>
+              {gateA.isError ? (
+                <p className="field-error" role="alert">
+                  {gateA.error.message}
+                </p>
+              ) : null}
+            </form>
+          )}
+        </div>
+        </details>
+      </section>
+
+      <section aria-labelledby="runs-title" className="discovery-section search-history">
         <div className="section-heading">
           <div>
             <p className="eyebrow">Provenance</p>
@@ -334,7 +518,7 @@ export function SearchPage({
           </div>
           <span>{runs.data?.length ?? 0} total runs</span>
         </div>
-        {runs.data?.length ? (
+        {runs.isError ? <p className="form-error" role="alert">Search history could not be loaded.</p> : runs.data?.length ? (
           <div className="run-grid">
             {runs.data.map((run) => (
               <button
@@ -431,165 +615,7 @@ export function SearchPage({
         </section>
       ) : null}
 
-      <section aria-labelledby="pool-title" className="discovery-section">
-        <div className="section-heading">
-          <div>
-            <p className="eyebrow">Accumulated pool</p>
-            <h2 id="pool-title">Discovered people</h2>
-          </div>
-          <span>Neutral first-seen order</span>
-        </div>
-        {enrich.isError ? (
-          <div
-            className="form-error"
-            ref={enrichmentErrorRef}
-            role="alert"
-            tabIndex={-1}
-          >
-            <strong>Profile retrieval was not queued.</strong>
-            <span>{enrich.error.message}</span>
-          </div>
-        ) : null}
-        {candidates.data?.length ? (
-          <div className="candidate-grid">
-            {candidates.data.map((candidate) => (
-              <article className="candidate-card" key={candidate.id}>
-                <div>
-                  <span className={`status-label ${candidate.stage}`}>
-                    {candidate.stage === 'discovered' ? 'Discovered' : candidate.stage}
-                  </span>
-                  <h3>{candidate.display_name || candidate.username}</h3>
-                  <p>
-                    {candidate.active_job_id
-                      ? 'Profile retrieval queued'
-                      : candidate.retrieval_status === 'failed'
-                        ? 'Profile retrieval failed'
-                        : candidate.stage === 'discovered'
-                          ? 'Profile not retrieved'
-                      : `Profile ${candidate.retrieval_status}`}{' '}
-                    · found in {candidate.source_count} searches
-                  </p>
-                </div>
-                {candidate.active_job_id ? (
-                  <button className="primary-action" disabled type="button">
-                    Retrieval queued
-                  </button>
-                ) : candidate.retrieval_status === 'failed' ? (
-                  <button
-                    className="quiet-action"
-                    onClick={() => onCandidateOpen(candidate.id)}
-                    type="button"
-                  >
-                    Review retrieval failure
-                  </button>
-                ) : candidate.stage === 'discovered' ? (
-                  <button
-                    className="primary-action"
-                    disabled={
-                      enrich.isPending && enrich.variables === candidate.id
-                    }
-                    onClick={() => enrich.mutate(candidate.id)}
-                    type="button"
-                  >
-                    Retrieve main profile + experience
-                  </button>
-                ) : (
-                  <button
-                    className="quiet-action"
-                    onClick={() => onCandidateOpen(candidate.id)}
-                    type="button"
-                  >
-                    Review retrieved details
-                  </button>
-                )}
-                <a
-                  href={candidate.profile_url}
-                  rel="noopener noreferrer"
-                  target="_blank"
-                >
-                  Open {candidate.display_name || candidate.username} on LinkedIn (new tab)
-                </a>
-                <details>
-                  <summary>View {candidate.source_count} source searches</summary>
-                  <ol className="source-list">
-                    {candidate.sources.map((source) => (
-                      <li key={source.search_run_id}>
-                        <strong>{source.keywords}</strong>
-                        <span>{source.reference_context || source.reference_text}</span>
-                        <span>
-                          {new Date(source.created_at).toLocaleString()} · reference{' '}
-                          {source.reference_position + 1} ·{' '}
-                          {source.location || 'any location'} ·{' '}
-                          {source.network_filter.length
-                            ? `network ${source.network_filter.join('/')}`
-                            : 'any network'}
-                          {source.current_company
-                            ? ` · company ${source.current_company}`
-                            : ''}
-                        </span>
-                        <small>{source.notice}</small>
-                      </li>
-                    ))}
-                  </ol>
-                </details>
-              </article>
-            ))}
-          </div>
-        ) : (
-          <div className="empty-card">
-            <h3>No people discovered yet</h3>
-            <p>A zero-person run still keeps its raw text and reference breakdown above.</p>
-          </div>
-        )}
-        <div className="phase-gate-card panel">
-          <div>
-            <p className="eyebrow">Phase Gate A · discovery</p>
-            <h3>Confirm extraction and dedupe before ranking</h3>
-            <p>
-              Inspect names, source searches, and repeated profiles above. Ranking stays
-              unavailable until you explicitly accept this pool.
-            </p>
-          </div>
-          {session.phase_gates?.A ? (
-            <p className="gate-accepted" role="status">
-              ✓ Gate A accepted · ranking unlocked
-            </p>
-          ) : (
-            <form
-              onSubmit={(event) => {
-                event.preventDefault()
-                gateA.mutate()
-              }}
-            >
-              <label className="field">
-                <span>Inspection note</span>
-                <textarea
-                  onChange={(event) => setGateNote(event.target.value)}
-                  required
-                  rows={2}
-                  value={gateNote}
-                />
-              </label>
-              <button
-                aria-describedby="gate-a-eligibility"
-                className="primary-action"
-                disabled={gateA.isPending || !gateAEligible}
-                type="submit"
-              >
-                {gateA.isPending ? 'Recording…' : 'Accept Gate A and unlock ranking'}
-              </button>
-              <p id="gate-a-eligibility" role="status">
-                {gateAEligibility}
-              </p>
-              {gateA.isError ? (
-                <p className="field-error" role="alert">
-                  {gateA.error.message}
-                </p>
-              ) : null}
-            </form>
-          )}
-        </div>
-      </section>
+
     </section>
   )
 }

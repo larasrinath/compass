@@ -54,9 +54,11 @@ function protectedTerms(detail: unknown): ProtectedTermDetail[] {
 export function BriefPage({
   session,
   current,
+  onSaved,
 }: {
   session: SessionRecord
   current: BriefRecord | null | undefined
+  onSaved?: () => void
 }) {
   const queryClient = useQueryClient()
   const alertRef = useRef<HTMLDivElement>(null)
@@ -94,8 +96,10 @@ export function BriefPage({
   )
   const [positive, setPositive] = useState(initial.positive_keywords.join('\n'))
   const [negative, setNegative] = useState(initial.negative_keywords.join('\n'))
-  const [tone, setTone] = useState(initial.message_tone)
+  const tone = initial.message_tone
   const [dirty, setDirty] = useState(false)
+  const positiveSet = new Set(parseKeywords(positive).map((term) => term.normalize('NFKC').toLowerCase()))
+  const conflicts = parseKeywords(negative).filter((term) => positiveSet.has(term.normalize('NFKC').toLowerCase()))
 
   const mutation = useMutation({
     mutationFn: (payload: BriefInput) => saveBrief(payload, Boolean(current)),
@@ -132,9 +136,9 @@ export function BriefPage({
       <div className="page-intro">
         <div>
           <p className="eyebrow">Step 1 · Role brief</p>
-          <h1 id="brief-title">Define what you are looking for.</h1>
+          <h1 id="brief-title">Role brief</h1>
           <p>
-            This saved brief guides later review. Saving never starts a search.
+            Set the skills and experience that matter. Save your brief, then start a search.
           </p>
         </div>
         <div className="version-card">
@@ -156,11 +160,13 @@ export function BriefPage({
         </div>
       ) : null}
 
+      {conflicts.length > 0 ? <div className="form-error" role="alert"><strong>Some keywords appear in both lists.</strong><span>Remove {conflicts.map((term) => `“${term}”`).join(', ')} from either Positive keywords or Exclusions before saving.</span></div> : null}
       <form
         className="brief-form"
         onChange={markDirty}
         onSubmit={(event) => {
           event.preventDefault()
+          if (conflicts.length) return
           mutation.mutate({
             session_id: session.id,
             job_description: description,
@@ -185,7 +191,7 @@ export function BriefPage({
               id="job-description"
               onChange={(event) => setDescription(event.target.value)}
               required
-              rows={8}
+              rows={4}
               value={description}
             />
           </label>
@@ -197,10 +203,7 @@ export function BriefPage({
               value={location}
             />
           </label>
-          <label className="field">
-            <span>Message tone for a later milestone</span>
-            <input onChange={(event) => setTone(event.target.value)} value={tone} />
-          </label>
+
         </fieldset>
 
         <fieldset className="form-section criteria-grid">
@@ -315,9 +318,10 @@ export function BriefPage({
                 ? 'Unsaved changes'
                 : 'Ready'}
           </span>
-          <button className="primary-action" disabled={mutation.isPending} type="submit">
+          <button className="primary-action" disabled={mutation.isPending || conflicts.length > 0} type="submit">
             {mutation.isPending ? 'Saving…' : current ? 'Save new version' : 'Save brief'}
           </button>
+          {current && !dirty && !conflicts.length && onSaved ? <button className="quiet-action" onClick={onSaved} type="button">Find candidates →</button> : null}
         </div>
       </form>
     </section>

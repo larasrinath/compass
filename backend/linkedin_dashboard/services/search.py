@@ -343,6 +343,10 @@ class DiscoveryResultProcessor:
                             candidate_ref_id=reference_row.id,
                         )
                     )
+                    # A results page can link the same profile more than once.
+                    # Flush this composite-key row before the next session.get;
+                    # pending rows are not visible through the identity map yet.
+                    session.flush()
 
             errors = result.get("section_errors")
             error_map = errors if isinstance(errors, dict) else {}

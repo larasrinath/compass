@@ -90,9 +90,9 @@ export function CandidatesPage({
     return (
       <section className="workspace-page" aria-labelledby="ranking-locked-title">
         <div className="empty-card phase-lock" role="status">
-          <p className="eyebrow">Phase Gate A required</p>
+          <p className="eyebrow">Review required</p>
           <h1 id="ranking-locked-title">Inspect the candidate pool before ranking.</h1>
-          <p>Return to Find candidates, inspect extraction and dedupe, then accept Gate A.</p>
+          <p>Return to Find candidates, inspect extraction and dedupe, then confirm your review.</p>
         </div>
       </section>
     )
@@ -102,8 +102,8 @@ export function CandidatesPage({
     <section className="workspace-page ranked-page" aria-labelledby="ranked-title">
       <div className="page-intro compact-intro">
         <div>
-          <p className="eyebrow">Step 3 · Rank retrieved evidence</p>
-          <h1 id="ranked-title">Compare explainable matches.</h1>
+          <p className="eyebrow">Step 3 · Compare candidates</p>
+          <h1 id="ranked-title">Compare matches</h1>
           <p>
             Scores summarize only retrieved sections against your saved role brief.
             Unknown evidence stays unknown and sorts after numeric results when ranking by score or confidence.
@@ -111,7 +111,7 @@ export function CandidatesPage({
         </div>
         <div className="version-card">
           <strong>{candidates.data?.length ?? 0} ranked</strong>
-          <span>Gate A accepted · Gate B {session.phase_gates?.B ? 'accepted' : 'open'}</span>
+          <span>Candidate list reviewed · Evidence review {session.phase_gates?.B ? 'complete' : 'pending'}</span>
         </div>
       </div>
 
@@ -179,7 +179,7 @@ export function CandidatesPage({
 
       <section className="phase-gate-card panel" aria-labelledby="gate-b-title">
         <div>
-          <p className="eyebrow">Phase Gate B · matching</p>
+          <p className="eyebrow">Evidence quality check</p>
           <h2 id="gate-b-title">Verify at least 10 exact evidence links</h2>
           <p>
             Open candidate evidence, compare each highlighted span with stored raw text,

@@ -28,6 +28,7 @@ const { cleanup, render, screen, waitFor, within } = await import('@testing-libr
 const userEvent = (await import('@testing-library/user-event')).default
 const vite = await createServer({
   root,
+  cacheDir: `node_modules/.vite-test-${process.pid}`,
   appType: 'custom',
   optimizeDeps: { noDiscovery: true },
   server: { hmr: false, middlewareMode: true },
@@ -131,8 +132,9 @@ test('candidate-pool inspection records Gate A before ranking navigation', async
     session: { id: 'session' }, brief: null, queue,
     onCandidateOpen() {}, onGateAChanged() { changed = true },
   })))
-  const accept = await screen.findByRole('button', { name: 'Accept Gate A and unlock ranking' })
+  const accept = await screen.findByRole('button', { name: 'Confirm review & compare' })
   await waitFor(() => assert.equal(accept.disabled, false))
+  await user.type(screen.getByLabelText('Inspection note'), 'Candidate extraction and dedupe inspected.')
   accept.focus()
   await user.keyboard('{Enter}')
   await waitFor(() => assert.equal(changed, true))
@@ -141,9 +143,9 @@ test('candidate-pool inspection records Gate A before ranking navigation', async
 
 test('Gate A accepts only persisted eligible search outcomes', async () => {
   const cases = [
-    ['ok', false, 'eligible persisted search result'],
-    ['partial', false, 'eligible persisted search result'],
-    ['rate_limited', false, 'eligible persisted search result'],
+    ['ok', false, 'saved search is ready'],
+    ['partial', false, 'saved search is ready'],
+    ['rate_limited', false, 'saved search is ready'],
     ['queued', true, 'queued searches have not started'],
     ['running', true, 'running searches have not finished'],
     ['failed', true, 'failed searches produced no eligible result'],
@@ -167,8 +169,11 @@ test('Gate A accepts only persisted eligible search outcomes', async () => {
       session: { id: 'session' }, brief: null, queue,
       onCandidateOpen() {}, onGateAChanged() {},
     })))
+    await waitFor(() => assert.ok(document.getElementById('gate-a-eligibility').textContent.includes(explanation)))
+    const review = document.querySelector('.pool-review')
+    if (!review.open) await userEvent.setup({ document: dom.window.document }).click(within(review).getByText('Review candidate list & unlock comparison'))
     const button = await screen.findByRole('button', {
-      name: /Accept Gate A and unlock ranking/,
+      name: /Confirm review & compare/,
     })
     await waitFor(() => assert.equal(button.disabled, disabled))
     assert.equal(

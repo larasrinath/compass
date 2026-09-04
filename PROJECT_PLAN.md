@@ -28,7 +28,7 @@ provenance, scoring, migration and data-integrity requirements remain in force.
 
 ### Current offline acceptance
 
-These are required demonstrations, not a claim that acceptance has already passed:
+Acceptance scenarios (now covered by `tests/integration/test_offline_dashboard.py`):
 
 1. Download through a fake MCP into a temporary persistent database, then restart the app
    against that same database with MCP unavailable. Saved sessions, search results, rankings,
@@ -44,8 +44,28 @@ These are required demonstrations, not a claim that acceptance has already passe
    exact profile-span evidence ids; reject coverage, missing metadata and search context.
    Exercise these checks locally; no live Gate A/B acceptance is claimed or required this run.
 
-Live MCP integration is **not exercised in this run**. Fake/offline checks establish the local
-workflow only; they do not establish real LinkedIn retrieval compatibility or live acceptance.
+### Dashboard refresh verification — 2026-09-04
+
+The refresh was also checked with the existing live connector: one queued people search
+completed with 15 unique profile references; one profile's main and experience sections were
+downloaded, then refreshed after parser corrections (five page reads total). The current
+workspace now runs the API and frontend instead of the archived checkout. The saved database
+was backed up before the service switch. Live Gate A/B remain unaccepted; the operator's
+review is still required, while fake-MCP tests exercise both gates and offline persistence.
+
+The visual refresh includes responsive navigation, side-by-side search/candidates on desktop,
+local name filtering, compact profile evidence review, explicit connection recovery and
+loading/error states. Regression coverage includes conflicting keywords, repeated person
+references, header metadata, grouped employment and exact source spans. Parser version is
+`m3-v4`; previous raw captures remain immutable.
+
+Verification: 1,403 backend tests passed; 53 frontend tests passed; Ruff, type
+checks, frontend lint and production build passed. Desktop and 390px layouts
+were visually checked with no horizontal overflow.
+
+Known connector limitation: the supplied location is a preference, not a reliable geographic
+filter. The interface and README explain that downloaded profile location must be verified.
+The dashboard still neither manages the connector process nor sends messages.
 
 ---
 

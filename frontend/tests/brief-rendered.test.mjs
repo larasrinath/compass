@@ -30,7 +30,7 @@ const { cleanup, render, screen, waitFor, within } = await import(
 const userEvent = (await import('@testing-library/user-event')).default
 const vite = await createServer({
   root,
-  cacheDir: 'node_modules/.vite-brief-test',
+  cacheDir: `node_modules/.vite-test-${process.pid}`,
   appType: 'custom',
   optimizeDeps: { noDiscovery: true },
   server: { hmr: false, middlewareMode: true },
@@ -184,4 +184,23 @@ test('protected credential rejection renders beside and focuses the credential e
   const fieldError = await screen.findByText('Remove protected criterion “gender”.')
   assert.equal(fieldError.closest('[data-field-prefix]')?.dataset.fieldPrefix, 'required_credentials')
   await waitFor(() => assert.equal(document.activeElement, term))
+})
+
+test('conflicting include and exclude keywords block saving until corrected', async () => {
+  let writes = 0
+  globalThis.fetch = (_input, init) => {
+    writes += 1
+    return json(briefRecord({ ...JSON.parse(init.body), version: 2 }))
+  }
+  const user = userEvent.setup({ document: dom.window.document })
+  render(wrapper(React.createElement(BriefPage, {
+    session, current: briefRecord({ positive_keywords: ['Anaplan'], negative_keywords: ['ANAPLAN'] }),
+  })))
+  assert.equal(screen.getByRole('button', { name: 'Save new version' }).disabled, true)
+  assert.match(screen.getByRole('alert').textContent, /both lists/)
+  assert.equal(writes, 0)
+  await user.clear(screen.getByLabelText('Exclusions / negative keywords'))
+  assert.equal(screen.queryByRole('alert'), null)
+  await user.click(screen.getByRole('button', { name: 'Save new version' }))
+  await waitFor(() => assert.equal(writes, 1))
 })

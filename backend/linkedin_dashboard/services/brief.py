@@ -321,6 +321,14 @@ class BriefService:
         if type(session_id) is not str:
             raise ValueError("session_id must be a string")
         value = normalize_brief(value)
+        positive = {normalize_text(term) for term in value.positive_keywords}
+        conflicts = [
+            term for term in value.negative_keywords if normalize_text(term) in positive
+        ]
+        if conflicts:
+            raise ValueError(
+                "Keywords cannot be both positive and excluded: " + ", ".join(conflicts)
+            )
         manifest = scoring_inputs(value)
         # SQLite serializes writers, but a process-local lock prevents two
         # deferred transactions from both choosing the same next version and

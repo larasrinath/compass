@@ -11,7 +11,7 @@ const terms = readFileSync(`${root}/src/components/TermEditor.tsx`, 'utf8')
 const css = readFileSync(`${root}/src/App.css`, 'utf8')
 
 test('brief and search are separate explicit actions', () => {
-  assert.match(brief, /Saving never starts a search/)
+  assert.match(brief, /Save your brief, then start a search/)
   assert.match(brief, /Save brief/)
   assert.doesNotMatch(brief, /runSearch|\/api\/searches/)
   assert.match(app, /disabled=\{!brief\.data\}/)
@@ -24,7 +24,7 @@ test('discovery explains cap, provenance and uncertainty', () => {
   assert.match(search, /another narrower search/)
   assert.match(search, /source\.notice/)
   assert.match(search, /Profile not retrieved/)
-  assert.match(search, /Neutral first-seen order/)
+  assert.match(search, /first-seen order/)
 })
 
 test('M2 does not expose selection, ranking, drafting or messaging actions', () => {

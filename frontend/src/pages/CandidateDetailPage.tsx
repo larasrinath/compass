@@ -20,6 +20,7 @@ export function CandidateDetailPage({
   onBack,
   backDestination,
   queue,
+  retrievalReady = true,
   rankingUnlocked,
   sessionId,
   verifiedEvidence,
@@ -30,6 +31,7 @@ export function CandidateDetailPage({
   onBack: () => void
   backDestination: 'search' | 'candidates'
   queue: ReturnTypeOfJobEvents
+  retrievalReady?: boolean
   rankingUnlocked: boolean
   sessionId: string
   verifiedEvidence: ReadonlyMap<string, EvidenceVerification>
@@ -146,7 +148,7 @@ export function CandidateDetailPage({
       </button>
       <div className="page-intro compact-intro">
         <div>
-          <p className="eyebrow">Retrieved profile · {candidate.stage}</p>
+          <p className="eyebrow">Candidate profile</p>
           <h1 id="candidate-title">
             {candidate.display_name || candidate.username}
           </h1>
@@ -251,9 +253,10 @@ export function CandidateDetailPage({
       ) : null}
 
       {contextHints.length ? (
-        <section className="panel context-panel" aria-labelledby="context-title">
+        <details className="panel context-panel">
+          <summary>Search details</summary>
           <p className="eyebrow">Context only</p>
-          <h2 id="context-title">Search and routing hints</h2>
+          <h2>Search and routing hints</h2>
           <p>These details are displayed for workflow context and carry zero scoring weight.</p>
           <dl>
             {contextHints.map((hint, index) => (
@@ -262,15 +265,16 @@ export function CandidateDetailPage({
               </div>
             ))}
           </dl>
-        </section>
+        </details>
       ) : null}
 
-      <section className="panel promotion-panel" aria-labelledby="promotion-title">
+      <details className="panel promotion-panel" open={candidate.stage === 'discovered' ? true : undefined}>
+        <summary>Download more profile information</summary>
         <div>
           <p className="eyebrow">
             {candidate.stage === 'discovered'
               ? 'Stage 1 · explicit retry'
-              : 'Stage 2 · explicit action'}
+              : 'Additional evidence'}
           </p>
           <h2 id="promotion-title">
             {candidate.stage === 'discovered'
@@ -279,8 +283,7 @@ export function CandidateDetailPage({
           </h2>
           {candidate.stage !== 'discovered' ? (
             <p>
-              Main profile is implicit, so three promoted sections keep this call to
-              four navigations.
+              Choose up to three sections to add more evidence to this profile.
             </p>
           ) : null}
         </div>
@@ -313,6 +316,7 @@ export function CandidateDetailPage({
           className="primary-action"
           disabled={
             (candidate.stage !== 'discovered' && selected.length === 0) ||
+            !retrievalReady ||
             enrich.isPending ||
             Boolean(candidate.active_job_id)
           }
@@ -339,11 +343,11 @@ export function CandidateDetailPage({
             {enrich.error.message}
           </p>
         ) : null}
-      </section>
+      </details>
 
       <section className="panel" aria-labelledby="stored-sections-title">
         <p className="eyebrow">Stored source sections</p>
-        <h2 id="stored-sections-title">Open any retrieved raw section</h2>
+        <h2 id="stored-sections-title">Review saved profile information</h2>
         {Object.keys(candidate.available_sections).length ? (
           <div
             aria-label="Stored profile sections"
@@ -371,11 +375,11 @@ export function CandidateDetailPage({
 
       <section aria-labelledby="parsed-title" className="detail-columns">
         <div className="panel parsed-panel">
-          <p className="eyebrow">Deterministic parser</p>
-          <h2 id="parsed-title">Parsed fields</h2>
-          {candidate.fields.length ? (
+          <p className="eyebrow">Extracted from this section</p>
+          <h2 id="parsed-title">Profile details</h2>
+          {candidate.fields.some((field) => field.section_name === effectiveSelectedSection) ? (
             <ol className="parsed-fields">
-              {candidate.fields.map((field) => (
+              {candidate.fields.filter((field) => field.section_name === effectiveSelectedSection).map((field) => (
                 <li key={field.id}>
                   <button
                     aria-pressed={selectedFieldId === field.id}
@@ -386,7 +390,7 @@ export function CandidateDetailPage({
                     }}
                     type="button"
                   >
-                  <small>{field.field_key}</small>
+                  <small>{field.field_key.replace(/\.\d+\.?/g, ' · ').replaceAll('_', ' ')}</small>
                   <strong>{field.value ?? field.provenance_label}</strong>
                   {field.provenance_available ? (
                     <span>
