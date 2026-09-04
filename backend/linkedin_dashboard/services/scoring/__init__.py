@@ -18,6 +18,7 @@ from linkedin_dashboard.services.scoring.signals import (
 )
 from linkedin_dashboard.services.scoring.types import (
     DEFAULT_WEIGHTS,
+    MAX_SIGNAL_WEIGHT,
     SIGNAL_ORDER,
     AbsenceCoverage,
     BriefInput,
@@ -31,6 +32,7 @@ from linkedin_dashboard.services.scoring.types import (
     MissingReason,
     MissingSection,
     MissingSet,
+    MonthsDerivation,
     PenaltyContribution,
     Polarity,
     ProfileEvidence,
@@ -54,6 +56,7 @@ from linkedin_dashboard.services.scoring.types import (
 __all__ = [
     "DEFAULT_WEIGHTS",
     "MATCHER_VERSION",
+    "MAX_SIGNAL_WEIGHT",
     "SIGNAL_ORDER",
     "AbsenceCoverage",
     "BriefInput",
@@ -68,6 +71,7 @@ __all__ = [
     "MissingReason",
     "MissingSection",
     "MissingSet",
+    "MonthsDerivation",
     "PenaltyContribution",
     "Polarity",
     "ProfileEvidence",

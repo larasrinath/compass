@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import ast
 import re
-from dataclasses import replace
+from dataclasses import fields, replace
 from decimal import Decimal
+from hashlib import sha256
 from inspect import signature
 from pathlib import Path
 from typing import cast
@@ -12,18 +13,24 @@ import pytest
 from linkedin_dashboard.parsing.spans import VerifiedSpan
 from linkedin_dashboard.services.brief import PROTECTED_TERMS
 from linkedin_dashboard.services.scoring import (
+    MAX_SIGNAL_WEIGHT,
     BriefInput,
     CoverageSet,
+    EvidenceSet,
     InvalidCredentialWeightError,
     MissingReason,
     MissingSection,
     MissingSet,
+    Polarity,
+    ProfileSection,
+    ProfileSnapshot,
     Rollup,
     ScoreClaim,
     ScoreSignal,
     ScoreStage,
     ScoringConfigInput,
     SearchContext,
+    SectionState,
     SignalId,
     SignalWeight,
     Term,
@@ -33,7 +40,28 @@ from linkedin_dashboard.services.scoring import (
     evaluate_signals,
 )
 
-from tests.scoring_fixtures import full_brief, rich_snapshot
+
+def _simple_snapshot() -> ProfileSnapshot:
+    return ProfileSnapshot(
+        tuple(
+            ProfileSection(
+                index,
+                name,
+                SectionState.COMPLETE,
+                raw,
+                sha256(raw.encode()).hexdigest(),
+            )
+            for index, (name, raw) in enumerate(
+                (
+                    ("skills", "Kubernetes"),
+                    ("experience", ""),
+                    ("main_profile", ""),
+                ),
+                start=1,
+            )
+        )
+    )
+
 
 _PACKAGE = (
     Path(__file__).parents[2]
@@ -42,18 +70,18 @@ _PACKAGE = (
     / "services"
     / "scoring"
 )
-_FORBIDDEN_IMPORTS = (
-    "datetime",
-    "fastapi",
-    "httpx",
-    "random",
-    "requests",
-    "socket",
-    "sqlalchemy",
-    "time",
-    "linkedin_dashboard.api",
-    "linkedin_dashboard.db",
-    "linkedin_dashboard.mcp",
+_ALLOWED_IMPORTS = frozenset(
+    {
+        "__future__",
+        "dataclasses",
+        "decimal",
+        "enum",
+        "re",
+        "typing",
+        "unicodedata",
+        "linkedin_dashboard.parsing.spans",
+        "linkedin_dashboard.parsing.verify",
+    }
 )
 
 
@@ -70,18 +98,30 @@ def test_kernel_import_graph_is_pure() -> None:
             if isinstance(node, ast.Import)
             for alias in node.names
         ]
-        assert not any(
-            imported == blocked or imported.startswith(f"{blocked}.")
+        assert all(
+            imported in _ALLOWED_IMPORTS
+            or imported.startswith("linkedin_dashboard.services.scoring")
             for imported in imports
-            for blocked in _FORBIDDEN_IMPORTS
-        ), f"forbidden import in {path}"
+        ), f"non-pure import in {path}: {imports}"
+        calls = [node.func for node in ast.walk(tree) if isinstance(node, ast.Call)]
+        assert not any(
+            isinstance(call, ast.Name)
+            and call.id in {"open", "input", "print", "eval", "exec", "__import__"}
+            for call in calls
+        )
+        assert not any(
+            isinstance(call, ast.Attribute)
+            and call.attr in {"urandom", "urlopen", "request"}
+            for call in calls
+        )
 
 
 def test_kernel_definitions_exclude_sensitive_and_display_only_inputs() -> None:
     sources = "\n".join(path.read_text().casefold() for path in _PACKAGE.rglob("*.py"))
-    assert "profile_urn" not in sources
-    assert "messageability" not in sources
-    assert "compose-anchor" not in sources
+    canonical = re.sub(r"[^a-z0-9]", "", sources)
+    assert "profileurn" not in canonical
+    assert "messageability" not in canonical
+    assert "composeanchor" not in canonical
     for term in PROTECTED_TERMS:
         assert re.search(rf"(?<![a-z]){re.escape(term)}(?![a-z])", sources) is None
 
@@ -93,30 +133,39 @@ def test_non_scorable_signal_weight_is_rejected() -> None:
 
 def test_search_context_is_typed_but_cannot_enter_calculation() -> None:
     context = SearchContext("search-1", ("F", "S"))
+    brief = BriefInput(required_skills=(Term("Kubernetes"),))
+    snapshot = _simple_snapshot()
     assert context.relationship_filters == ("F", "S")
     assert "context" not in signature(calculate_score).parameters
     baseline = calculate_score(
-        full_brief(),
+        brief,
         ScoringConfigInput(),
-        rich_snapshot(),
+        snapshot,
         stage=ScoreStage.PROVISIONAL,
     )
     assert replace(context, relationship_filters=("O",)) != context
     assert (
         calculate_score(
-            full_brief(),
+            brief,
             ScoringConfigInput(),
-            rich_snapshot(),
+            snapshot,
             stage=ScoreStage.PROVISIONAL,
         )
         == baseline
     )
+    snapshot_fields = "".join(
+        re.sub(r"[^a-z0-9]", "", item.name.casefold())
+        for item in fields(ProfileSnapshot)
+    )
+    assert "network" not in snapshot_fields
+    assert "relationship" not in snapshot_fields
+    assert "searchcontext" not in snapshot_fields
 
 
 def test_empty_primary_with_alias_does_not_activate() -> None:
     brief = BriefInput(required_skills=(Term(" ", ("Kubernetes",)),))
     assert active_signal_ids(brief) == ()
-    assert evaluate_signals(brief, ScoringConfigInput(), rich_snapshot()) == ()
+    assert evaluate_signals(brief, ScoringConfigInput(), ProfileSnapshot(())) == ()
 
 
 def test_positive_credential_weight_with_empty_input_is_rejected_even_if_inert() -> (
@@ -135,7 +184,7 @@ def test_positive_credential_weight_with_empty_input_is_rejected_even_if_inert()
         calculate_score(
             BriefInput(positive_keywords=("systems",)),
             config,
-            rich_snapshot(),
+            ProfileSnapshot(()),
             stage=ScoreStage.PROVISIONAL,
         )
 
@@ -148,6 +197,88 @@ def test_claim_provenance_kinds_cannot_be_substituted() -> None:
         ScoreClaim("skill:x", "x", Verdict.NOT_MATCHED, missing)
     with pytest.raises(ValueError, match="cannot be empty"):
         CoverageSet(())
+
+
+def test_contradicted_claim_rejects_mixed_polarity_evidence() -> None:
+    signal = evaluate_signals(
+        BriefInput(required_skills=(Term("Kubernetes"),)),
+        ScoringConfigInput(),
+        _simple_snapshot(),
+    )[0]
+    provenance = signal.claims[0].provenance
+    assert isinstance(provenance, EvidenceSet)
+    supporting = provenance.entries[0]
+    contradicting = replace(supporting, polarity=Polarity.CONTRADICTING)
+    with pytest.raises(ValueError, match="exclusively"):
+        ScoreClaim(
+            "skill:x",
+            "x",
+            Verdict.CONTRADICTED,
+            EvidenceSet((supporting, contradicting)),
+        )
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        cast(Decimal, True),
+        Decimal("NaN"),
+        Decimal("sNaN"),
+        Decimal("Infinity"),
+        Decimal("-Infinity"),
+        MAX_SIGNAL_WEIGHT + 1,
+    ),
+)
+def test_weight_domain_rejects_nonfinite_bool_and_extreme_values(
+    value: Decimal,
+) -> None:
+    with pytest.raises(ValueError):
+        SignalWeight(SignalId.REQUIRED_SKILLS, value)
+
+
+def test_weight_domain_accepts_bounded_fraction_and_calculates_safely() -> None:
+    fractional = SignalWeight(SignalId.REQUIRED_SKILLS, Decimal("0.125"))
+    weights = tuple(
+        fractional
+        if item is SignalId.REQUIRED_SKILLS
+        else SignalWeight(
+            item,
+            Decimal(0) if item is SignalId.CREDENTIAL else MAX_SIGNAL_WEIGHT,
+        )
+        for item in SignalId
+    )
+    result = calculate_score(
+        BriefInput(required_skills=(Term("Kubernetes"),)),
+        ScoringConfigInput(weights),
+        _simple_snapshot(),
+        stage=ScoreStage.PROVISIONAL,
+    )
+    assert result.score == Decimal("100.000000")
+
+    maximum = ScoringConfigInput(
+        tuple(
+            SignalWeight(
+                item,
+                MAX_SIGNAL_WEIGHT if item is SignalId.REQUIRED_SKILLS else Decimal(0),
+            )
+            for item in SignalId
+        )
+    )
+    assert calculate_score(
+        BriefInput(required_skills=(Term("Kubernetes"),)),
+        maximum,
+        _simple_snapshot(),
+        stage=ScoreStage.PROVISIONAL,
+    ).score == Decimal("100.000000")
+
+
+@pytest.mark.parametrize(
+    "value",
+    (cast(int, True), cast(int, 1.5), cast(int, Decimal("1.5"))),
+)
+def test_required_months_reject_bool_and_fractional_values(value: int) -> None:
+    with pytest.raises(ValueError, match="integer"):
+        BriefInput(required_experience_months=value)
 
 
 def test_signal_rollup_cannot_disagree_with_claims() -> None:

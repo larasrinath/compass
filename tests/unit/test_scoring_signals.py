@@ -2,17 +2,30 @@ from __future__ import annotations
 
 from dataclasses import replace
 from decimal import Decimal
+from hashlib import sha256
+from typing import cast
 
 import pytest
+from linkedin_dashboard.parsing.verify import verify_substring
 from linkedin_dashboard.services.scoring import (
+    BriefInput,
     CoverageSet,
     EvidenceSet,
+    ExperienceRole,
     Matcher,
     MetroEquivalence,
+    MissingReason,
     MissingSet,
+    MonthsDerivation,
+    Polarity,
+    ProfileEvidence,
+    ProfileSection,
+    ProfileSnapshot,
     Rollup,
     ScoringConfigInput,
+    SectionState,
     SignalId,
+    SourcedText,
     Term,
     Verdict,
     active_signal_ids,
@@ -23,12 +36,102 @@ from linkedin_dashboard.services.scoring.signals.experience import relevant_expe
 from linkedin_dashboard.services.scoring.signals.location import location_fit
 from linkedin_dashboard.services.scoring.signals.skills import required_skills
 
-from tests.scoring_fixtures import (
-    full_brief,
-    missing_section,
-    replace_section,
-    rich_snapshot,
-)
+
+def complete_section(name: str, raw_text: str, section_id: int) -> ProfileSection:
+    return ProfileSection(
+        section_id,
+        name,
+        SectionState.COMPLETE,
+        raw_text,
+        sha256(raw_text.encode()).hexdigest(),
+    )
+
+
+def missing_section(name: str, section_id: int) -> ProfileSection:
+    return ProfileSection(
+        section_id,
+        name,
+        SectionState.MISSING,
+        missing_reason=MissingReason.FETCH_ERROR,
+    )
+
+
+def sourced(section: ProfileSection, text: str) -> SourcedText:
+    span = verify_substring(section.raw_text, text)
+    assert span is not None
+    return SourcedText(
+        section.name,
+        section.section_id,
+        section.content_sha256,
+        text,
+        span,
+    )
+
+
+def rich_snapshot(*, months: int | None = 72) -> ProfileSnapshot:
+    main = complete_section(
+        "main_profile",
+        "Ada Example\nStaff Backend Engineer\nChicago\nFinancial services leader",
+        1,
+    )
+    experience = complete_section(
+        "experience",
+        "Backend Engineer\nJan 2018 - Dec 2023\n"
+        "Built Kubernetes platforms for banking.\n",
+        2,
+    )
+    skills = complete_section("skills", "Python\nKubernetes\n", 3)
+    education = complete_section("education", "State University\n", 4)
+    certifications = complete_section(
+        "certifications", "AWS Certified Solutions Architect\n", 5
+    )
+    title = sourced(experience, "Backend Engineer")
+    role = ExperienceRole(
+        title,
+        sourced(experience, "Built Kubernetes platforms for banking."),
+        date_range=sourced(experience, "Jan 2018 - Dec 2023"),
+        months=months,
+        months_derivation=(None if months is None else MonthsDerivation.DATE_RANGE),
+    )
+    return ProfileSnapshot(
+        (certifications, skills, main, education, experience),
+        (sourced(main, "Staff Backend Engineer"), title),
+        sourced(main, "Chicago"),
+        (role,),
+    )
+
+
+def full_brief() -> BriefInput:
+    return BriefInput(
+        required_skills=(Term("Kubernetes", ("k8s",)),),
+        optional_skills=(Term("Python"),),
+        required_experience_months=60,
+        target_titles=(Term("Backend Engineer"),),
+        industries=(Term("financial services", ("banking",)),),
+        location="Chicago",
+        required_credentials=(Term("AWS Certified Solutions Architect", ("AWS SAA",)),),
+        positive_keywords=("distributed systems",),
+        negative_keywords=("gambling",),
+    )
+
+
+def replace_section(
+    snapshot: ProfileSnapshot, name: str, replacement: ProfileSection
+) -> ProfileSnapshot:
+    return replace(
+        snapshot,
+        sections=tuple(
+            replacement if section.name == name else section
+            for section in snapshot.sections
+        ),
+        titles=tuple(item for item in snapshot.titles if item.section_name != name),
+        location=(
+            None
+            if snapshot.location is not None and snapshot.location.section_name == name
+            else snapshot.location
+        ),
+        experience_roles=(() if name == "experience" else snapshot.experience_roles),
+    )
 
 
 def test_unicode_whole_token_alias_stem_and_repeated_spans() -> None:
@@ -287,3 +390,124 @@ def test_shuffled_inputs_produce_stable_signal_order() -> None:
     assert evaluate_signals(
         brief, ScoringConfigInput(), rich_snapshot()
     ) == evaluate_signals(shuffled, ScoringConfigInput(), rich_snapshot())
+
+
+def test_nfkc_mapping_preserves_hangul_sharp_s_and_nonoverlap() -> None:
+    hangul_raw = "한 engineer"
+    hangul = find_term_matches(hangul_raw, Term("한"))
+    assert len(hangul) == 1
+    assert (hangul[0].span.start, hangul[0].span.end) == (0, 3)
+    assert hangul[0].span.snippet == "한"
+
+    sharp_s = find_term_matches("Straße", Term("STRASSE"))
+    assert len(sharp_s) == 1
+    assert (sharp_s[0].span.start, sharp_s[0].span.end) == (0, 6)
+    assert sharp_s[0].span.snippet == "Straße"
+
+    longest_alias = find_term_matches(
+        "machine learning",
+        Term("unmatched", ("machine", "machine learning")),
+    )
+    assert [item.span.snippet for item in longest_alias] == ["machine learning"]
+
+
+def test_title_alias_exact_match_is_deterministic_alias_evidence() -> None:
+    main = complete_section("main_profile", "Ada\nPlatform Wizard\nChicago", 10)
+    experience = complete_section("experience", "", 11)
+    snapshot = ProfileSnapshot(
+        (experience, main), titles=(sourced(main, "Platform Wizard"),)
+    )
+    brief = BriefInput(
+        target_titles=(Term("Backend Engineer", ("Platform Wizard", "Platform Lead")),)
+    )
+    signal = evaluate_signals(brief, ScoringConfigInput(), snapshot)[0]
+    provenance = signal.claims[0].provenance
+    assert signal.raw_subscore == 1
+    assert isinstance(provenance, EvidenceSet)
+    assert provenance.entries[0].matcher is Matcher.ALIAS
+    assert provenance.entries[0].span.snippet == "Platform Wizard"
+
+
+def test_experience_evidence_includes_relevance_and_date_proof() -> None:
+    matched = relevant_experience(full_brief(), rich_snapshot())
+    matched_provenance = matched.claims[0].provenance
+    assert isinstance(matched_provenance, EvidenceSet)
+    snippets = {item.span.snippet for item in matched_provenance.entries}
+    assert "Backend Engineer" in snippets
+    assert "Jan 2018 - Dec 2023" in snippets
+    assert {item.polarity for item in matched_provenance.entries} == {
+        Polarity.SUPPORTING
+    }
+
+    contradicted = relevant_experience(full_brief(), rich_snapshot(months=12))
+    contradicted_provenance = contradicted.claims[0].provenance
+    assert isinstance(contradicted_provenance, EvidenceSet)
+    assert "Jan 2018 - Dec 2023" in {
+        item.span.snippet for item in contradicted_provenance.entries
+    }
+    assert {item.polarity for item in contradicted_provenance.entries} == {
+        Polarity.CONTRADICTING
+    }
+
+
+def test_numeric_role_months_require_verified_derivation_source() -> None:
+    title = rich_snapshot().experience_roles[0].title
+    with pytest.raises(ValueError, match="verified derivation"):
+        ExperienceRole(title, months=12)
+    with pytest.raises(ValueError, match="nonnegative integer"):
+        ExperienceRole(title, months=cast(int, True))
+    with pytest.raises(ValueError, match="nonnegative integer"):
+        ExperienceRole(title, months=cast(int, Decimal("1.5")))
+
+
+def test_profile_snapshot_rejects_cross_section_sources() -> None:
+    snapshot = rich_snapshot()
+    main = snapshot.section("main_profile")
+    experience = snapshot.section("experience")
+    skills = snapshot.section("skills")
+    assert main is not None and experience is not None and skills is not None
+
+    with pytest.raises(ValueError, match="role sources"):
+        ExperienceRole(sourced(main, "Staff Backend Engineer"))
+    with pytest.raises(ValueError, match="title sources"):
+        ProfileSnapshot(snapshot.sections, titles=(sourced(skills, "Python"),))
+    with pytest.raises(ValueError, match="location source"):
+        ProfileSnapshot(
+            snapshot.sections,
+            location=sourced(experience, "Backend Engineer"),
+        )
+
+    foreign_span = sourced(experience, "Backend Engineer")
+    false_main_source = replace(
+        foreign_span,
+        section_name="main_profile",
+        section_id=main.section_id,
+        content_sha256=main.content_sha256,
+    )
+    with pytest.raises(ValueError, match="does not resolve"):
+        ProfileSnapshot(snapshot.sections, titles=(false_main_source,))
+
+
+def test_alias_collisions_are_rejected_and_evidence_deduplicates() -> None:
+    with pytest.raises(ValueError, match="another primary"):
+        BriefInput(required_skills=(Term("Python", ("py",)), Term("py")))
+    with pytest.raises(ValueError, match="multiple primary"):
+        BriefInput(
+            required_skills=(
+                Term("Python", ("language",)),
+                Term("Rust", ("language",)),
+            )
+        )
+
+    source = rich_snapshot().titles[0]
+    exact = ProfileEvidence(
+        source.text,
+        Matcher.EXACT,
+        source.section_name,
+        source.section_id,
+        source.content_sha256,
+        source.span,
+    )
+    stem = replace(exact, matcher=Matcher.STEM)
+    evidence = EvidenceSet((stem, exact, exact))
+    assert evidence.entries == (exact,)

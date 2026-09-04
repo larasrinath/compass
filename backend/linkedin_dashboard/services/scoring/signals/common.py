@@ -14,6 +14,7 @@ from linkedin_dashboard.services.scoring.types import (
     AbsenceCoverage,
     CoverageSet,
     EvidenceSet,
+    Matcher,
     MissingReason,
     MissingSection,
     MissingSet,
@@ -24,6 +25,7 @@ from linkedin_dashboard.services.scoring.types import (
     Rollup,
     ScoreClaim,
     SectionState,
+    SourcedText,
     Term,
     Verdict,
 )
@@ -113,6 +115,23 @@ def evidence_for_match(
         profile_section_id=section.section_id,
         content_sha256=section.content_sha256,
         span=match.span,
+        polarity=polarity,
+    )
+
+
+def evidence_for_source(
+    source: SourcedText,
+    *,
+    matcher: Matcher = Matcher.EXACT,
+    polarity: Polarity = Polarity.SUPPORTING,
+) -> ProfileEvidence:
+    return ProfileEvidence(
+        matched_term=source.text,
+        matcher=matcher,
+        section_name=source.section_name,
+        profile_section_id=source.section_id,
+        content_sha256=source.content_sha256,
+        span=source.span,
         polarity=polarity,
     )
 

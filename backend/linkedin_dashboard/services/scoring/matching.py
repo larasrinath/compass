@@ -39,35 +39,98 @@ def normalize_text(value: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
 
 
-def _indexed_normalize(value: str) -> _IndexedText:
+def _is_hangul_lead(value: str) -> bool:
+    codepoint = ord(value)
+    return 0x1100 <= codepoint <= 0x115F or 0xA960 <= codepoint <= 0xA97F
+
+
+def _is_hangul_vowel(value: str) -> bool:
+    codepoint = ord(value)
+    return 0x1160 <= codepoint <= 0x11A7 or 0xD7B0 <= codepoint <= 0xD7C6
+
+
+def _is_hangul_tail(value: str) -> bool:
+    codepoint = ord(value)
+    return 0x11A8 <= codepoint <= 0x11FF or 0xD7CB <= codepoint <= 0xD7FB
+
+
+def _cluster_normalize(value: str) -> _IndexedText:
     output: list[str] = []
     starts: list[int] = []
     ends: list[int] = []
     index = 0
-    previous_space = False
     while index < len(value):
         start = index
         index += 1
+        if _is_hangul_lead(value[start]) and index < len(value):
+            if _is_hangul_vowel(value[index]):
+                index += 1
+                if index < len(value) and _is_hangul_tail(value[index]):
+                    index += 1
         while index < len(value) and unicodedata.combining(value[index]):
             index += 1
         cluster = value[start:index]
         normalized = unicodedata.normalize("NFKC", cluster).casefold()
         for character in normalized:
-            if character.isspace():
-                if not output or previous_space:
-                    continue
-                character = " "
-                previous_space = True
-            else:
-                previous_space = False
             output.append(character)
             starts.append(start)
             ends.append(index)
-    while output and output[-1] == " ":
+    return _IndexedText("".join(output), tuple(starts), tuple(ends))
+
+
+def _prefix_normalize(value: str) -> _IndexedText:
+    """Exact fallback for a normalization interaction crossing our clusters."""
+    previous = ""
+    starts: list[int] = []
+    ends: list[int] = []
+    for source_end in range(1, len(value) + 1):
+        current = unicodedata.normalize("NFKC", value[:source_end]).casefold()
+        common = 0
+        limit = min(len(previous), len(current))
+        while common < limit and previous[common] == current[common]:
+            common += 1
+        source_start = source_end - 1
+        if common < len(starts):
+            source_start = min(source_start, min(starts[common:]))
+        starts = starts[:common]
+        ends = ends[:common]
+        for _ in current[common:]:
+            starts.append(source_start)
+            ends.append(source_end)
+        previous = current
+    return _IndexedText(previous, tuple(starts), tuple(ends))
+
+
+def _collapse_whitespace(indexed: _IndexedText) -> _IndexedText:
+    output: list[str] = []
+    starts: list[int] = []
+    ends: list[int] = []
+    for position, character in enumerate(indexed.text):
+        if character.isspace():
+            if not output:
+                continue
+            if output[-1] == " ":
+                ends[-1] = indexed.ends[position]
+                continue
+            character = " "
+        output.append(character)
+        starts.append(indexed.starts[position])
+        ends.append(indexed.ends[position])
+    if output and output[-1] == " ":
         output.pop()
         starts.pop()
         ends.pop()
     return _IndexedText("".join(output), tuple(starts), tuple(ends))
+
+
+def _indexed_normalize(value: str) -> _IndexedText:
+    indexed = _cluster_normalize(value)
+    whole = unicodedata.normalize("NFKC", value).casefold()
+    if indexed.text != whole:
+        indexed = _prefix_normalize(value)
+    if indexed.text != whole:
+        raise AssertionError("indexed normalization must equal whole-string NFKC")
+    return _collapse_whitespace(indexed)
 
 
 def _is_word(value: str) -> bool:
@@ -197,20 +260,21 @@ def find_term_matches(
     priority = {Matcher.EXACT: 0, Matcher.ALIAS: 1, Matcher.STEM: 2}
     candidates.sort(
         key=lambda item: (
+            priority[item.matcher],
+            -(item.span.end - item.span.start),
             item.span.start,
             item.span.end,
-            priority[item.matcher],
             item.matched_term.casefold(),
         )
     )
     selected: list[TermMatch] = []
-    occupied: set[tuple[int, int]] = set()
     for item in candidates:
-        key = (item.span.start, item.span.end)
-        if key not in occupied:
-            occupied.add(key)
+        if not any(
+            item.span.start < previous.span.end and previous.span.start < item.span.end
+            for previous in selected
+        ):
             selected.append(item)
-    return tuple(selected)
+    return tuple(sorted(selected, key=lambda item: (item.span.start, item.span.end)))
 
 
 def term_is_present(value: str, term: Term) -> bool:

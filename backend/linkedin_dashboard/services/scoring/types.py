@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, DecimalException
 from enum import StrEnum
 from typing import Literal
 
@@ -67,6 +68,11 @@ class ScoreStage(StrEnum):
     ENRICHED = "enriched"
 
 
+class MonthsDerivation(StrEnum):
+    DATE_RANGE = "date_range"
+    DURATION_TEXT = "duration_text"
+
+
 class ConfidenceBand(StrEnum):
     LOW = "low"
     MEDIUM = "medium"
@@ -78,8 +84,24 @@ class CalculationStatus(StrEnum):
     UNKNOWN = "unknown"
 
 
+MAX_SIGNAL_WEIGHT = Decimal("1000000")
+_ZERO_DECIMAL = Decimal(0)
+
+
+def _decimal_value(value: object, field: str) -> Decimal:
+    if isinstance(value, bool):
+        raise ValueError(f"{field} must be numeric and finite")
+    try:
+        result = Decimal(str(value))
+    except (DecimalException, ValueError) as exc:
+        raise ValueError(f"{field} must be numeric and finite") from exc
+    if not result.is_finite():
+        raise ValueError(f"{field} must be numeric and finite")
+    return result
+
+
 def _normal(value: str) -> str:
-    return " ".join(value.strip().split()).casefold()
+    return " ".join(unicodedata.normalize("NFKC", value).strip().split()).casefold()
 
 
 def _canonical_strings(values: tuple[str, ...]) -> tuple[str, ...]:
@@ -121,6 +143,18 @@ def _canonical_terms(values: tuple[Term, ...]) -> tuple[Term, ...]:
             tuple(alias for item in items for alias in item.aliases)
         )
         output.append(Term(primary, aliases))
+    primary_keys = {_normal(item.term) for item in output}
+    alias_owners: dict[str, str] = {}
+    for item in output:
+        owner = _normal(item.term)
+        for alias in item.aliases:
+            alias_key = _normal(alias)
+            if alias_key in primary_keys and alias_key != owner:
+                raise ValueError("an alias cannot equal another primary term")
+            previous = alias_owners.get(alias_key)
+            if previous is not None and previous != owner:
+                raise ValueError("an alias cannot belong to multiple primary terms")
+            alias_owners[alias_key] = owner
     return tuple(output)
 
 
@@ -138,7 +172,7 @@ class BriefInput:
 
     def __post_init__(self) -> None:
         if self.required_experience_months is not None:
-            if isinstance(self.required_experience_months, bool):
+            if type(self.required_experience_months) is not int:
                 raise ValueError("required experience months must be an integer")
             if self.required_experience_months < 0:
                 raise ValueError("required experience months cannot be negative")
@@ -169,9 +203,11 @@ class SignalWeight:
             signal_id = SignalId(self.signal_id)
         except ValueError as exc:
             raise ValueError(f"non-scorable signal id: {self.signal_id}") from exc
-        value = Decimal(str(self.value))
-        if not value.is_finite() or value < 0:
+        value = _decimal_value(self.value, "signal weight")
+        if value < 0:
             raise ValueError("signal weights must be finite and nonnegative")
+        if value > MAX_SIGNAL_WEIGHT:
+            raise ValueError("signal weight exceeds the supported maximum")
         object.__setattr__(self, "signal_id", signal_id)
         object.__setattr__(self, "value", value)
 
@@ -284,11 +320,38 @@ class SourcedText:
 class ExperienceRole:
     title: SourcedText
     description: SourcedText | None = None
+    date_range: SourcedText | None = None
+    duration: SourcedText | None = None
     months: int | None = None
+    months_derivation: MonthsDerivation | None = None
 
     def __post_init__(self) -> None:
-        if self.months is not None and self.months < 0:
-            raise ValueError("role months cannot be negative")
+        sources = tuple(
+            item
+            for item in (
+                self.title,
+                self.description,
+                self.date_range,
+                self.duration,
+            )
+            if item is not None
+        )
+        if any(item.section_name != "experience" for item in sources):
+            raise ValueError("role sources must come from the experience section")
+        if self.months is None:
+            if self.months_derivation is not None:
+                raise ValueError("month derivation requires a numeric month value")
+            return
+        if type(self.months) is not int or self.months < 0:
+            raise ValueError("role months must be a nonnegative integer")
+        if self.months_derivation is None:
+            raise ValueError("numeric role months require verified derivation metadata")
+        derivation = MonthsDerivation(self.months_derivation)
+        if derivation is MonthsDerivation.DATE_RANGE and self.date_range is None:
+            raise ValueError("date-range derivation requires a verified date range")
+        if derivation is MonthsDerivation.DURATION_TEXT and self.duration is None:
+            raise ValueError("duration derivation requires verified duration text")
+        object.__setattr__(self, "months_derivation", derivation)
 
 
 @dataclass(frozen=True, slots=True)
@@ -331,6 +394,13 @@ class ProfileSnapshot:
                 )
             ),
         )
+        if any(
+            item.section_name not in {"main_profile", "experience"}
+            for item in self.titles
+        ):
+            raise ValueError("title sources must come from title-bearing sections")
+        if self.location is not None and self.location.section_name != "main_profile":
+            raise ValueError("location source must come from the main profile section")
         self._verify_sources()
 
     def section(self, name: str) -> ProfileSection | None:
@@ -344,6 +414,10 @@ class ProfileSnapshot:
             values.append(role.title)
             if role.description is not None:
                 values.append(role.description)
+            if role.date_range is not None:
+                values.append(role.date_range)
+            if role.duration is not None:
+                values.append(role.duration)
         for value in values:
             section = self.section(value.section_name)
             if section is None or section.state is not SectionState.COMPLETE:
@@ -375,12 +449,36 @@ class EvidenceSet:
     def __post_init__(self) -> None:
         if not self.entries:
             raise ValueError("evidence sets cannot be empty")
+        priority = {
+            Matcher.EXACT: 0,
+            Matcher.ALIAS: 1,
+            Matcher.STEM: 2,
+            Matcher.LLM_VERIFIED: 3,
+        }
+        unique: dict[
+            tuple[str, int | str, str, int, int, Polarity], ProfileEvidence
+        ] = {}
+        for item in self.entries:
+            key = (
+                item.section_name,
+                item.profile_section_id,
+                item.content_sha256,
+                item.span.start,
+                item.span.end,
+                item.polarity,
+            )
+            previous = unique.get(key)
+            if previous is None or (
+                priority[item.matcher],
+                item.matched_term.casefold(),
+            ) < (priority[previous.matcher], previous.matched_term.casefold()):
+                unique[key] = item
         object.__setattr__(
             self,
             "entries",
             tuple(
                 sorted(
-                    self.entries,
+                    unique.values(),
                     key=lambda item: (
                         item.section_name,
                         item.span.start,
@@ -473,11 +571,12 @@ class ScoreClaim:
             polarities = {item.polarity for item in self.provenance.entries}
             if verdict is Verdict.MATCHED and polarities != {Polarity.SUPPORTING}:
                 raise ValueError("matched evidence must be supporting")
-            if (
-                verdict is Verdict.CONTRADICTED
-                and Polarity.CONTRADICTING not in polarities
-            ):
-                raise ValueError("contradicted evidence must be contradicting")
+            if verdict is Verdict.CONTRADICTED and polarities != {
+                Polarity.CONTRADICTING
+            }:
+                raise ValueError(
+                    "contradicted evidence must be exclusively contradicting"
+                )
 
 
 @dataclass(frozen=True, slots=True)
@@ -491,8 +590,8 @@ class ScoreSignal:
     def __post_init__(self) -> None:
         object.__setattr__(self, "signal_id", SignalId(self.signal_id))
         rollup = Rollup(self.rollup)
-        subscore = Decimal(str(self.raw_subscore))
-        availability = Decimal(str(self.availability))
+        subscore = _decimal_value(self.raw_subscore, "raw subscore")
+        availability = _decimal_value(self.availability, "availability")
         if not (Decimal(0) <= subscore <= Decimal(1)):
             raise ValueError("raw subscore must be between zero and one")
         if not (Decimal(0) <= availability <= Decimal(1)):
@@ -524,8 +623,8 @@ class PenaltyContribution:
     def __post_init__(self) -> None:
         if self.penalty_id not in {"P-1", "P-2"}:
             raise ValueError("unknown penalty id")
-        points = Decimal(str(self.points))
-        if points < 0 or not points.is_finite():
+        points = _decimal_value(self.points, "penalty points")
+        if points < 0:
             raise ValueError("penalty points must be finite and nonnegative")
         cap = Decimal(15) if self.penalty_id == "P-1" else Decimal(10)
         if points > cap:
@@ -554,7 +653,7 @@ class ScoreCalculation:
             if self.confidence_band is None
             else ConfidenceBand(self.confidence_band)
         )
-        confidence = Decimal(str(self.confidence))
+        confidence = _decimal_value(self.confidence, "confidence")
         signals = tuple(sorted(self.signals, key=lambda item: item.signal_id.value))
         penalties = tuple(sorted(self.penalties, key=lambda item: item.penalty_id))
         if self.active_signal_count != len(signals):
@@ -563,7 +662,8 @@ class ScoreCalculation:
             raise ValueError("confidence must be between zero and one")
         values = (self.score, self.score_lower, self.score_upper)
         numeric = tuple(
-            None if value is None else Decimal(str(value)) for value in values
+            None if value is None else _decimal_value(value, "score")
+            for value in values
         )
         if any(value is None for value in numeric) != all(
             value is None for value in numeric
@@ -604,6 +704,3 @@ class ScoreCalculation:
         object.__setattr__(self, "stage", stage)
         object.__setattr__(self, "signals", signals)
         object.__setattr__(self, "penalties", penalties)
-
-
-_ZERO_DECIMAL = Decimal(0)

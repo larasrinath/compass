@@ -3,30 +3,108 @@ from __future__ import annotations
 import random
 from dataclasses import replace
 from decimal import Decimal
+from hashlib import sha256
 
 import pytest
+from linkedin_dashboard.parsing.verify import verify_substring
 from linkedin_dashboard.services.scoring import (
     BriefInput,
     CalculationStatus,
     ConfidenceBand,
+    ExperienceRole,
     MissingReason,
     MissingSection,
     MissingSet,
+    MonthsDerivation,
     PenaltyContribution,
+    ProfileSection,
+    ProfileSnapshot,
     Rollup,
     ScoreClaim,
     ScoreSignal,
     ScoreStage,
     ScoringConfigInput,
+    SectionState,
     SignalId,
     SignalWeight,
+    SourcedText,
+    Term,
     Verdict,
     ZeroEffectiveWeightError,
     aggregate,
     calculate_score,
 )
 
-from tests.scoring_fixtures import full_brief, rich_snapshot
+
+def _section(name: str, raw_text: str, section_id: int) -> ProfileSection:
+    return ProfileSection(
+        section_id,
+        name,
+        SectionState.COMPLETE,
+        raw_text,
+        sha256(raw_text.encode()).hexdigest(),
+    )
+
+
+def _source(section: ProfileSection, text: str) -> SourcedText:
+    span = verify_substring(section.raw_text, text)
+    assert span is not None
+    return SourcedText(
+        section.name,
+        section.section_id,
+        section.content_sha256,
+        text,
+        span,
+    )
+
+
+def rich_snapshot(*, months: int | None = 72) -> ProfileSnapshot:
+    main = _section(
+        "main_profile",
+        "Ada Example\nStaff Backend Engineer\nChicago\nFinancial services leader",
+        1,
+    )
+    experience = _section(
+        "experience",
+        "Backend Engineer\nJan 2018 - Dec 2023\n"
+        "Built Kubernetes platforms for banking.\n",
+        2,
+    )
+    skills = _section("skills", "Python\nKubernetes\n", 3)
+    education = _section("education", "State University\n", 4)
+    certifications = _section(
+        "certifications", "AWS Certified Solutions Architect\n", 5
+    )
+    title = _source(experience, "Backend Engineer")
+    return ProfileSnapshot(
+        (certifications, skills, main, education, experience),
+        (_source(main, "Staff Backend Engineer"), title),
+        _source(main, "Chicago"),
+        (
+            ExperienceRole(
+                title,
+                _source(experience, "Built Kubernetes platforms for banking."),
+                date_range=_source(experience, "Jan 2018 - Dec 2023"),
+                months=months,
+                months_derivation=(
+                    None if months is None else MonthsDerivation.DATE_RANGE
+                ),
+            ),
+        ),
+    )
+
+
+def full_brief() -> BriefInput:
+    return BriefInput(
+        required_skills=(Term("Kubernetes", ("k8s",)),),
+        optional_skills=(Term("Python"),),
+        required_experience_months=60,
+        target_titles=(Term("Backend Engineer"),),
+        industries=(Term("financial services", ("banking",)),),
+        location="Chicago",
+        required_credentials=(Term("AWS Certified Solutions Architect", ("AWS SAA",)),),
+        negative_keywords=("gambling",),
+    )
 
 
 def _claim(key: str = "test") -> ScoreClaim:
@@ -275,3 +353,59 @@ def test_contradiction_penalty_is_named_and_bounded() -> None:
     assert contradiction.points == 5
     assert contradiction.details == ("S-3:experience-depth",)
     assert contradiction.evidence
+
+
+@pytest.mark.parametrize(
+    "section_name",
+    ("interests", "honors", "contact_info", "education"),
+)
+def test_negative_penalty_ignores_sections_not_used_by_active_signals(
+    section_name: str,
+) -> None:
+    marker = "excludedmarker"
+    brief = BriefInput(
+        required_skills=(Term("Kubernetes"),),
+        negative_keywords=(marker,),
+    )
+    snapshot = rich_snapshot()
+    baseline = calculate_score(
+        brief,
+        ScoringConfigInput(),
+        snapshot,
+        stage=ScoreStage.PROVISIONAL,
+    )
+    injected = _section(section_name, marker, 900)
+    changed = replace(
+        snapshot,
+        sections=(
+            *(item for item in snapshot.sections if item.name != section_name),
+            injected,
+        ),
+    )
+    result = calculate_score(
+        brief,
+        ScoringConfigInput(),
+        changed,
+        stage=ScoreStage.PROVISIONAL,
+    )
+    assert result.score == baseline.score
+    assert result.score_lower == baseline.score_lower
+    assert result.score_upper == baseline.score_upper
+    assert result.confidence == baseline.confidence
+    assert result.penalties == baseline.penalties == ()
+
+
+def test_education_penalty_is_eligible_only_when_credential_signal_is_active() -> None:
+    brief = BriefInput(
+        required_credentials=(Term("AWS Certified Solutions Architect"),),
+        negative_keywords=("State University",),
+    )
+    result = calculate_score(
+        brief,
+        _weights(),
+        rich_snapshot(),
+        stage=ScoreStage.ENRICHED,
+    )
+    assert result.penalties[0].penalty_id == "P-1"
+    assert result.penalties[0].details == ("state university",)
+    assert {item.section_name for item in result.penalties[0].evidence} == {"education"}

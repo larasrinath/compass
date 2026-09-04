@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from decimal import Decimal
 
 from linkedin_dashboard.services.scoring.matching import normalize_text, word_tokens
@@ -26,6 +27,15 @@ from linkedin_dashboard.services.scoring.types import (
 _SECTIONS = ("main_profile", "experience")
 
 
+@dataclass(frozen=True, slots=True)
+class _TitleCandidate:
+    score: Decimal
+    matcher: Matcher
+    target: Term
+    compared_value: str
+    source: SourcedText
+
+
 def _similarity(left: str, right: str) -> Decimal:
     left_tokens = set(word_tokens(left))
     right_tokens = set(word_tokens(right))
@@ -38,33 +48,42 @@ def _similarity(left: str, right: str) -> Decimal:
 def title_similarity(brief: BriefInput, snapshot: ProfileSnapshot) -> ScoreSignal:
     if not brief.target_titles:
         raise ValueError("title cannot evaluate an inert signal")
-    candidates: list[tuple[Decimal, Term, SourcedText]] = []
+    candidates: list[_TitleCandidate] = []
     for source in snapshot.titles:
         for target in brief.target_titles:
-            similarity = _similarity(source.text, target.term)
-            candidates.append((similarity, target, source))
+            for index, compared in enumerate((target.term, *target.aliases)):
+                similarity = _similarity(source.text, compared)
+                exact = normalize_text(source.text) == normalize_text(compared)
+                matcher = (
+                    Matcher.EXACT
+                    if exact and index == 0
+                    else Matcher.ALIAS
+                    if index > 0
+                    else Matcher.STEM
+                )
+                candidates.append(
+                    _TitleCandidate(similarity, matcher, target, compared, source)
+                )
+    priority = {Matcher.EXACT: 0, Matcher.ALIAS: 1, Matcher.STEM: 2}
     candidates.sort(
         key=lambda item: (
-            -item[0],
-            normalize_text(item[1].term),
-            item[2].section_name,
-            item[2].span.start,
+            -item.score,
+            priority[item.matcher],
+            normalize_text(item.target.term),
+            normalize_text(item.compared_value),
+            item.source.section_name,
+            item.source.span.start,
         )
     )
     best = candidates[0] if candidates else None
 
-    score = Decimal(0) if best is None else best[0]
+    score = Decimal(0) if best is None else best.score
     if best is not None and score > 0:
-        source = best[2]
-        target = best[1]
-        matcher = (
-            Matcher.EXACT
-            if normalize_text(source.text) == normalize_text(target.term)
-            else Matcher.STEM
-        )
+        source = best.source
+        target = best.target
         evidence = ProfileEvidence(
             matched_term=source.text,
-            matcher=matcher,
+            matcher=best.matcher,
             section_name=source.section_name,
             profile_section_id=source.section_id,
             content_sha256=source.content_sha256,

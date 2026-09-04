@@ -36,6 +36,15 @@ _QUANTUM = Decimal("0.000001")
 _ZERO = Decimal(0)
 _ONE = Decimal(1)
 _HUNDRED = Decimal(100)
+_PENALTY_SECTIONS = {
+    SignalId.REQUIRED_SKILLS: frozenset({"skills", "experience", "main_profile"}),
+    SignalId.OPTIONAL_SKILLS: frozenset({"skills", "experience", "main_profile"}),
+    SignalId.EXPERIENCE: frozenset({"experience"}),
+    SignalId.TITLE: frozenset({"main_profile", "experience"}),
+    SignalId.INDUSTRY: frozenset({"experience", "main_profile"}),
+    SignalId.LOCATION: frozenset({"main_profile"}),
+    SignalId.CREDENTIAL: frozenset({"education", "certifications"}),
+}
 
 
 class ZeroEffectiveWeightError(ValueError):
@@ -59,15 +68,23 @@ def _confidence_band(confidence: Decimal) -> ConfidenceBand:
 
 
 def negative_keyword_penalty(
-    brief: BriefInput, snapshot: ProfileSnapshot
+    brief: BriefInput,
+    snapshot: ProfileSnapshot,
+    active: tuple[SignalId, ...],
 ) -> PenaltyContribution | None:
+    eligible_sections = frozenset(
+        name for signal_id in active for name in _PENALTY_SECTIONS[signal_id]
+    )
     matched: list[str] = []
     evidence: list[ProfileEvidence] = []
     for keyword in brief.negative_keywords:
         term = Term(keyword)
         keyword_evidence: list[ProfileEvidence] = []
         for section in snapshot.sections:
-            if section.state is not SectionState.COMPLETE:
+            if (
+                section.name not in eligible_sections
+                or section.state is not SectionState.COMPLETE
+            ):
                 continue
             keyword_evidence.extend(
                 evidence_for_match(section, match)
@@ -127,9 +144,10 @@ def derive_penalties(
     brief: BriefInput,
     snapshot: ProfileSnapshot,
     signals: tuple[ScoreSignal, ...],
+    active: tuple[SignalId, ...],
 ) -> tuple[PenaltyContribution, ...]:
     penalties = (
-        negative_keyword_penalty(brief, snapshot),
+        negative_keyword_penalty(brief, snapshot, active),
         contradiction_penalty(signals),
     )
     return tuple(item for item in penalties if item is not None)
@@ -258,7 +276,7 @@ def calculate_score(
             penalties=(),
         )
     signals = evaluate_signals(brief, config, snapshot)
-    penalties = derive_penalties(brief, snapshot, signals)
+    penalties = derive_penalties(brief, snapshot, signals, active)
     return aggregate(
         active=active,
         signals=signals,

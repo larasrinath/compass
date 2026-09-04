@@ -6,6 +6,7 @@ from linkedin_dashboard.services.scoring.matching import find_term_matches
 from linkedin_dashboard.services.scoring.signals.common import (
     coverage_set,
     evidence_for_match,
+    evidence_for_source,
     missing_set,
     unparseable_set,
 )
@@ -13,6 +14,7 @@ from linkedin_dashboard.services.scoring.types import (
     BriefInput,
     EvidenceSet,
     ExperienceRole,
+    MonthsDerivation,
     Polarity,
     ProfileEvidence,
     ProfileSnapshot,
@@ -33,14 +35,14 @@ def _role_evidence(
     brief: BriefInput,
 ) -> tuple[ProfileEvidence, ...]:
     terms = (*brief.target_titles, *brief.required_skills)
-    section = snapshot.section("experience")
-    if section is None or section.state is not SectionState.COMPLETE:
-        return ()
     values = (
         (role.title,) if role.description is None else (role.title, role.description)
     )
     evidence: list[ProfileEvidence] = []
     for value in values:
+        section = snapshot.section(value.section_name)
+        if section is None or section.state is not SectionState.COMPLETE:
+            continue
         for term in terms:
             evidence.extend(
                 evidence_for_match(section, match)
@@ -55,6 +57,19 @@ def _role_evidence(
         (item.span.start, item.span.end, item.matcher.value): item for item in evidence
     }
     return tuple(unique[key] for key in sorted(unique))
+
+
+def _duration_evidence(role: ExperienceRole) -> tuple[ProfileEvidence, ...]:
+    if role.months is None or role.months_derivation is None:
+        return ()
+    source = (
+        role.date_range
+        if role.months_derivation is MonthsDerivation.DATE_RANGE
+        else role.duration
+    )
+    if source is None:
+        raise AssertionError("validated month derivation lacks its source")
+    return (evidence_for_source(source),)
 
 
 def relevant_experience(brief: BriefInput, snapshot: ProfileSnapshot) -> ScoreSignal:
@@ -77,27 +92,27 @@ def relevant_experience(brief: BriefInput, snapshot: ProfileSnapshot) -> ScoreSi
             (claim,),
         )
 
-    evidence: list[ProfileEvidence] = []
+    verified_evidence: list[ProfileEvidence] = []
     relevant_months = 0
     unparsed_roles = sum(role.months is None for role in snapshot.experience_roles)
     for role in snapshot.experience_roles:
         role_evidence = _role_evidence(snapshot, role, brief)
         if not role_evidence:
             continue
-        evidence.extend(role_evidence)
         if role.months is None:
             continue
         else:
             relevant_months += role.months
+            verified_evidence.extend((*role_evidence, *_duration_evidence(role)))
 
     score = min(Decimal(1), Decimal(relevant_months) / Decimal(required))
     display = f"{required} months relevant experience"
-    if score >= 1 and evidence:
+    if score >= 1 and verified_evidence:
         claim = ScoreClaim(
             claim_key="S-3:experience-depth",
             display_term=display,
             verdict=Verdict.MATCHED,
-            provenance=EvidenceSet(tuple(evidence)),
+            provenance=EvidenceSet(tuple(verified_evidence)),
         )
         availability = Decimal("0.5") if unparsed_roles else Decimal(1)
     elif unparsed_roles:
@@ -108,7 +123,7 @@ def relevant_experience(brief: BriefInput, snapshot: ProfileSnapshot) -> ScoreSi
             provenance=unparseable_set("experience"),
         )
         availability = Decimal("0.5")
-    elif evidence:
+    elif verified_evidence:
         contradicting = tuple(
             ProfileEvidence(
                 matched_term=item.matched_term,
@@ -119,7 +134,7 @@ def relevant_experience(brief: BriefInput, snapshot: ProfileSnapshot) -> ScoreSi
                 span=item.span,
                 polarity=Polarity.CONTRADICTING,
             )
-            for item in evidence
+            for item in verified_evidence
         )
         claim = ScoreClaim(
             claim_key="S-3:experience-depth",
