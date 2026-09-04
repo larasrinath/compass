@@ -113,6 +113,9 @@ class Database:
         self.path = normalize_database_path(path)
         self._database_fd: int | None = None
         self._initialize_lock = Lock()
+        # Brief and scoring-config version transitions share one process-local
+        # serialization boundary so their cross-rescoring cannot interleave.
+        self.transition_lock = Lock()
         self._initialized = False
         self._initializing = False
         self.engine = _create_runtime_engine(

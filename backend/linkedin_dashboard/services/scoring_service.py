@@ -20,6 +20,8 @@ from linkedin_dashboard.db.models import (
     ScoringConfig,
 )
 from linkedin_dashboard.db.session import Database
+from linkedin_dashboard.services.brief import contains_protected_criterion
+from linkedin_dashboard.services.scoring.normalization import normalize_text
 from linkedin_dashboard.services.scoring.signals import active_signal_ids
 from linkedin_dashboard.services.scoring.types import DEFAULT_WEIGHTS, SignalId
 from linkedin_dashboard.services.scoring_persist import (
@@ -45,8 +47,26 @@ def _now() -> str:
 
 
 def _normalized_metros(value: dict[str, list[str]]) -> dict[str, list[str]]:
+    if len(value) > 100:
+        raise ScoringValidationError("at most 100 metro equivalences are allowed")
     output: dict[str, list[str]] = {}
     for raw_name, raw_locations in value.items():
+        if not isinstance(raw_name, str) or len(raw_name) > 240:
+            raise ScoringValidationError("metro names must be at most 240 characters")
+        if not isinstance(raw_locations, list) or len(raw_locations) > 100:
+            raise ScoringValidationError(
+                "each metro may contain at most 100 equivalent locations"
+            )
+        if any(not isinstance(item, str) or len(item) > 240 for item in raw_locations):
+            raise ScoringValidationError(
+                "metro locations must be strings of at most 240 characters"
+            )
+        if contains_protected_criterion(raw_name) or any(
+            contains_protected_criterion(item) for item in raw_locations
+        ):
+            raise ScoringValidationError(
+                "protected attributes cannot be used in metro equivalences"
+            )
         name = " ".join(raw_name.strip().split())
         if not name:
             continue
@@ -58,6 +78,9 @@ def _normalized_metros(value: dict[str, list[str]]) -> dict[str, list[str]]:
             },
             key=str.casefold,
         )
+        canonical = normalize_text(name)
+        if any(normalize_text(existing) == canonical for existing in output):
+            raise ScoringValidationError("duplicate normalized metro equivalence")
         output[name] = locations
     return dict(sorted(output.items(), key=lambda item: item[0].casefold()))
 
@@ -65,6 +88,7 @@ def _normalized_metros(value: dict[str, list[str]]) -> dict[str, list[str]]:
 class ScoringService:
     def __init__(self, database: Database) -> None:
         self.database = database
+        self._transition_lock = database.transition_lock
 
     def _current_config(
         self, session: Session, session_id: str
@@ -214,6 +238,25 @@ class ScoringService:
         metro_region_equivalences: dict[str, list[str]],
         session_id: str | None = None,
     ) -> dict[str, Any]:
+        # Keep optimistic version checks deterministic for concurrent requests
+        # in this single-process dashboard.  The DB uniqueness guard remains
+        # the fail-closed boundary for any second process or raw writer.
+        with self._transition_lock:
+            return self._update_config_locked(
+                expected_version=expected_version,
+                weights=weights,
+                metro_region_equivalences=metro_region_equivalences,
+                session_id=session_id,
+            )
+
+    def _update_config_locked(
+        self,
+        *,
+        expected_version: str,
+        weights: dict[str, float],
+        metro_region_equivalences: dict[str, list[str]],
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
         with self.database.sessions.begin() as session:
             if session_id is None:
                 dashboard_session = session.scalar(
@@ -232,6 +275,7 @@ class ScoringService:
             normalized = self._validate_weights(
                 session, session_id=session_id, weights=weights
             )
+            normalized_metros = _normalized_metros(metro_region_equivalences)
             now = _now()
             current.superseded_at = now
             replacement = ScoringConfig(
@@ -240,7 +284,7 @@ class ScoringService:
                 version=current.version + 1,
                 created_at=now,
                 weights=normalized,
-                metro_region_equivalences=_normalized_metros(metro_region_equivalences),
+                metro_region_equivalences=normalized_metros,
                 superseded_at=None,
             )
             session.add(replacement)
@@ -330,23 +374,28 @@ class ScoringService:
 
     def rescore_candidate(self, candidate_id: str) -> CandidateScore:
         with self.database.sessions.begin() as session:
-            candidate = session.get(Candidate, candidate_id)
-            if candidate is None:
-                raise LookupError("candidate does not exist")
-            brief = session.scalar(
-                select(RoleBrief)
-                .where(
-                    RoleBrief.session_id == candidate.session_id,
-                    RoleBrief.superseded_at.is_(None),
-                )
-                .order_by(RoleBrief.version.desc())
-                .limit(1)
-            )
-            if brief is None:
-                raise LookupError("candidate session has no brief")
-            config = self.ensure_default_config(session, candidate.session_id)
-            row = calculate_and_persist(
-                session, candidate=candidate, brief=brief, config=config
-            )
+            row = self.rescore_candidate_in_session(session, candidate_id)
             session.expunge(row)
             return row
+
+    def rescore_candidate_in_session(
+        self, session: Session, candidate_id: str
+    ) -> CandidateScore:
+        candidate = session.get(Candidate, candidate_id)
+        if candidate is None:
+            raise LookupError("candidate does not exist")
+        brief = session.scalar(
+            select(RoleBrief)
+            .where(
+                RoleBrief.session_id == candidate.session_id,
+                RoleBrief.superseded_at.is_(None),
+            )
+            .order_by(RoleBrief.version.desc())
+            .limit(1)
+        )
+        if brief is None:
+            raise LookupError("candidate session has no brief")
+        config = self.ensure_default_config(session, candidate.session_id)
+        return calculate_and_persist(
+            session, candidate=candidate, brief=brief, config=config
+        )

@@ -744,6 +744,9 @@ class EvidenceSetRecord(Base):
     candidate_id: Mapped[str] = mapped_column(
         ForeignKey("candidate.id", ondelete="CASCADE"), nullable=False
     )
+    score_signal_id: Mapped[str] = mapped_column(
+        ForeignKey("score_signal.id", ondelete="CASCADE"), nullable=False
+    )
 
 
 class CoverageSetRecord(Base):
@@ -752,6 +755,9 @@ class CoverageSetRecord(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     candidate_id: Mapped[str] = mapped_column(
         ForeignKey("candidate.id", ondelete="CASCADE"), nullable=False
+    )
+    score_signal_id: Mapped[str] = mapped_column(
+        ForeignKey("score_signal.id", ondelete="CASCADE"), nullable=False
     )
     required_sections: Mapped[list[str]] = mapped_column(JSON, nullable=False)
 
@@ -783,6 +789,9 @@ class MissingSetRecord(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     candidate_id: Mapped[str] = mapped_column(
         ForeignKey("candidate.id", ondelete="CASCADE"), nullable=False
+    )
+    score_signal_id: Mapped[str] = mapped_column(
+        ForeignKey("score_signal.id", ondelete="CASCADE"), nullable=False
     )
 
 
@@ -828,6 +837,9 @@ class ScoreClaim(Base):
             name="ck_score_claim_compatible_provenance",
         ),
         UniqueConstraint("score_signal_id", "claim_key", name="uq_score_claim_key"),
+        UniqueConstraint("evidence_set_id", name="uq_score_claim_evidence_set"),
+        UniqueConstraint("coverage_set_id", name="uq_score_claim_coverage_set"),
+        UniqueConstraint("missing_set_id", name="uq_score_claim_missing_set"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)

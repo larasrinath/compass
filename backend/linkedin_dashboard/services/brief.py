@@ -19,6 +19,7 @@ from linkedin_dashboard.db.models import (
     RoleBrief,
 )
 from linkedin_dashboard.db.session import Database
+from linkedin_dashboard.services.scoring.normalization import normalize_text
 
 if TYPE_CHECKING:
     from linkedin_dashboard.services.scoring_service import ScoringService
@@ -86,7 +87,7 @@ def _clean_terms(values: tuple[TermValue, ...]) -> tuple[TermValue, ...]:
         term = item.term.strip()
         if not term:
             continue
-        key = term.casefold()
+        key = normalize_text(term)
         if key in seen:
             continue
         seen.add(key)
@@ -94,7 +95,7 @@ def _clean_terms(values: tuple[TermValue, ...]) -> tuple[TermValue, ...]:
         alias_seen = {key}
         for raw_alias in item.aliases:
             alias = raw_alias.strip()
-            alias_key = alias.casefold()
+            alias_key = normalize_text(alias)
             if alias and alias_key not in alias_seen:
                 alias_seen.add(alias_key)
                 aliases.append(alias)
@@ -107,7 +108,7 @@ def _clean_strings(values: tuple[str, ...]) -> tuple[str, ...]:
     seen: set[str] = set()
     for value in values:
         cleaned = value.strip()
-        key = cleaned.casefold()
+        key = normalize_text(cleaned)
         if cleaned and key not in seen:
             seen.add(key)
             result.append(cleaned)
@@ -149,7 +150,7 @@ def normalize_brief(value: BriefValue) -> BriefValue:
 def contains_protected_criterion(entered: str) -> bool:
     # Treat punctuation, including underscores, as separators so an alias
     # cannot evade the exact token/phrase blocklist through formatting.
-    words = " ".join(re.findall(r"[^\W_]+", entered.casefold()))
+    words = " ".join(re.findall(r"[^\W_]+", normalize_text(entered)))
     return any(
         re.search(rf"(?:^|\s){re.escape(term)}(?:$|\s)", words)
         for term in PROTECTED_TERMS
@@ -175,6 +176,7 @@ def _reject_protected(value: BriefValue) -> None:
         fields.extend(
             (f"{name}.{index}", term) for index, term in enumerate(getattr(value, name))
         )
+    fields.append(("location", value.location))
 
     offending: list[dict[str, str]] = []
     for path, entered in fields:
@@ -190,6 +192,7 @@ class BriefService:
     ) -> None:
         self.database = database
         self.scoring_service = scoring_service
+        self._transition_lock = database.transition_lock
 
     def create_session(self, label: str, nav_budget: int = 120) -> DashboardSession:
         cleaned = label.strip()
@@ -242,7 +245,10 @@ class BriefService:
         with self.database.sessions() as session:
             row = session.scalar(
                 select(RoleBrief)
-                .where(RoleBrief.session_id == session_id)
+                .where(
+                    RoleBrief.session_id == session_id,
+                    RoleBrief.superseded_at.is_(None),
+                )
                 .order_by(RoleBrief.version.desc())
                 .limit(1)
             )
@@ -251,6 +257,13 @@ class BriefService:
             return row
 
     def save(self, session_id: str, value: BriefValue) -> tuple[RoleBrief, int]:
+        # SQLite serializes writers, but a process-local lock prevents two
+        # deferred transactions from both choosing the same next version and
+        # turning an optimistic conflict into an opaque "database is locked".
+        with self._transition_lock:
+            return self._save_locked(session_id, value)
+
+    def _save_locked(self, session_id: str, value: BriefValue) -> tuple[RoleBrief, int]:
         value = normalize_brief(value)
         now = datetime.now(UTC).isoformat()
         stale_count = 0
@@ -259,7 +272,10 @@ class BriefService:
                 raise LookupError("session does not exist")
             current = session.scalar(
                 select(RoleBrief)
-                .where(RoleBrief.session_id == session_id)
+                .where(
+                    RoleBrief.session_id == session_id,
+                    RoleBrief.superseded_at.is_(None),
+                )
                 .order_by(RoleBrief.version.desc())
                 .limit(1)
             )
@@ -342,7 +358,7 @@ class BriefService:
                             brief_id=brief.id,
                             kind=kind,
                             term=item.term,
-                            term_key=item.term.casefold(),
+                            term_key=normalize_text(item.term),
                             aliases=list(item.aliases),
                             position=position,
                         )
@@ -353,7 +369,7 @@ class BriefService:
                         id=str(uuid4()),
                         brief_id=brief.id,
                         term=item.term,
-                        term_key=item.term.casefold(),
+                        term_key=normalize_text(item.term),
                         aliases=list(item.aliases),
                         position=position,
                     )

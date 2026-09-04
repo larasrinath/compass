@@ -188,6 +188,44 @@ LIMIT 1
 
 
 STATEMENTS = (
+    "DROP TRIGGER IF EXISTS role_brief_append_only",
+    """CREATE TRIGGER role_brief_append_only BEFORE UPDATE ON role_brief
+       FOR EACH ROW WHEN NEW.id IS NOT OLD.id OR NEW.session_id IS NOT OLD.session_id
+         OR NEW.version IS NOT OLD.version OR NEW.created_at IS NOT OLD.created_at
+         OR NEW.job_description IS NOT OLD.job_description
+         OR NEW.target_titles IS NOT OLD.target_titles
+         OR NEW.location IS NOT OLD.location OR NEW.industries IS NOT OLD.industries
+         OR NEW.positive_keywords IS NOT OLD.positive_keywords
+         OR NEW.negative_keywords IS NOT OLD.negative_keywords
+         OR NEW.message_tone IS NOT OLD.message_tone
+         OR NEW.required_experience_months IS NOT OLD.required_experience_months
+         OR NEW.weights_version IS NOT OLD.weights_version
+         OR (NEW.sealed_at IS NOT OLD.sealed_at AND
+             (OLD.sealed_at IS NOT NULL OR NEW.sealed_at IS NULL
+              OR NEW.sealed_at IS NOT OLD.created_at))
+         OR (NEW.superseded_at IS NOT OLD.superseded_at AND
+             (OLD.superseded_at IS NOT NULL OR NEW.superseded_at IS NULL))
+       BEGIN SELECT RAISE(ABORT, 'role brief versions are append-only'); END""",
+    """CREATE UNIQUE INDEX IF NOT EXISTS one_current_role_brief_per_session
+       ON role_brief(session_id) WHERE superseded_at IS NULL""",
+    """CREATE TRIGGER brief_credential_insert_only_while_unsealed
+       BEFORE INSERT ON brief_credential FOR EACH ROW WHEN NOT EXISTS (
+         SELECT 1 FROM role_brief rb WHERE rb.id=NEW.brief_id
+           AND rb.sealed_at IS NULL)
+       BEGIN SELECT RAISE(ABORT, 'sealed role brief credentials are immutable'); END""",
+    """CREATE TRIGGER brief_credential_insert_collision
+       BEFORE INSERT ON brief_credential FOR EACH ROW WHEN EXISTS (
+         SELECT 1 FROM brief_credential old WHERE old.id=NEW.id
+           OR (old.brief_id=NEW.brief_id AND old.term_key=NEW.term_key))
+       BEGIN SELECT RAISE(ABORT, 'brief credential already exists'); END""",
+    """CREATE TRIGGER brief_credential_is_immutable
+       BEFORE UPDATE ON brief_credential FOR EACH ROW
+       BEGIN SELECT RAISE(ABORT, 'brief credential history is immutable'); END""",
+    """CREATE TRIGGER brief_credential_no_delete
+       BEFORE DELETE ON brief_credential FOR EACH ROW WHEN EXISTS (
+         SELECT 1 FROM role_brief rb JOIN session root ON root.id=rb.session_id
+         WHERE rb.id=OLD.brief_id)
+       BEGIN SELECT RAISE(ABORT, 'brief credential history is append-only'); END""",
     "DROP TRIGGER IF EXISTS approved_draft_claim_update",
     """CREATE TRIGGER approved_draft_claim_update
        BEFORE UPDATE ON draft_claim FOR EACH ROW
@@ -217,6 +255,9 @@ STATEMENTS = (
            AND NEW.weights_version=cast(sc.version AS TEXT)
            AND length(NEW.input_fingerprint)=64)
        BEGIN SELECT RAISE(ABORT, 'score roots must share a session'); END""",
+    """CREATE TRIGGER score_m4_staged_insert BEFORE INSERT ON score
+       FOR EACH ROW WHEN NEW.scoring_config_id IS NOT NULL AND NEW.is_current<>0
+       BEGIN SELECT RAISE(ABORT, 'M4 score must be inserted as staged'); END""",
     """CREATE TRIGGER scoring_config_shape_insert BEFORE INSERT ON scoring_config
        FOR EACH ROW WHEN json_type(NEW.weights)<>'object'
          OR (SELECT count(*) FROM json_each(NEW.weights))<>7
@@ -228,7 +269,9 @@ STATEMENTS = (
     """CREATE TRIGGER scoring_config_insert_collision
        BEFORE INSERT ON scoring_config FOR EACH ROW WHEN EXISTS (
          SELECT 1 FROM scoring_config old WHERE old.id=NEW.id
-           OR (old.session_id=NEW.session_id AND old.version=NEW.version))
+           OR (old.session_id=NEW.session_id AND old.version=NEW.version)
+           OR (old.session_id=NEW.session_id AND old.superseded_at IS NULL
+               AND NEW.superseded_at IS NULL))
        BEGIN SELECT RAISE(ABORT, 'scoring config version already exists'); END""",
     """CREATE TRIGGER scoring_config_s8_insert BEFORE INSERT ON scoring_config
        FOR EACH ROW WHEN coalesce(json_extract(NEW.weights,'$."S-8"'),0)>0
@@ -311,7 +354,7 @@ STATEMENTS = (
          JOIN score s ON s.id=ss.score_id AND s.candidate_id=es.candidate_id
          JOIN profile_section ps ON ps.id=NEW.profile_section_id
             AND ps.candidate_id=es.candidate_id
-         WHERE es.id=NEW.evidence_set_id
+         WHERE es.id=NEW.evidence_set_id AND es.score_signal_id=ss.id
            AND NEW.section_name=ps.section_name
            AND NEW.content_sha256=ps.content_sha256
            AND NEW.span_start>=0 AND NEW.span_end>NEW.span_start
@@ -355,11 +398,38 @@ STATEMENTS = (
        BEFORE INSERT ON signal_missing_section FOR EACH ROW WHEN
          EXISTS (SELECT 1 FROM score_claim claim
                  WHERE claim.missing_set_id=NEW.missing_set_id)
-         OR (NEW.section_error_id IS NOT NULL AND NOT EXISTS (
-           SELECT 1 FROM missing_set ms JOIN section_error se
-             ON se.id=NEW.section_error_id AND se.candidate_id=ms.candidate_id
-           WHERE ms.id=NEW.missing_set_id AND se.section_name=NEW.section_name))
-         OR (NEW.reason IN ('rate_limit','fetch_error') AND NEW.section_error_id IS NULL)
+         OR NOT (
+           (NEW.reason='rate_limit' AND NEW.section_error_id IS NOT NULL
+             AND EXISTS (
+               SELECT 1 FROM missing_set ms JOIN section_error se
+                 ON se.id=NEW.section_error_id AND se.candidate_id=ms.candidate_id
+               WHERE ms.id=NEW.missing_set_id AND se.section_name=NEW.section_name
+                 AND lower(se.error_type)='rate_limit'))
+           OR (NEW.reason='fetch_error' AND NEW.section_error_id IS NOT NULL
+             AND EXISTS (
+               SELECT 1 FROM missing_set ms JOIN section_error se
+                 ON se.id=NEW.section_error_id AND se.candidate_id=ms.candidate_id
+               WHERE ms.id=NEW.missing_set_id AND se.section_name=NEW.section_name
+                 AND lower(se.error_type) NOT IN ('rate_limit','unparseable','parse_error')))
+           OR (NEW.reason='unparseable' AND NEW.section_error_id IS NULL
+             AND EXISTS (
+               SELECT 1 FROM missing_set ms JOIN score_signal ss
+                 ON ss.id=ms.score_signal_id JOIN score s ON s.id=ss.score_id
+               JOIN score_input_section source ON source.score_id=s.id
+               JOIN profile_section ps ON ps.id=source.profile_section_id
+               WHERE ms.id=NEW.missing_set_id AND ms.candidate_id=s.candidate_id
+                 AND ps.candidate_id=s.candidate_id
+                 AND ps.section_name=NEW.section_name
+                 AND ps.content_sha256=source.content_sha256))
+           OR (NEW.reason='not_requested' AND NEW.section_error_id IS NULL
+             AND NOT EXISTS (
+               SELECT 1 FROM missing_set ms JOIN score_signal ss
+                 ON ss.id=ms.score_signal_id JOIN score s ON s.id=ss.score_id
+               JOIN score_input_section source ON source.score_id=s.id
+               JOIN profile_section ps ON ps.id=source.profile_section_id
+               WHERE ms.id=NEW.missing_set_id
+                 AND ps.candidate_id=s.candidate_id
+                 AND ps.section_name=NEW.section_name)))
        BEGIN SELECT RAISE(ABORT, 'missing provenance has invalid lineage'); END""",
     """CREATE TRIGGER evidence_set_is_immutable BEFORE UPDATE ON evidence_set
        FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'evidence set is immutable'); END""",
@@ -405,6 +475,7 @@ STATEMENTS = (
              SELECT 1 FROM evidence_set es JOIN evidence e
                ON e.evidence_set_id=es.id
              WHERE es.id=NEW.evidence_set_id AND es.candidate_id=s.candidate_id
+               AND es.score_signal_id=ss.id
                AND NOT EXISTS (
                  SELECT 1 FROM evidence owned
                  WHERE owned.evidence_set_id=es.id AND NOT EXISTS (
@@ -418,6 +489,7 @@ STATEMENTS = (
            OR (NEW.verdict='not_matched' AND EXISTS (
              SELECT 1 FROM coverage_set cs WHERE cs.id=NEW.coverage_set_id
                AND cs.candidate_id=s.candidate_id
+               AND cs.score_signal_id=ss.id
                AND json_array_length(cs.required_sections)>0
                AND NOT EXISTS (
                  SELECT 1 FROM signal_coverage owned
@@ -435,6 +507,7 @@ STATEMENTS = (
              SELECT 1 FROM missing_set ms JOIN signal_missing_section sm
                ON sm.missing_set_id=ms.id
              WHERE ms.id=NEW.missing_set_id AND ms.candidate_id=s.candidate_id
+               AND ms.score_signal_id=ss.id
              GROUP BY ms.id HAVING count(*)>0))))
        BEGIN SELECT RAISE(ABORT, 'score claim provenance is incomplete'); END""",
     """CREATE TRIGGER score_penalty_before_finalize BEFORE INSERT ON score_penalty
@@ -451,7 +524,134 @@ STATEMENTS = (
        BEGIN SELECT RAISE(ABORT, 'score penalty is append-only'); END""",
     """CREATE TRIGGER score_finalize_current BEFORE UPDATE OF is_current ON score
        FOR EACH ROW WHEN OLD.is_current=0 AND NEW.is_current=1 AND NOT (
-         NEW.scoring_config_id IS NOT NULL AND length(NEW.input_fingerprint)=64 AND
+         NEW.scoring_config_id IS NOT NULL AND length(NEW.input_fingerprint)=64
+         AND json_valid(NEW.source_snapshot)=1
+         AND json_type(NEW.source_snapshot,'$.active_signal_ids') IS 'array'
+         AND json_type(NEW.source_snapshot,'$.profile_snapshot.sections') IS 'array'
+         AND EXISTS (
+           SELECT 1 FROM candidate c JOIN role_brief rb
+             ON rb.id=NEW.brief_id AND rb.session_id=c.session_id
+             AND rb.superseded_at IS NULL
+           JOIN scoring_config cfg ON cfg.id=NEW.scoring_config_id
+             AND cfg.session_id=c.session_id AND cfg.superseded_at IS NULL
+           WHERE c.id=NEW.candidate_id
+             AND NEW.weights_version=cast(cfg.version AS TEXT)
+             AND json_extract(NEW.source_snapshot,'$.candidate_id') IS NEW.candidate_id
+             AND json_extract(NEW.source_snapshot,'$.brief.id') IS NEW.brief_id
+             AND json_extract(NEW.source_snapshot,'$.brief.version') IS rb.version
+             AND json_extract(NEW.source_snapshot,'$.config.id') IS cfg.id
+             AND json_extract(NEW.source_snapshot,'$.config.version') IS cfg.version
+             AND NOT EXISTS (
+               SELECT 1 FROM json_each(NEW.source_snapshot,'$.active_signal_ids') a
+               WHERE a.value NOT IN ('S-1','S-2','S-3','S-4','S-5','S-6','S-8'))
+             AND (SELECT count(*) FROM json_each(
+                    NEW.source_snapshot,'$.active_signal_ids'))=
+                 (SELECT count(DISTINCT value) FROM json_each(
+                    NEW.source_snapshot,'$.active_signal_ids'))
+             AND (EXISTS (SELECT 1 FROM brief_skill bs WHERE bs.brief_id=rb.id
+                           AND bs.kind='required'))=
+                 EXISTS (SELECT 1 FROM json_each(
+                    NEW.source_snapshot,'$.active_signal_ids') WHERE value='S-1')
+             AND (EXISTS (SELECT 1 FROM brief_skill bs WHERE bs.brief_id=rb.id
+                           AND bs.kind='optional'))=
+                 EXISTS (SELECT 1 FROM json_each(
+                    NEW.source_snapshot,'$.active_signal_ids') WHERE value='S-2')
+             AND (coalesce(rb.required_experience_months,0)>0)=
+                 EXISTS (SELECT 1 FROM json_each(
+                    NEW.source_snapshot,'$.active_signal_ids') WHERE value='S-3')
+             AND (EXISTS (SELECT 1 FROM brief_term bt WHERE bt.brief_id=rb.id
+                           AND bt.kind='target_title'))=
+                 EXISTS (SELECT 1 FROM json_each(
+                    NEW.source_snapshot,'$.active_signal_ids') WHERE value='S-4')
+             AND (EXISTS (SELECT 1 FROM brief_term bt WHERE bt.brief_id=rb.id
+                           AND bt.kind='industry'))=
+                 EXISTS (SELECT 1 FROM json_each(
+                    NEW.source_snapshot,'$.active_signal_ids') WHERE value='S-5')
+             AND (length(trim(rb.location))>0)=
+                 EXISTS (SELECT 1 FROM json_each(
+                    NEW.source_snapshot,'$.active_signal_ids') WHERE value='S-6')
+             AND (EXISTS (SELECT 1 FROM brief_credential bc
+                           WHERE bc.brief_id=rb.id))=
+                 EXISTS (SELECT 1 FROM json_each(
+                    NEW.source_snapshot,'$.active_signal_ids') WHERE value='S-8')
+             AND NOT EXISTS (
+               SELECT 1 FROM json_each(
+                 NEW.source_snapshot,'$.profile_snapshot.sections') snap
+               WHERE json_type(snap.value,'$.name') IS NOT 'text'
+                  OR json_extract(snap.value,'$.name') NOT IN
+                     ('skills','experience','main_profile','certifications','education')
+                  OR (json_extract(snap.value,'$.name')='skills' AND NOT EXISTS (
+                        SELECT 1 FROM brief_skill bs WHERE bs.brief_id=rb.id))
+                  OR (json_extract(snap.value,'$.name')='experience' AND NOT (
+                        EXISTS (SELECT 1 FROM brief_skill bs WHERE bs.brief_id=rb.id)
+                        OR coalesce(rb.required_experience_months,0)>0
+                        OR EXISTS (SELECT 1 FROM brief_term bt
+                                   WHERE bt.brief_id=rb.id)))
+                  OR (json_extract(snap.value,'$.name')='main_profile' AND NOT (
+                        EXISTS (SELECT 1 FROM brief_skill bs WHERE bs.brief_id=rb.id)
+                        OR EXISTS (SELECT 1 FROM brief_term bt
+                                   WHERE bt.brief_id=rb.id)
+                        OR length(trim(rb.location))>0))
+                  OR (json_extract(snap.value,'$.name') IN
+                        ('certifications','education') AND NOT EXISTS (
+                        SELECT 1 FROM brief_credential bc WHERE bc.brief_id=rb.id)))
+             AND (SELECT count(*) FROM json_each(
+                    NEW.source_snapshot,'$.profile_snapshot.sections'))=
+                 (SELECT count(DISTINCT json_extract(value,'$.name')) FROM json_each(
+                    NEW.source_snapshot,'$.profile_snapshot.sections'))
+             AND (NOT EXISTS (SELECT 1 FROM brief_skill bs WHERE bs.brief_id=rb.id)
+                  OR EXISTS (SELECT 1 FROM json_each(
+                    NEW.source_snapshot,'$.profile_snapshot.sections') snap
+                    WHERE json_extract(snap.value,'$.name')='skills'))
+             AND (NOT (EXISTS (SELECT 1 FROM brief_skill bs WHERE bs.brief_id=rb.id)
+                        OR coalesce(rb.required_experience_months,0)>0
+                        OR EXISTS (SELECT 1 FROM brief_term bt WHERE bt.brief_id=rb.id))
+                  OR EXISTS (SELECT 1 FROM json_each(
+                    NEW.source_snapshot,'$.profile_snapshot.sections') snap
+                    WHERE json_extract(snap.value,'$.name')='experience'))
+             AND (NOT (EXISTS (SELECT 1 FROM brief_skill bs WHERE bs.brief_id=rb.id)
+                        OR EXISTS (SELECT 1 FROM brief_term bt WHERE bt.brief_id=rb.id)
+                        OR length(trim(rb.location))>0)
+                  OR EXISTS (SELECT 1 FROM json_each(
+                    NEW.source_snapshot,'$.profile_snapshot.sections') snap
+                    WHERE json_extract(snap.value,'$.name')='main_profile'))
+             AND (NOT EXISTS (SELECT 1 FROM brief_credential bc
+                              WHERE bc.brief_id=rb.id)
+                  OR (EXISTS (SELECT 1 FROM json_each(
+                       NEW.source_snapshot,'$.profile_snapshot.sections') snap
+                       WHERE json_extract(snap.value,'$.name')='certifications')
+                      AND EXISTS (SELECT 1 FROM json_each(
+                       NEW.source_snapshot,'$.profile_snapshot.sections') snap
+                       WHERE json_extract(snap.value,'$.name')='education'))))
+         AND NOT EXISTS (
+           SELECT 1 FROM score_input_section source
+           WHERE source.score_id=NEW.id AND NOT EXISTS (
+             SELECT 1 FROM json_each(
+               NEW.source_snapshot,'$.profile_snapshot.sections') snap
+             WHERE json_extract(snap.value,'$.state')='complete'
+               AND json_extract(snap.value,'$.id')=source.profile_section_id
+               AND json_extract(snap.value,'$.content_sha256')=source.content_sha256))
+         AND NOT EXISTS (
+           SELECT 1 FROM json_each(
+             NEW.source_snapshot,'$.profile_snapshot.sections') snap
+           WHERE json_extract(snap.value,'$.state') NOT IN ('complete','missing')
+              OR (json_extract(snap.value,'$.state')='complete' AND NOT EXISTS (
+                SELECT 1 FROM score_input_section source JOIN profile_section ps
+                  ON ps.id=source.profile_section_id
+                WHERE source.score_id=NEW.id
+                  AND source.profile_section_id=json_extract(snap.value,'$.id')
+                  AND source.content_sha256=json_extract(snap.value,'$.content_sha256')
+                  AND ps.section_name=json_extract(snap.value,'$.name')
+                  AND NOT EXISTS (SELECT 1 FROM profile_section newer
+                    WHERE newer.candidate_id=NEW.candidate_id
+                      AND newer.section_name=ps.section_name
+                      AND (newer.retrieved_at>ps.retrieved_at
+                        OR (newer.retrieved_at=ps.retrieved_at AND newer.id>ps.id)))))
+              OR (json_extract(snap.value,'$.state')='missing' AND EXISTS (
+                SELECT 1 FROM profile_section present
+                WHERE present.candidate_id=NEW.candidate_id
+                  AND present.section_name=json_extract(snap.value,'$.name'))))
+         AND
          ((NEW.all_inert_attested=1 AND NEW.active_signal_count=0
            AND NEW.calculation_status='unknown' AND NEW.score IS NULL
            AND NEW.score_lower IS NULL AND NEW.score_upper IS NULL
@@ -586,14 +786,40 @@ STATEMENTS = (
                  AND claim.score_signal_id=ss.id
                  AND claim.verdict IN ('matched','contradicted')
                JOIN score s ON s.id=ss.score_id AND s.candidate_id=es.candidate_id
+               JOIN role_brief rb ON rb.id=s.brief_id AND rb.superseded_at IS NULL
+               JOIN scoring_config cfg ON cfg.id=s.scoring_config_id
+                 AND cfg.superseded_at IS NULL
                JOIN candidate c ON c.id=s.candidate_id
                JOIN profile_section ps ON ps.id=e.profile_section_id
+               JOIN score_input_section source ON source.score_id=s.id
+                 AND source.profile_section_id=ps.id
+                 AND source.content_sha256=ps.content_sha256
                WHERE e.id=json_extract(item.value,'$.evidence_id')
                  AND s.id=json_extract(item.value,'$.score_id') AND s.is_current=1
                  AND s.input_fingerprint=json_extract(item.value,'$.input_fingerprint')
                  AND c.session_id=NEW.session_id
                  AND ps.content_sha256=e.content_sha256
-                 AND substr(ps.raw_text,e.span_start+1,e.span_end-e.span_start)=e.snippet))))
+                 AND substr(ps.raw_text,e.span_start+1,e.span_end-e.span_start)=e.snippet
+                 AND NOT EXISTS (
+                   SELECT 1 FROM json_each(s.source_snapshot,'$.profile_snapshot.sections') snap
+                   WHERE (json_extract(snap.value,'$.state')='complete' AND NOT EXISTS (
+                     SELECT 1 FROM score_input_section expected
+                     JOIN profile_section expected_ps
+                       ON expected_ps.id=expected.profile_section_id
+                     WHERE expected.score_id=s.id
+                       AND expected.profile_section_id=json_extract(snap.value,'$.id')
+                       AND expected.content_sha256=json_extract(snap.value,'$.content_sha256')
+                       AND NOT EXISTS (
+                         SELECT 1 FROM profile_section newer
+                         WHERE newer.candidate_id=s.candidate_id
+                           AND newer.section_name=json_extract(snap.value,'$.name')
+                           AND (newer.retrieved_at>expected_ps.retrieved_at
+                             OR (newer.retrieved_at=expected_ps.retrieved_at
+                               AND newer.id>expected_ps.id)))))
+                     OR (json_extract(snap.value,'$.state')='missing' AND EXISTS (
+                       SELECT 1 FROM profile_section now_present
+                       WHERE now_present.candidate_id=s.candidate_id
+                         AND now_present.section_name=json_extract(snap.value,'$.name'))))))))
        BEGIN SELECT RAISE(ABORT, 'Gate B requires ten current exact evidence spans'); END""",
     """CREATE TRIGGER phase_gate_evidence_exact_insert
        BEFORE INSERT ON phase_gate_evidence FOR EACH ROW WHEN NOT EXISTS (
@@ -629,6 +855,26 @@ STATEMENTS = (
 
 
 def apply(connection: Connection) -> None:
+    legacy_gate_b = connection.exec_driver_sql(
+        "SELECT id FROM phase_gate WHERE gate='B' LIMIT 1"
+    ).first()
+    if legacy_gate_b is not None and "evidence_manifest" not in _columns(
+        connection, "phase_gate"
+    ):
+        raise RuntimeError(
+            f"cannot apply {VERSION}: legacy Gate B {legacy_gate_b[0]} has no "
+            "reconstructable exact-evidence manifest; remove that acceptance "
+            "only after operator review, then retry"
+        )
+    duplicate_brief = connection.exec_driver_sql(
+        "SELECT session_id FROM role_brief WHERE superseded_at IS NULL "
+        "GROUP BY session_id HAVING count(*)>1 LIMIT 1"
+    ).first()
+    if duplicate_brief is not None:
+        raise RuntimeError(
+            f"cannot apply {VERSION}: session {duplicate_brief[0]} has multiple "
+            "unsuperseded role briefs"
+        )
     duplicate = connection.exec_driver_sql(
         "SELECT candidate_id FROM score WHERE is_current=1 "
         "GROUP BY candidate_id HAVING count(*)>1 LIMIT 1"

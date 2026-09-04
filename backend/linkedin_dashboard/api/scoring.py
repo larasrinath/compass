@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -49,9 +49,23 @@ def get_service(request: Request) -> ScoringService:
 
 class WeightsInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    expected_version: str
-    weights: dict[str, float]
-    metro_region_equivalences: dict[str, list[str]] = Field(default_factory=dict)
+    expected_version: str = Field(min_length=1, max_length=64)
+    weights: dict[Annotated[str, Field(max_length=8)], float] = Field(
+        min_length=7, max_length=7
+    )
+    metro_region_equivalences: dict[
+        Annotated[str, Field(max_length=240)],
+        list[Annotated[str, Field(max_length=240)]],
+    ] = Field(default_factory=dict, max_length=100)
+
+    @field_validator("weights", mode="before")
+    @classmethod
+    def reject_boolean_weights(cls, value: Any) -> Any:
+        if isinstance(value, dict) and any(
+            isinstance(item, bool) for item in value.values()
+        ):
+            raise ValueError("boolean weights are not allowed")
+        return value
 
 
 def _gate_a(session: Session, session_id: str) -> bool:
@@ -63,6 +77,33 @@ def _gate_a(session: Session, session_id: str) -> bool:
         )
         is not None
     )
+
+
+def _sort_ranked_records(
+    records: list[dict[str, Any]],
+    mode: Literal["score_desc", "confidence_desc", "name_asc"],
+) -> list[dict[str, Any]]:
+    if mode == "confidence_desc":
+        key = lambda row: (  # noqa: E731 - local typed sort policy
+            row["score"] is None,
+            -row["confidence"],
+            -(row["score"] or 0),
+            row["id"],
+        )
+    elif mode == "name_asc":
+        key = lambda row: (  # noqa: E731 - local typed sort policy
+            row["display_name"] is None,
+            (row["display_name"] or row["username"]).casefold(),
+            row["id"],
+        )
+    else:
+        key = lambda row: (  # noqa: E731 - local typed sort policy
+            row["score"] is None,
+            -(row["score"] or 0),
+            -row["confidence"],
+            row["id"],
+        )
+    return sorted(records, key=key)
 
 
 def _headline(session: Session, candidate_id: str) -> str | None:
@@ -348,9 +389,8 @@ def ranked_candidates(
     stage: str | None = None,
     min_score: float | None = None,
     confidence: str | None = None,
-    sort: str | None = None,
+    sort: Literal["score_desc", "confidence_desc", "name_asc"] = "score_desc",
 ) -> list[dict[str, Any]]:
-    del sort
     database = request.app.state.database
     with database.sessions() as session:
         if not _gate_a(session, session_id):
@@ -379,15 +419,7 @@ def ranked_candidates(
         ]
     if confidence:
         records = [row for row in records if row["confidence_band"] == confidence]
-    return sorted(
-        records,
-        key=lambda row: (
-            row["score"] is None,
-            -(row["score"] or 0),
-            -row["confidence"],
-            row["id"],
-        ),
-    )
+    return _sort_ranked_records(records, sort)
 
 
 @router.post("/candidates/{candidate_id}/rescore", response_model=dict[str, Any])

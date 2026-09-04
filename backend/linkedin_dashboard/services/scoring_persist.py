@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import uuid4
@@ -43,6 +43,7 @@ from linkedin_dashboard.db.models import (
 )
 from linkedin_dashboard.parsing.verify import verify_substring
 from linkedin_dashboard.services.scoring.aggregate import calculate_score
+from linkedin_dashboard.services.scoring.normalization import normalize_text
 from linkedin_dashboard.services.scoring.signals import active_signal_ids
 from linkedin_dashboard.services.scoring.types import (
     BriefInput,
@@ -75,8 +76,44 @@ _SIGNAL_SECTIONS: dict[SignalId, tuple[str, ...]] = {
     SignalId.LOCATION: ("main_profile",),
     SignalId.CREDENTIAL: ("education", "certifications"),
 }
+
+
+def required_section_names(active: tuple[SignalId, ...]) -> tuple[str, ...]:
+    """Return the exact raw-section lineage required by active signals."""
+    return tuple(
+        sorted({name for signal_id in active for name in _SIGNAL_SECTIONS[signal_id]})
+    )
+
+
 _DURATION = re.compile(
     r"(?:(?P<years>\d+)\s+yrs?)?(?:\s*[·,]?\s*)?(?:(?P<months>\d+)\s+mos?)?",
+    re.IGNORECASE,
+)
+_MONTHS = {
+    name: index
+    for index, names in enumerate(
+        (
+            ("jan", "january"),
+            ("feb", "february"),
+            ("mar", "march"),
+            ("apr", "april"),
+            ("may",),
+            ("jun", "june"),
+            ("jul", "july"),
+            ("aug", "august"),
+            ("sep", "sept", "september"),
+            ("oct", "october"),
+            ("nov", "november"),
+            ("dec", "december"),
+        ),
+        start=1,
+    )
+    for name in names
+}
+_DATE_ENDPOINT = r"(?:[A-Za-z]{3,9}\s+\d{4}|\d{4}-\d{2})"
+_DATE_RANGE = re.compile(
+    rf"^\s*(?P<start>{_DATE_ENDPOINT})\s+(?:-|\u2013|\u2014|to)\s+"
+    rf"(?P<end>{_DATE_ENDPOINT}|present|current)\s*$",
     re.IGNORECASE,
 )
 
@@ -207,13 +244,44 @@ def _duration_months(value: str) -> int | None:
     return None
 
 
+def _date_endpoint(value: str) -> tuple[int, int] | None:
+    iso = re.fullmatch(r"(?P<year>\d{4})-(?P<month>\d{2})", value.strip())
+    if iso is not None:
+        year, month = int(iso.group("year")), int(iso.group("month"))
+    else:
+        named = re.fullmatch(
+            r"(?P<month>[A-Za-z]{3,9})\s+(?P<year>\d{4})", value.strip()
+        )
+        if named is None or named.group("month").casefold() not in _MONTHS:
+            return None
+        year = int(named.group("year"))
+        month = _MONTHS[named.group("month").casefold()]
+    if not 1900 <= year <= 2200 or not 1 <= month <= 12:
+        return None
+    return year, month
+
+
+def _date_range_months(value: str, *, as_of: date) -> int | None:
+    match = _DATE_RANGE.fullmatch(value)
+    if match is None:
+        return None
+    start = _date_endpoint(match.group("start"))
+    end_text = match.group("end")
+    end = (
+        (as_of.year, as_of.month)
+        if end_text.casefold() in {"present", "current"}
+        else _date_endpoint(end_text)
+    )
+    if start is None or end is None or end < start:
+        return None
+    return (end[0] - start[0]) * 12 + end[1] - start[1] + 1
+
+
 def build_snapshot(
     session: Session, candidate: Candidate, active: tuple[SignalId, ...]
 ) -> tuple[ProfileSnapshot, tuple[ProfileSectionRow, ...]]:
     latest = _latest_sections(session, candidate.id)
-    required_names = tuple(
-        sorted({name for signal_id in active for name in _SIGNAL_SECTIONS[signal_id]})
-    )
+    required_names = required_section_names(active)
     sections: list[ProfileSection] = []
     consumed: list[ProfileSectionRow] = []
     for name in required_names:
@@ -290,18 +358,32 @@ def build_snapshot(
         title = values.get("title")
         if title is None:
             continue
-        duration = values.get("duration") or values.get("dates")
+        duration = values.get("duration")
+        date_range = values.get("dates")
         months = _duration_months(duration.text) if duration is not None else None
+        derivation = MonthsDerivation.DURATION_TEXT if months is not None else None
+        if months is None and date_range is not None:
+            source_row = row_by_id.get(str(date_range.section_id))
+            try:
+                as_of = (
+                    date.fromisoformat(source_row.retrieved_at[:10])
+                    if source_row is not None
+                    else None
+                )
+            except (AttributeError, ValueError):
+                as_of = None
+            if as_of is not None:
+                months = _date_range_months(date_range.text, as_of=as_of)
+                if months is not None:
+                    derivation = MonthsDerivation.DATE_RANGE
         roles.append(
             ExperienceRole(
                 title=title,
                 description=values.get("description"),
-                date_range=values.get("dates"),
-                duration=duration if months is not None else None,
+                date_range=date_range,
+                duration=duration,
                 months=months,
-                months_derivation=(
-                    MonthsDerivation.DURATION_TEXT if months is not None else None
-                ),
+                months_derivation=derivation,
             )
         )
     return (
@@ -325,6 +407,8 @@ def input_fingerprint(
     snapshot: ProfileSnapshot,
     sections: tuple[ProfileSectionRow, ...],
 ) -> tuple[str, dict[str, Any]]:
+    retrieved_by_id = {row.id: row.retrieved_at for row in sections}
+
     def sourced(value: SourcedText | None) -> dict[str, Any] | None:
         if value is None:
             return None
@@ -332,10 +416,45 @@ def input_fingerprint(
             "section_name": value.section_name,
             "section_id": value.section_id,
             "content_sha256": value.content_sha256,
-            "text": value.text,
+            "text_sha256": _sha256(value.text),
             "span_start": value.span.start,
             "span_end": value.span.end,
         }
+
+    def canonical_terms(values: tuple[Term, ...]) -> list[dict[str, Any]]:
+        return [
+            {
+                "term": normalize_text(item.term),
+                "aliases": sorted(normalize_text(alias) for alias in item.aliases),
+            }
+            for item in values
+        ]
+
+    brief_inputs = {
+        "required_skills": canonical_terms(kernel_brief.required_skills),
+        "optional_skills": canonical_terms(kernel_brief.optional_skills),
+        "required_experience_months": kernel_brief.required_experience_months,
+        "target_titles": canonical_terms(kernel_brief.target_titles),
+        "industries": canonical_terms(kernel_brief.industries),
+        "location": normalize_text(kernel_brief.location or ""),
+        "required_credentials": canonical_terms(kernel_brief.required_credentials),
+        "positive_keywords": [
+            normalize_text(item) for item in kernel_brief.positive_keywords
+        ],
+        "negative_keywords": [
+            normalize_text(item) for item in kernel_brief.negative_keywords
+        ],
+    }
+    config_inputs = {
+        "weights": config.weights,
+        "metro_region_equivalences": config.metro_region_equivalences,
+    }
+    brief_canonical = json.dumps(
+        brief_inputs, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    config_canonical = json.dumps(
+        config_inputs, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
 
     payload: dict[str, Any] = {
         "algorithm_version": ALGORITHM_VERSION,
@@ -343,34 +462,16 @@ def input_fingerprint(
         "brief": {
             "id": brief.id,
             "version": brief.version,
-            "required_skills": [
-                {"term": item.term, "aliases": list(item.aliases)}
-                for item in kernel_brief.required_skills
-            ],
-            "optional_skills": [
-                {"term": item.term, "aliases": list(item.aliases)}
-                for item in kernel_brief.optional_skills
-            ],
-            "required_experience_months": kernel_brief.required_experience_months,
-            "target_titles": [
-                {"term": item.term, "aliases": list(item.aliases)}
-                for item in kernel_brief.target_titles
-            ],
-            "industries": [
-                {"term": item.term, "aliases": list(item.aliases)}
-                for item in kernel_brief.industries
-            ],
-            "location": kernel_brief.location,
-            "required_credentials": [
-                {"term": item.term, "aliases": list(item.aliases)}
-                for item in kernel_brief.required_credentials
-            ],
+            "input_sha256": _sha256(brief_canonical),
+        },
+        "penalty_inputs": {
+            "positive_keywords": brief_inputs["positive_keywords"],
+            "negative_keywords": brief_inputs["negative_keywords"],
         },
         "config": {
             "id": config.id,
             "version": config.version,
-            "weights": config.weights,
-            "metro_region_equivalences": config.metro_region_equivalences,
+            "input_sha256": _sha256(config_canonical),
         },
         "active_signal_ids": [item.value for item in active],
         "profile_snapshot": {
@@ -403,17 +504,37 @@ def input_fingerprint(
                         if role.months_derivation is not None
                         else None
                     ),
+                    "as_of_date": (
+                        retrieved_by_id.get(str(role.date_range.section_id), "")[:10]
+                        if role.months_derivation is MonthsDerivation.DATE_RANGE
+                        and role.date_range is not None
+                        else None
+                    ),
                 }
                 for role in snapshot.experience_roles
             ],
         },
         "sections": [
-            {"id": row.id, "name": row.section_name, "sha256": row.content_sha256}
+            {
+                "id": row.id,
+                "name": row.section_name,
+                "sha256": row.content_sha256,
+                "retrieved_at": row.retrieved_at,
+                "as_of_date": row.retrieved_at[:10],
+            }
             for row in sections
         ],
     }
+    fingerprint_material = {
+        **payload,
+        "brief_inputs": brief_inputs,
+        "config_inputs": config_inputs,
+    }
     canonical = json.dumps(
-        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        fingerprint_material,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
     )
     return _sha256(canonical), payload
 
@@ -433,7 +554,13 @@ def _persist_claim(
     evidence_set_id = coverage_set_id = missing_set_id = None
     if isinstance(claim.provenance, EvidenceSet):
         evidence_set_id = set_id
-        session.add(EvidenceSetRecord(id=set_id, candidate_id=candidate.id))
+        session.add(
+            EvidenceSetRecord(
+                id=set_id,
+                candidate_id=candidate.id,
+                score_signal_id=signal_row.id,
+            )
+        )
         session.flush()
         for entry in claim.provenance.entries:
             evidence_id = str(uuid4())
@@ -461,7 +588,10 @@ def _persist_claim(
         required = [entry.section_name for entry in claim.provenance.entries]
         session.add(
             CoverageSetRecord(
-                id=set_id, candidate_id=candidate.id, required_sections=required
+                id=set_id,
+                candidate_id=candidate.id,
+                score_signal_id=signal_row.id,
+                required_sections=required,
             )
         )
         session.flush()
@@ -480,7 +610,13 @@ def _persist_claim(
         session.flush()
     elif isinstance(claim.provenance, MissingSet):
         missing_set_id = set_id
-        session.add(MissingSetRecord(id=set_id, candidate_id=candidate.id))
+        session.add(
+            MissingSetRecord(
+                id=set_id,
+                candidate_id=candidate.id,
+                score_signal_id=signal_row.id,
+            )
+        )
         session.flush()
         for entry in claim.provenance.entries:
             session.add(

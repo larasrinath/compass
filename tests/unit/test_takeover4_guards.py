@@ -365,7 +365,10 @@ def test_replace_cannot_remove_purged_evidence_through_ancestor(
         connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
         with pytest.raises(
             sqlite3.IntegrityError,
-            match=r"purged evidence|score identity.*immutable",
+            match=(
+                r"purged evidence|score identity.*immutable|"
+                r"role brief versions are append-only"
+            ),
         ):
             connection.execute(
                 f'INSERT OR REPLACE INTO "{table}" SELECT * FROM "{table}" WHERE id=?',
@@ -404,7 +407,10 @@ def test_update_replace_cannot_reuse_purged_ancestor_identity(
         connection.execute(f"PRAGMA recursive_triggers={recursive_triggers}")
         with pytest.raises(
             sqlite3.IntegrityError,
-            match=r"purged evidence|score identity.*immutable",
+            match=(
+                r"purged evidence|score identity.*immutable|"
+                r"role brief versions are append-only"
+            ),
         ):
             connection.execute(
                 f'UPDATE OR REPLACE "{table}" SET id=? WHERE id=?',
@@ -546,12 +552,18 @@ def test_score_pair_must_share_session_for_insert_update_and_upsert(
                 _score_insert_sql(replace=True),
                 (valid_id, f"candidate-{suffix}-a", f"brief-{suffix}-b"),
             )
-        with pytest.raises(sqlite3.IntegrityError, match="cross a score session"):
+        with pytest.raises(
+            sqlite3.IntegrityError,
+            match=r"cross a score session|role brief versions are append-only",
+        ):
             connection.execute(
                 "UPDATE OR REPLACE candidate SET session_id=? WHERE id=?",
                 (f"session-{suffix}-b", f"candidate-{suffix}-a"),
             )
-        with pytest.raises(sqlite3.IntegrityError, match="cross a score session"):
+        with pytest.raises(
+            sqlite3.IntegrityError,
+            match=r"cross a score session|role brief versions are append-only",
+        ):
             connection.execute(
                 "UPDATE OR REPLACE role_brief SET session_id=? WHERE id=?",
                 (f"session-{suffix}-b", f"brief-{suffix}-a"),
@@ -785,14 +797,17 @@ def test_score_roots_are_immutable_for_updates_and_real_upserts(
             "'discovered', 'pending')"
         )
         for name in ("base", "alt"):
+            superseded = "'later'" if name == "base" else "NULL"
             connection.exec_driver_sql(
                 "INSERT INTO role_brief "
                 "(id, session_id, version, created_at, job_description, "
                 "target_titles, location, industries, positive_keywords, "
-                "negative_keywords, message_tone, weights_version) VALUES "
+                "negative_keywords, message_tone, weights_version, "
+                "superseded_at) VALUES "
                 f"('brief-{name}-{suffix}', 'session-{suffix}', "
                 f"{1 if name == 'base' else 2}, 'now', 'job', '[]', 'anywhere', "
-                "'[]', '[]', '[]', 'plain', 'v1')"
+                "'[]', '[]', '[]', 'plain', 'v1', "
+                f"{superseded})"
             )
         connection.exec_driver_sql(
             _score_insert_sql().replace(

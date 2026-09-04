@@ -22,11 +22,19 @@ from linkedin_dashboard.db.models import (
     PhaseGate,
     PhaseGateEvidence,
     ProfileSection,
+    RoleBrief,
     ScoreClaim,
+    ScoreInputSection,
     ScoreSignal,
+    ScoringConfig,
     SearchRun,
 )
 from linkedin_dashboard.db.session import Database
+from linkedin_dashboard.services.scoring.signals import active_signal_ids
+from linkedin_dashboard.services.scoring_persist import (
+    load_kernel_brief,
+    required_section_names,
+)
 
 router = APIRouter(tags=["phase-gates"])
 
@@ -119,6 +127,65 @@ def _overlaps(start: int, end: int, ranges: tuple[tuple[int, int], ...]) -> bool
     return any(start < right and left < end for left, right in ranges)
 
 
+def _score_uses_latest_inputs(session: Any, score: CandidateScore) -> bool:
+    brief = session.get(RoleBrief, score.brief_id)
+    config = session.get(ScoringConfig, score.scoring_config_id)
+    if (
+        brief is None
+        or brief.superseded_at is not None
+        or config is None
+        or config.superseded_at is not None
+    ):
+        return False
+    snapshot = score.source_snapshot.get("profile_snapshot", {})
+    expected = snapshot.get("sections", []) if isinstance(snapshot, dict) else []
+    if not isinstance(expected, list):
+        return False
+    active = active_signal_ids(load_kernel_brief(session, brief))
+    stored_active = score.source_snapshot.get("active_signal_ids")
+    if stored_active != [item.value for item in active]:
+        return False
+    required_names = set(required_section_names(active))
+    snapshot_names = [item.get("name") for item in expected if isinstance(item, dict)]
+    if (
+        len(snapshot_names) != len(set(snapshot_names))
+        or set(snapshot_names) != required_names
+    ):
+        return False
+    sources = {
+        (row.profile_section_id, row.content_sha256)
+        for row in session.scalars(
+            select(ScoreInputSection).where(ScoreInputSection.score_id == score.id)
+        )
+    }
+    expected_sources: set[tuple[str, str]] = set()
+    for item in expected:
+        if not isinstance(item, dict) or not isinstance(item.get("name"), str):
+            return False
+        latest = session.scalar(
+            select(ProfileSection)
+            .where(
+                ProfileSection.candidate_id == score.candidate_id,
+                ProfileSection.section_name == item["name"],
+            )
+            .order_by(ProfileSection.retrieved_at.desc(), ProfileSection.id.desc())
+            .limit(1)
+        )
+        if item.get("state") == "missing":
+            if latest is not None:
+                return False
+            continue
+        if (
+            item.get("state") != "complete"
+            or latest is None
+            or latest.id != item.get("id")
+            or latest.content_sha256 != item.get("content_sha256")
+        ):
+            return False
+        expected_sources.add((latest.id, latest.content_sha256))
+    return sources == expected_sources
+
+
 @router.post("/session/gates/B", response_model=dict[str, Any], status_code=201)
 def accept_gate_b(
     payload: GateBInput,
@@ -166,6 +233,15 @@ def accept_gate_b(
                 evidence.id: (evidence, score, section)
                 for evidence, score, section in rows
             }
+            scores = {score.id: score for _, score, _ in rows}
+            if any(
+                not _score_uses_latest_inputs(session, score)
+                for score in scores.values()
+            ):
+                raise ValueError(
+                    "Gate B evidence is stale against the current brief, "
+                    "weights, or profile"
+                )
             manifest: list[dict[str, str]] = []
             for evidence_id in evidence_ids:
                 found = by_id.get(evidence_id)

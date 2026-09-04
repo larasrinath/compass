@@ -15,6 +15,8 @@ from linkedin_dashboard.db.models import (
     EvidenceSetRecord,
     Job,
     PhaseGateEvidence,
+    ProfileSection,
+    ScoreClaim,
     ScoreInputSection,
     ScoreSignal,
 )
@@ -123,6 +125,8 @@ def test_m4_score_gate_and_exact_evidence_lifecycle(tmp_path: Path) -> None:
                 experience="Experience\nPlatform Engineer at Acme",
             ),
             _profile_result(main_profile="Ada Example", skills=skills),
+            _profile_result(skills=f"{skills} rollback-marker"),
+            _profile_result(skills=f"{skills} newer-marker"),
         ]
     )
     app = create_app(_settings(tmp_path / "m4.db"), queue_executor=executor)
@@ -217,6 +221,63 @@ def test_m4_score_gate_and_exact_evidence_lifecycle(tmp_path: Path) -> None:
             for item in claim["evidence"]
             if item["availability"]["state"] == "available"
         ]
+        score_before_failure = refreshed["score"]["score_id"]
+        with app.state.database.sessions() as session:
+            section_count = session.scalar(
+                select(func.count(ProfileSection.id)).where(
+                    ProfileSection.candidate_id == candidate_id
+                )
+            )
+        original_rescore = app.state.scoring_service.rescore_candidate_in_session
+        app.state.scoring_service.rescore_candidate_in_session = (
+            lambda _session, _candidate: (_ for _ in ()).throw(
+                ValueError("forced scoring rollback")
+            )
+        )
+        failed = client.post(
+            f"/api/candidates/{candidate_id}/enrich",
+            json={"sections": ["skills"]},
+        ).json()
+        assert _wait(app, failed["job_id"]).state == "failed"
+        with app.state.database.sessions() as session:
+            assert (
+                session.scalar(
+                    select(func.count(ProfileSection.id)).where(
+                        ProfileSection.candidate_id == candidate_id
+                    )
+                )
+                == section_count
+            )
+        assert (
+            client.get(f"/api/candidates/{candidate_id}").json()["score"]["score_id"]
+            == score_before_failure
+        )
+
+        app.state.scoring_service.rescore_candidate_in_session = (
+            lambda _session, _candidate: None
+        )
+        unscored = client.post(
+            f"/api/candidates/{candidate_id}/enrich",
+            json={"sections": ["skills"]},
+        ).json()
+        assert _wait(app, unscored["job_id"]).state == "done"
+        assert (
+            client.post(
+                "/api/session/gates/B",
+                json={"evidence_ids": current_ids[:10], "note": "stale profile"},
+            ).status_code
+            == 409
+        )
+        app.state.scoring_service.rescore_candidate_in_session = original_rescore
+        assert client.post(f"/api/candidates/{candidate_id}/rescore").status_code == 200
+        refreshed = client.get(f"/api/candidates/{candidate_id}").json()
+        current_ids = [
+            item["id"]
+            for signal in refreshed["signals"]
+            for claim in signal["claims"]
+            for item in claim["evidence"]
+            if item["availability"]["state"] == "available"
+        ]
         gate_b = client.post(
             "/api/session/gates/B",
             json={"evidence_ids": current_ids[:10], "note": "Verified exactly."},
@@ -258,6 +319,8 @@ def test_m4_score_gate_and_exact_evidence_lifecycle(tmp_path: Path) -> None:
                 .where(ScoreSignal.id == evidence.score_signal_id)
             )
             assert source_score is not None
+            assert "newer-marker" not in str(source_score.source_snapshot)
+            assert "rollback-marker" not in str(source_score.source_snapshot)
             staged_score = CandidateScore(
                 id="staged-score",
                 candidate_id=source_score.candidate_id,
@@ -292,7 +355,9 @@ def test_m4_score_gate_and_exact_evidence_lifecycle(tmp_path: Path) -> None:
                 note=None,
             )
             staged_set = EvidenceSetRecord(
-                id="staged-set", candidate_id=source_score.candidate_id
+                id="staged-set",
+                candidate_id=source_score.candidate_id,
+                score_signal_id=staged_signal.id,
             )
             staged_source = ScoreInputSection(
                 score_id=staged_score.id,
@@ -337,10 +402,28 @@ def test_m4_score_gate_and_exact_evidence_lifecycle(tmp_path: Path) -> None:
             with app.state.database.sessions.begin() as session:
                 session.add(late)
         with app.state.database.sessions.begin() as session:
-            session.add_all([staged_score, staged_signal, staged_set, staged_source])
+            session.add(staged_score)
+            session.flush()
+            session.add(staged_signal)
+            session.flush()
+            session.add_all([staged_set, staged_source])
         with pytest.raises(IntegrityError, match="exact same-candidate span"):
             with app.state.database.sessions.begin() as session:
                 session.add(bad)
+        with pytest.raises(IntegrityError, match="provenance is incomplete"):
+            with app.state.database.sessions.begin() as session:
+                session.add(
+                    ScoreClaim(
+                        id="cross-owner-claim",
+                        score_signal_id=staged_signal.id,
+                        claim_key="cross-owner",
+                        display_term="must fail",
+                        verdict="matched",
+                        evidence_set_id=evidence.evidence_set_id,
+                        coverage_set_id=None,
+                        missing_set_id=None,
+                    )
+                )
 
 
 def test_weight_versioning_and_all_inert_nullable_score(tmp_path: Path) -> None:

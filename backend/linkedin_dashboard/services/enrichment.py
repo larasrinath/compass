@@ -22,6 +22,7 @@ from linkedin_dashboard.db.models import (
     ProfileFetch,
     ProfileIdentityObservation,
     ProfileSection,
+    RoleBrief,
     SectionError,
     SectionReference,
 )
@@ -355,16 +356,7 @@ class EnrichmentResultProcessor:
                 result=attested if url_mismatch else None,
             )
             return
-        candidate_id = self._parse_fetch(fetch_id, attested)
-        if candidate_id is not None and self.scoring_service is not None:
-            try:
-                self.scoring_service.rescore_candidate(candidate_id)
-            except LookupError:
-                pass
-            except ValueError:
-                logger.exception(
-                    "Local scoring failed after profile fetch %s", fetch_id
-                )
+        self._parse_fetch(fetch_id, attested)
 
     def process_failure(
         self, job_id: str, kind: JobKind, error_class: ErrorClass
@@ -485,11 +477,11 @@ class EnrichmentResultProcessor:
                 fetch.contract_error = contract_error
             return fetch.id
 
-    def _parse_fetch(self, fetch_id: str, result: dict[str, Any]) -> str | None:
+    def _parse_fetch(self, fetch_id: str, result: dict[str, Any]) -> None:
         with self.database.sessions.begin() as session:
             fetch = session.get(ProfileFetch, fetch_id)
             if fetch is None or fetch.processed_at is not None:
-                return None
+                return
             candidate = session.get(Candidate, fetch.candidate_id)
             if candidate is None:
                 raise LookupError("profile candidate disappeared")
@@ -617,7 +609,21 @@ class EnrichmentResultProcessor:
             fetch.finished_at = now
             fetch.duration_ms = _duration_ms(fetch.started_at, now)
             fetch.processed_at = now
-            return candidate.id
+            if self.scoring_service is not None:
+                # The session disables autoflush.  Make the new immutable
+                # sections, parsed spans, and error lineage visible to the
+                # score built in this same transaction.
+                session.flush()
+                has_brief = session.scalar(
+                    select(RoleBrief.id).where(
+                        RoleBrief.session_id == candidate.session_id,
+                        RoleBrief.superseded_at.is_(None),
+                    )
+                )
+                if has_brief is not None:
+                    self.scoring_service.rescore_candidate_in_session(
+                        session, candidate.id
+                    )
 
     def _mark_contract_failure(
         self,

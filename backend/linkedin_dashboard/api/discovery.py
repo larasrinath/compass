@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from sqlalchemy import select
 
 from linkedin_dashboard.api._filters import (
@@ -76,7 +76,7 @@ class BriefInput(BaseModel):
         default_factory=list, max_length=100
     )
     message_tone: str = Field(default="Professional and concise", max_length=500)
-    required_experience_months: int | None = Field(default=None, ge=0)
+    required_experience_months: StrictInt | None = Field(default=None, ge=0)
     required_credentials: list[BriefTermInput] | None = Field(
         default=None, max_length=100
     )
