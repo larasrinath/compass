@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
+const projectRoot = fileURLToPath(new URL('../..', import.meta.url))
 const read = (path) => readFileSync(`${root}/src/${path}`, 'utf8')
 const app = read('App.tsx')
 const api = read('api/client.ts')
@@ -14,6 +15,30 @@ const copy = read('components/scoringCopy.ts')
 const weights = read('components/WeightsEditor.tsx')
 const detail = read('pages/CandidateDetailPage.tsx')
 const routing = read('routing.ts')
+const plan = readFileSync(`${projectRoot}/PROJECT_PLAN.md`, 'utf8')
+
+const missingReasons = [
+  'not_requested',
+  'rate_limit',
+  'fetch_error',
+  'unparseable',
+]
+
+function quotedValues(value) {
+  return [...value.matchAll(/'([^']+)'/g)].map((match) => match[1])
+}
+
+test('plan and frontend share the four-value missing-reason domain', () => {
+  const sqlDomain = plan.match(/reason CHECK\(reason IN \(([^)]+)\)\)/)?.[1]
+  const planType = plan.match(/MissingSection \{[\s\S]*?reason\s+: ([^\n]+)/)?.[1]
+  const frontendType = api.match(/export type MissingReason =([\s\S]*?)\n\n/)?.[1]
+  assert.ok(sqlDomain)
+  assert.ok(planType)
+  assert.ok(frontendType)
+  assert.deepEqual(quotedValues(sqlDomain), missingReasons)
+  assert.deepEqual(planType.split('|').map((reason) => reason.trim()), missingReasons)
+  assert.deepEqual(quotedValues(frontendType), missingReasons)
+})
 
 test('Gate A structurally separates candidate pool from ranking', () => {
   assert.match(api, /\/api\/candidate-pool\?session_id=/)

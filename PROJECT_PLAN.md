@@ -794,7 +794,7 @@ signal_coverage(id PK, coverage_set_id FK, profile_section_id FK,
 missing_set(id PK, candidate_id FK)
 
 signal_missing_section(id PK, missing_set_id FK, section_name TEXT,
-                       reason CHECK(reason IN ('not_requested','rate_limit','fetch_error')),
+                       reason CHECK(reason IN ('not_requested','rate_limit','fetch_error','unparseable')),
                        section_error_id FK NULL)
 -- Used only for `unknown`; stores availability provenance, never profile evidence.
 
@@ -1336,11 +1336,13 @@ confidence = y / W        ∈ [0,1]
 band = low (<0.5) | medium (0.5–0.8) | high (≥0.8)
 ```
 
-`availability_i` is `1.0` if every section the signal needs was retrieved successfully,
-`0.5` if some were, `0.0` if none. A section that was retrieved but parsed to nothing counts
-as retrieved (availability 1.0) with sub-score 0 and a `not_matched` scalar claim — because we
-*did* look and did not find it. A section that errored contributes missing-section provenance
-and reduces availability.
+`availability_i` is `1.0` if every section the signal needs was retrieved successfully and can
+be parsed reliably, `0.5` if some were, `0.0` if none. A section that was retrieved and parsed
+reliably but contained no relevant value counts as retrieved (availability 1.0) with sub-score 0
+and a `not_matched` scalar claim — because we *did* look and did not find it. A section that
+errored, or that was retrieved but cannot be parsed reliably, contributes missing-section
+provenance (`fetch_error` or `unparseable`, respectively) and reduces availability. An
+`unparseable` section is never coerced to `fetch_error` or `not_matched`.
 
 When `I≠∅` and `y=0` because no effective signal has retrieved availability, confidence is
 exactly 0 and `confidence_band` is null. When `I=∅`, confidence is also 0 but the explicit API/UI
@@ -1388,7 +1390,7 @@ AbsenceCoverage {
 MissingSection {
   verdict        : unknown
   section_name   : "skills"
-  reason         : not_requested | rate_limit | fetch_error
+  reason         : not_requested | rate_limit | fetch_error | unparseable
   section_error_id : 7 | null
 }
 ```
@@ -1415,8 +1417,9 @@ The candidate detail view renders, for every signal:
   purged the UI says *"raw text purged on {date}"*.
 - **What did not match** — deterministic absence results, listed with the exact successfully
   retrieved sections and searched normalized terms/aliases; never as quoted snippets.
-- **What was unavailable** — claims with verdict `unknown`, each naming the section that
-  was not retrieved and *why* (`rate_limit`, not requested, fetch error).
+- **What was unavailable** — claims with verdict `unknown`, each naming the section that was
+  unavailable for reliable scoring and *why*: not requested, rate limited, fetch failed, or
+  **"retrieved, but could not be parsed reliably"** (`unparseable`).
 - **Provisional or enriched** — the stage badge, plus "N of 6 sections retrieved".
 
 Copy rule, enforced in one shared component: `unknown` always renders as

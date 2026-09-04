@@ -30,6 +30,7 @@ const vite = await createServer({
 })
 const { CandidatesPage } = await vite.ssrLoadModule('/src/pages/CandidatesPage.tsx')
 const { EvidencePanel } = await vite.ssrLoadModule('/src/components/EvidencePanel.tsx')
+const { missingReasonCopy } = await vite.ssrLoadModule('/src/components/scoringCopy.ts')
 const { WeightsEditor } = await vite.ssrLoadModule('/src/components/WeightsEditor.tsx')
 const { SearchPage } = await vite.ssrLoadModule('/src/pages/SearchPage.tsx')
 await vite.close()
@@ -89,6 +90,18 @@ function ranked(overrides) {
     ...overrides,
   }
 }
+
+test('every canonical missing reason has distinct exhaustive copy', () => {
+  assert.deepEqual(
+    ['not_requested', 'rate_limit', 'fetch_error', 'unparseable'].map(missingReasonCopy),
+    [
+      'not requested',
+      'not retrieved because a rate limit stopped the request',
+      'could not be retrieved',
+      'retrieved, but could not be parsed reliably',
+    ],
+  )
+})
 
 test('candidate-pool inspection records Gate A before ranking navigation', async () => {
   let gateBody = null
@@ -180,7 +193,7 @@ test('evidence opening and verification are separate; unknown and masked states 
           polarity: 'supporting', availability: { state: 'available' } }],
         coverage: [], missing_sections: [] },
       { id: 'unknown', claim_key: 'required:rust', display_term: 'Rust', verdict: 'unknown',
-        evidence: [], coverage: [], missing_sections: [{ section_name: 'skills', reason: 'not_requested' }] },
+        evidence: [], coverage: [], missing_sections: [{ section_name: 'skills', reason: 'unparseable' }] },
       { id: 'masked', claim_key: 'required:masked', display_term: 'Masked', verdict: 'matched',
         evidence: [{ id: 'masked-e', section_name: 'experience', profile_section_id: 'p1',
           span_start: 1, span_end: 4, snippet: 'secret', matched_term: 'secret', matcher: 'exact',
@@ -202,6 +215,9 @@ test('evidence opening and verification are separate; unknown and masked states 
     onEvidenceVerified(evidenceId, verified) { calls.push(['verify', evidenceId, verified]) },
   }))
   assert.equal(screen.getByText('not found in the retrieved data', { exact: false }).textContent.includes('not found in the retrieved data'), true)
+  const unparseable = screen.getByText('Rust').closest('.claim-card')
+  assert.equal(unparseable.textContent.includes('retrieved, but could not be parsed reliably'), true)
+  assert.equal(unparseable.textContent.includes('Searched every required retrieved section'), false)
   assert.equal(screen.getByText(/Evidence withheld/).textContent, 'Evidence withheld')
   assert.equal(screen.getByText(/Raw text purged on/).textContent.includes('Raw text purged on'), true)
   assert.equal(screen.getByText(/Session raw text was manually purged/).textContent.includes('manually purged'), true)

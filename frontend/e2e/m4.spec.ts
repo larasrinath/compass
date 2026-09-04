@@ -65,7 +65,7 @@ const signals = [{
     },
     {
       id: 'claim-unknown', claim_key: 'required:rust', display_term: 'Rust', verdict: 'unknown',
-      evidence: [], coverage: [], missing_sections: [{ section_name: 'skills', reason: 'not_requested' }],
+      evidence: [], coverage: [], missing_sections: [{ section_name: 'skills', reason: 'unparseable' }],
     },
     {
       id: 'claim-absent', claim_key: 'required:python', display_term: 'Python', verdict: 'not_matched',
@@ -258,6 +258,9 @@ test('ranked and detail layouts stay readable at narrow width with non-color cue
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy()
   await page.getByRole('button', { name: 'Open evidence for Ada Lovelace' }).click()
   await expect(page.getByText('? not found in the retrieved data')).toBeVisible()
+  const unparseable = page.locator('.claim-card').filter({ hasText: 'Rust' })
+  await expect(unparseable).toContainText('skills · retrieved, but could not be parsed reliably')
+  await expect(unparseable).not.toContainText('Searched every required retrieved section')
   await expect(page.getByText('○ not matched')).toBeVisible()
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy()
 })

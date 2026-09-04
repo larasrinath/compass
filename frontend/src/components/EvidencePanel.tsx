@@ -1,5 +1,10 @@
 import type { ScoreSignalRecord } from '../api/client'
-import { ALL_INERT_COPY, UNKNOWN_COPY, verdictCopy } from './scoringCopy'
+import {
+  ALL_INERT_COPY,
+  UNKNOWN_COPY,
+  missingReasonCopy,
+  verdictCopy,
+} from './scoringCopy'
 import { SignalTable } from './SignalTable'
 
 export { ALL_INERT_COPY, UNKNOWN_COPY } from './scoringCopy'
@@ -60,7 +65,7 @@ export function EvidencePanel({
                       </span>
                       {claim.missing_sections.map((missing) => (
                         <span key={`${missing.section_name}-${missing.reason}`}>
-                          {missing.section_name.replaceAll('_', ' ')} · {missing.reason.replaceAll('_', ' ')}
+                          {missing.section_name.replaceAll('_', ' ')} · {missingReasonCopy(missing.reason)}
                         </span>
                       ))}
                     </div>

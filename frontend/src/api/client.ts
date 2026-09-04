@@ -346,9 +346,15 @@ export interface AbsenceCoverageRecord {
   matcher_version: string
 }
 
+export type MissingReason =
+  | 'not_requested'
+  | 'rate_limit'
+  | 'fetch_error'
+  | 'unparseable'
+
 export interface MissingSectionRecord {
   section_name: string
-  reason: 'not_requested' | 'rate_limit' | 'fetch_error'
+  reason: MissingReason
 }
 
 export interface ScoreClaimRecord {
