@@ -92,6 +92,7 @@ const weights = {
   active_signal_ids: signals.map(s => s.signal_id), inert_reasons: {}, metro_region_equivalences: {},
 }
 const responses = {
+  '/api/settings': { profile_concurrency: 2, inter_call_delay_seconds: 3, download_batch_limit: 1000, search_page_limit: 1000, automatic_downloads: true, automatic_pagination: true, busy_retry_seconds: 30, timeout_retry_seconds: 0 },
   '/api/health': { status: 'ok', database: 'ok', send_enabled: false, llm_provider: 'null' },
   '/api/mcp/status': { reachable: true, tools: [], last_error_class: null, correlation_id: 'docs' },
   '/api/session': { id: 'docs-session', label: 'Documentation example', created_at: date,
@@ -147,7 +148,7 @@ try {
   })
   async function capture(file) {
     await page.evaluate(() => document.fonts.ready)
-    await page.screenshot({ path: `${output}${file}.png`, animations: 'disabled' })
+    await page.screenshot({ path: `${output}${file}.png`, animations: 'disabled', fullPage: file === 'settings' })
   }
   await page.goto(`${origin}/brief`)
   await page.getByText('Skills & keywords', { exact: true }).waitFor()
@@ -157,9 +158,6 @@ try {
   await capture('candidate-results')
   await page.getByRole('button', { name: `Open evidence for ${names[0]}` }).click()
   await page.getByRole('heading', { name: 'Match score', exact: true }).waitFor()
-  await page.getByRole('button', { name: 'Review score evidence' }).click()
-  await page.locator('.evidence-link').first().click()
-  await page.locator('.source-check mark').waitFor()
   await capture('candidate-review')
   await page.goto(`${origin}/search`)
   await page.getByRole('heading', { name: names[0], exact: true }).waitFor()
@@ -169,11 +167,14 @@ try {
   await page.goto(`${origin}/saved`)
   await page.getByRole('button', { name: `Review ${names[2]}` }).waitFor()
   await capture('saved-searches')
+  await page.goto(`${origin}/settings`)
+  await page.getByRole('button', { name: 'Save scoring weights' }).waitFor()
+  await capture('settings')
   await page.goto(`${origin}/how-it-works`)
   await page.getByText('Working with results', { exact: true }).waitFor()
   await capture('how-it-works')
   if (failures.length) throw new Error(failures.join('\n'))
-  console.log(`Captured six documentation screenshots in ${output}`)
+  console.log(`Captured seven documentation screenshots in ${output}`)
 } finally {
   await browser?.close()
   server.kill('SIGTERM')

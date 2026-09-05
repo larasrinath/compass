@@ -12,14 +12,12 @@ export function Ch8() {
   const [verified, setVerified] = useState<string[]>([]);
   const [accepted, setAccepted] = useState(false);
   const [verificationNote, setVerificationNote] = useState('');
-  const [version, setVersion] = useState(1);
 
   const committedResult = useMemo(() => computeScore(committed, 1), [committed]);
   const dirty = draftWeights.some((w, i) => w !== committed[i].weight);
 
   const saveWeights = () => {
     if (committedResult.scored) setPreviousScore(committedResult.score);
-    setVersion(v => v + 1);
     setVerified([]);
     setAccepted(false);
     setCommitted(RESULT_SIGNALS.map((c, i) => ({ ...c, weight: draftWeights[i] })));
@@ -35,7 +33,7 @@ export function Ch8() {
       chapterId="priorities-verify"
       kicker="Working with results · 8 of 9"
       title="Change priorities and verify evidence"
-      intro="In Compare matches, expand Filter, sort & scoring settings, then Scoring weights. Edit a signal’s numeric weight and choose Save from the displayed version. Saving new weights — or saving changes to the brief — recalculates every result locally, using the same saved evidence. To verify a source, open a candidate, choose Review score evidence, open a quoted passage under Review against your criteria, and select I checked this passage against the criterion after reading its highlighted source. Return to Compare matches and expand Record source checks to record at least 10 distinct links for current scores."
+      intro="Open Settings, then Scoring weights. Edit a signal’s numeric weight and choose Save scoring weights. Saving new weights — or saving changes to the brief — recalculates every result locally, using the same saved evidence. To verify a source, open a candidate, choose Review score evidence, open a quoted passage under Review against your criteria, and select I checked this passage against the criterion after reading its highlighted source. Return to Compare matches and expand Record source checks to record at least 10 distinct links for current scores."
     >
       <Figure caption="The same saved evidence, scored under your priorities. Edit a number and save — the recalculation is local and instant, and the candidate keeps the previous score for reference. Nothing is re-downloaded.">
         <div className="rounded-xl border border-line bg-canvas p-5">
@@ -51,7 +49,7 @@ export function Ch8() {
               {!committedResult.scored && <p className="text-xs text-faint">Not scored — {committedResult.reason}</p>}
             </div>
           </div>
-          <details className="learn-disclosure mt-4" open><summary className="cursor-pointer text-sm text-faint">Filter, sort & scoring settings</summary><details className="learn-disclosure mt-4" open><summary className="cursor-pointer text-sm text-body">Scoring weights · Saved version {version}</summary><div className="mt-4 space-y-3">
+          <section className="mt-4 rounded-2xl border border-line bg-surface p-5" aria-label="Example scoring settings"><h2 className="text-base font-medium text-ink">Scoring weights</h2><div className="mt-4 space-y-3">
             {RESULT_SIGNALS.map((c, i) => (
               <div key={c.name} className="grid grid-cols-[minmax(0,1fr)_5rem] items-center gap-2">
                 <p className="text-xs font-medium text-ink">{c.id} · {c.name}</p>
@@ -80,9 +78,9 @@ export function Ch8() {
               disabled={!dirty}
               className="rounded-full bg-ink px-5 py-2.5 text-sm font-semibold text-canvas hover:bg-accent-strong disabled:cursor-not-allowed disabled:opacity-40"
             >
-              Save from {version}
+              Save scoring weights
             </button>
-          </div></details></details>
+          </div></section>
         </div>
       </Figure>
 

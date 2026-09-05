@@ -13,6 +13,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from linkedin_dashboard import __version__
 from linkedin_dashboard.api._filters import PrivacyFilterMiddleware
 from linkedin_dashboard.api.audit import router as audit_router
+from linkedin_dashboard.api.configuration import router as configuration_router
 from linkedin_dashboard.api.discovery import router as discovery_router
 from linkedin_dashboard.api.gates import router as gates_router
 from linkedin_dashboard.api.health import router as health_router
@@ -203,6 +204,7 @@ def create_app(
     app.add_middleware(CorrelationIdMiddleware)
     app.add_middleware(PrivacyFilterMiddleware)
     app.include_router(health_router, prefix="/api")
+    app.include_router(configuration_router, prefix="/api")
     app.include_router(audit_router, prefix="/api")
     app.include_router(jobs_router, prefix="/api")
     app.include_router(discovery_router, prefix="/api")

@@ -1098,3 +1098,11 @@ class AuditLog(Base):
     subject_id: Mapped[str] = mapped_column(String(64), nullable=False)
     detail: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     correlation_id: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class AppConfiguration(Base):
+    __tablename__ = "app_configuration"
+    __table_args__ = (CheckConstraint("id = 1", name="ck_app_configuration_singleton"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    values: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)

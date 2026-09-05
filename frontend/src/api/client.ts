@@ -612,3 +612,20 @@ export const getCompanyLookup = (lookupId: string) =>
 export async function cancelQueuedJob(jobId: string): Promise<QueueJob> {
   return requestJson(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' })
 }
+
+
+export interface AppConfiguration {
+  profile_concurrency: number
+  inter_call_delay_seconds: number
+  download_batch_limit: number
+  search_page_limit: number
+  automatic_downloads: boolean
+  automatic_pagination: boolean
+  busy_retry_seconds: number
+  timeout_retry_seconds: number
+}
+
+export const getConfiguration = () => requestJson<AppConfiguration>('/api/settings')
+export const saveConfiguration = (values: AppConfiguration) => requestJson<AppConfiguration>('/api/settings', {
+  method: 'PUT', body: JSON.stringify(values),
+})

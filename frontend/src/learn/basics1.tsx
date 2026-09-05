@@ -18,13 +18,13 @@ const STAGES = [
   },
   {
     label: 'Download and score', where: 'Automatic downloads, then Review',
-    detail: 'Compass downloads up to 1,000 new profiles per search, with two profile downloads running at a time when the connector supports it. Existing downloads are reused. It saves each original response before extracting details and calculating a score. Review the saved text, career history and available sections; request additional sections when something useful is missing.',
+    detail: 'By default, Compass queues up to 1,000 new profile downloads per search batch. Settings lets you lower the batch limit and choose one or two simultaneous profile downloads, within the connector’s capacity. Existing downloads are reused. It saves each original response before extracting details and calculating a score. Review the saved text, career history and available sections; request additional sections when something useful is missing.',
     outcome: 'Saved profile evidence stays on this computer and remains available without the connector.',
   },
   {
     label: 'Review and compare', where: 'Compare matches',
     detail: 'Check the candidate list and record your review note to unlock ranking. Open a candidate to see the score, uncertainty range and signal breakdown. Select two or three people, then choose View comparison to read their evidence side by side.',
-    outcome: 'Adjust scoring weights when priorities change. Compass recalculates from saved evidence without another download.',
+    outcome: 'Adjust scoring weights in Settings when priorities change. Compass recalculates from saved evidence without another download.',
   },
   {
     label: 'Make your own assessment', where: 'Your review',
@@ -289,9 +289,9 @@ export function Ch3() {
       chapterId="discover-candidates"
       kicker="The basics · 3 of 9"
       title="Find, download and score candidates"
-      intro="Searching LinkedIn uses your keywords and available preferences — location, network distance, a current-company identifier. Results enter a saved candidate pool: when the same person appears twice, Compass combines them into one record that keeps a link to every search that found them. Newly found people are queued automatically for a profile and experience download. Scores update as each download completes. Choose 3rd-degree and beyond or all networks to look beyond your direct and mutual connections."
+      intro="Searching LinkedIn uses your keywords and available preferences — location, network distance, a current-company identifier. Results enter a saved candidate pool: when the same person appears twice, Compass combines them into one record that keeps a link to every search that found them. With automatic downloads enabled in Settings, newly found people are queued for a profile and experience download. Scores update as each download completes. Choose 3rd-degree and beyond or all networks to look beyond your direct and mutual connections."
     >
-      <Figure caption="Two fictional searches both return Robin Serrano. In the pool she becomes one candidate record with two search links — not a duplicate. Add both searches to see the merge and the simulated automatic queue. Compass follows additional results pages with the same filters, downloading up to two profiles at a time in separate browser tabs. Each search batch queues up to 1,000 new profile downloads. Existing downloads do not use that allowance, and saved candidates can keep growing across searches. Stop discovery ends further pages while queued downloads finish.">
+      <Figure caption="Two fictional searches both return Robin Serrano. In the pool she becomes one candidate record with two search links — not a duplicate. Add both searches to see the merge and the simulated automatic queue. With the default Settings, Compass follows additional results pages with the same filters, downloading up to two profiles at a time in separate browser tabs. Each search batch queues up to 1,000 new profile downloads. Existing downloads do not use that allowance, and saved candidates can keep growing across searches. Stop discovery ends further pages while queued downloads finish.">
         <div className="grid gap-4 sm:grid-cols-2">
           <SearchCard which="A" names={SEARCH_A} added={addedA} addResults={addResults} />
           <SearchCard which="B" names={SEARCH_B} added={addedB} addResults={addResults} />

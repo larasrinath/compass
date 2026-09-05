@@ -11,6 +11,7 @@ the interface and are not evidence of a live search, retrieval, or scoring run.
 | [role-brief.png](role-brief.png) | Criteria, repeated locations, year stepper, and optional preferences |
 | [candidate-review.png](candidate-review.png) | Score-first candidate drawer |
 | [saved-searches.png](saved-searches.png) | Three-profile saved-run preview |
+| [settings.png](settings.png) | Download configuration, batch limits, and retry timing |
 | [how-it-works.png](how-it-works.png) | Interactive guide overview |
 
 ## Refresh
@@ -23,7 +24,8 @@ npm run docs:screenshots
 
 The [capture script](../../frontend/scripts/capture-docs.mjs) starts Vite on
 `127.0.0.1:5195` and renders real application components at 1440 × 1000 with
-bundled fonts, a fixed locale/timezone, and reduced motion. It uses a fresh browser
+bundled fonts, a fixed locale/timezone, and reduced motion. Settings uses a full-page
+capture to include its separate scoring sheet. It uses a fresh browser
 context, supplies fictional GET responses, aborts event streams, and rejects
 unexpected API operations and external requests. It does not start or access the
 dashboard backend, connector, or database. Chrome and the temporary Vite process

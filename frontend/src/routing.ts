@@ -1,6 +1,6 @@
 export type AppRoute =
   | { view: 'learn'; candidateId: null; chapter: string | null }
-  | { view: 'brief' | 'search' | 'ranked' | 'saved'; candidateId: null }
+  | { view: 'brief' | 'search' | 'ranked' | 'saved' | 'settings'; candidateId: null }
   | { view: 'candidate'; candidateId: string }
 
 export function parseAppRoute(pathname: string): AppRoute {
@@ -21,6 +21,7 @@ export function parseAppRoute(pathname: string): AppRoute {
       return { view: 'brief', candidateId: null }
     }
   }
+  if (pathname === '/settings') return { view: 'settings', candidateId: null }
   if (pathname === '/saved') return { view: 'saved', candidateId: null }
   if (pathname === '/search') return { view: 'search', candidateId: null }
   if (pathname === '/candidates') return { view: 'ranked', candidateId: null }
@@ -33,6 +34,7 @@ export function pathForRoute(route: AppRoute): string {
     return `/candidates/${encodeURIComponent(route.candidateId)}`
   }
   if (route.view === 'ranked') return '/candidates'
+  if (route.view === 'settings') return '/settings'
   if (route.view === 'saved') return '/saved'
   if (route.view === 'search') return '/search'
   return '/brief'

@@ -53,8 +53,11 @@ class SearchDownloadService:
         self.enrichment = enrichment
 
     async def request(self, run_id: str) -> None:
+        from linkedin_dashboard.configuration import load_configuration
+
         with self.database.sessions.begin() as db:
             db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+            config = load_configuration(db)
             run = db.get(SearchRun, run_id)
             if run is None:
                 raise LookupError("search does not exist")
@@ -74,7 +77,7 @@ class SearchDownloadService:
                     db.add(
                         SearchDownload(
                             search_run_id=page_id,
-                            profile_limit=1000,
+                            profile_limit=config.download_batch_limit,
                             requested_at=datetime.now(UTC).isoformat(),
                             queued_count=0,
                         )

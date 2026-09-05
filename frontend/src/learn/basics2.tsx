@@ -64,7 +64,7 @@ export function Ch4() {
       chapterId="download-evidence"
       kicker="The basics · 4 of 9"
       title="Download and inspect evidence"
-      intro="After a search, Compass automatically retrieves the main profile and experience for each new person. From the candidate detail you can request up to three more sections at a time. Every extracted detail stays connected to the original source text — select an example evidence link to highlight its source. These links illustrate provenance, not every field the parser can extract. A missing section always tells you why."
+      intro="With automatic downloads enabled in Settings, Compass retrieves the main profile and experience for each new person. From the candidate detail you can request up to three more sections at a time. Every extracted detail stays connected to the original source text — select an example evidence link to highlight its source. These links illustrate provenance, not every field the parser can extract. A missing section always tells you why."
     >
       <Figure caption="One fictional profile, three connected views: the saved source text (left), the illustrative evidence links (right), and the highlighted passage linking them. Select any extracted field to jump to its source. Below, each section shows an explicit state — including why something is missing.">
         <div className="grid gap-4 lg:grid-cols-2">
@@ -154,9 +154,9 @@ export function Ch4() {
 /* ================= Chapter 5 — What happens after a request ================= */
 
 const FLOW_STEPS = [
-  { label: 'Your click', detail: 'You run a search, which also queues its new profiles for download. For an older search, select Download remaining profiles. You can separately request more sections for a saved candidate; opening Review does not request extra sections.' },
-  { label: 'Waiting in queue', detail: 'The local service records the task and processes one operation at a time. If another request is running, yours waits. A paused queue needs your attention before retrieval continues.' },
-  { label: 'Local LinkedIn connector', detail: 'The worker sends the request to the separately running connector. It uses its existing LinkedIn session to retrieve the requested information. The dashboard does not manage that browser or sign in for you.' },
+  { label: 'Your click', detail: 'You run a search. If automatic downloads are enabled in Settings, this also queues its new profiles for download. For an older search, select Download remaining profiles. You can separately request more sections for a saved candidate; opening Review does not request extra sections.' },
+  { label: 'Waiting in queue', detail: 'The local service records the task. Profile downloads can overlap in one or two separate tabs, depending on Settings and connector capacity; search and other operations run exclusively. Tasks wait when capacity is full, between paced reads, or during a retry delay. A paused queue needs your attention before retrieval continues.' },
+  { label: 'Local LinkedIn connector', detail: 'The worker sends the request to the separately running connector. It opens LinkedIn pages using its existing signed-in browser session. This is browser automation, not a bulk profile API; a hidden tab does not make a profile visit anonymous. The dashboard does not manage that browser or sign in for you.' },
   { label: 'Response saved', detail: 'The complete response is committed to local storage before profile information is extracted. Previously saved sections are retained if a later request fails or is rate limited.' },
   { label: 'Details extracted', detail: 'Local parsers identify fields such as job title, company and dates. Extracted evidence points back to the saved section and exact source text; a parsing gap does not erase the original response.' },
   { label: 'Local matching', detail: 'Saved evidence is checked against the current role criteria and scoring weights. Missing sections stay distinguishable from searched text with no exact match. Rescoring saved profiles does not contact LinkedIn.' },
@@ -193,7 +193,7 @@ export function Ch5() {
       chapterId="after-a-request"
       kicker="The basics · 5 of 9"
       title="What happens after a request"
-      intro="Every search or download becomes a queued task. A worker handles one operation at a time through the separate LinkedIn connector, the response is saved before it becomes candidate information, and matching runs locally against saved profiles and your current criteria."
+      intro="Every search or download becomes a queued task. The queue uses the concurrency and pacing saved in Settings, within the separate connector’s capacity. Each response is saved before it becomes candidate information, and matching runs locally against saved profiles and your current criteria."
     >
       <Figure caption="A profile download, traced end to end. The connector runs locally; its retrieval request crosses the network boundary to LinkedIn. Search results populate the pool first; automatic profile downloads follow, and each saved response updates the score. Press play to watch a request move through the queue.">
         <div className="flex justify-center">
@@ -223,6 +223,19 @@ export function Ch5() {
           </li>)}
         </ol>
       </Figure>
+
+      <section>
+        <h2 className="font-display text-lg font-bold text-ink">Control downloads in Settings</h2>
+        <p className="mt-3 text-sm leading-relaxed text-body">Settings separates how Compass retrieves profiles from who you want to find. Keep skills, locations, company and network filters in Role brief.</p>
+        <dl className="mt-4 divide-y divide-line rounded-2xl border border-line bg-surface px-5">
+          {[
+            ['Downloads', 'Turn automatic profile downloads on or off, choose one or two profiles at a time, and set the pause between reads.'],
+            ['Search batches', 'Set new downloads per batch and maximum search pages, or turn off continuing through pages. The defaults are 1,000 each; saved profiles can keep accumulating across batches.'],
+            ['Retry timing', 'Set delays for eligible busy-connector and timeout retries. These controls do not remove rate-limit cooldowns or resume a paused queue.'],
+          ].map(([label, detail]) => <div key={label} className="py-4"><dt className="text-sm font-medium text-ink">{label}</dt><dd className="mt-1 text-sm leading-relaxed text-faint">{detail}</dd></div>)}
+        </dl>
+        <p className="mt-3 text-sm leading-relaxed text-body">Choose Save settings. Concurrency and pacing apply to upcoming reads; running reads finish. Batch limits and automatic retrieval choices apply to new batches and searches. Existing queued downloads remain queued. Scoring weights have a separate save action below these controls and recalculate locally.</p>
+      </section>
 
       <section>
         <h2 className="font-display text-lg font-bold text-ink">Who is responsible for what</h2>

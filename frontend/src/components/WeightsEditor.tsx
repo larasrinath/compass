@@ -25,14 +25,10 @@ export function WeightsEditor({
 }) {
   const config = useQuery({ queryKey: ['weights'], queryFn: getScoringConfig })
   return (
-    <details className="weights-editor panel">
-      <summary>
-        <span>
-          <strong>Scoring weights</strong>
-          <small>Saved version {config.data?.version ?? 'loading'}</small>
-        </span>
-        <span>Edit</span>
-      </summary>
+    <section className="weights-editor panel" aria-labelledby="scoring-weights-title">
+      <header className="weights-heading">
+        <h2 id="scoring-weights-title">Scoring weights</h2>
+      </header>
       {config.isError ? (
         <p role="alert">
           {config.error instanceof Error
@@ -49,7 +45,7 @@ export function WeightsEditor({
       ) : (
         <p aria-live="polite">Loading weights…</p>
       )}
-    </details>
+    </section>
   )
 }
 
@@ -69,6 +65,8 @@ function LoadedWeightsEditor({
   const [metroText, setMetroText] = useState(() =>
     JSON.stringify(config.metro_region_equivalences, null, 2),
   )
+  const dirty = SCORING_WEIGHT_KEYS.some(key => weights[key] !== config.weights[key]) ||
+    metroText !== JSON.stringify(config.metro_region_equivalences, null, 2)
   const save = useMutation({
     mutationFn: async () => {
       const parsed = JSON.parse(metroText) as Record<string, string[]>
@@ -91,7 +89,7 @@ function LoadedWeightsEditor({
         <form
           onSubmit={(event) => {
             event.preventDefault()
-            save.mutate()
+            if (dirty && !save.isPending) save.mutate()
           }}
         >
           <div className="weight-grid">
@@ -101,16 +99,11 @@ function LoadedWeightsEditor({
               return (
                 <label className="weight-control" key={signalId}>
                   <span>
-                    <strong>{signalId} · {SIGNAL_LABELS[signalId] ?? signalId}</strong>
-                    {inert ? (
-                      <small>Saved, not currently applied: brief input is empty.</small>
-                    ) : (
-                      <small>Active scoring signal</small>
-                    )}
+                    <span>{signalId} · {SIGNAL_LABELS[signalId] ?? signalId}</span>
                   </span>
                   <input
                     aria-label={`${SIGNAL_LABELS[signalId] ?? signalId} weight`}
-                    disabled={credentialDisabled}
+                    disabled={credentialDisabled || save.isPending}
                     min="0"
                     onChange={(event) =>
                       setWeights((current) => ({
@@ -122,25 +115,11 @@ function LoadedWeightsEditor({
                     type="number"
                     value={weights[signalId] ?? 0}
                   />
+                  {inert ? <small className="weight-inactive">Saved, not currently applied: brief input is empty.</small> : null}
                 </label>
               )
             })}
           </div>
-          <p className="context-only-row">
-            <strong>S-7 · Network context</strong>
-            <span>Search only — not a scoring criterion.</span>
-          </p>
-          <label className="field">
-            <span>Metro/region equivalences (JSON)</span>
-            <textarea
-              aria-describedby="metro-help"
-              onChange={(event) => setMetroText(event.target.value)}
-              rows={5}
-              spellCheck={false}
-              value={metroText}
-            />
-            <small id="metro-help">For example: {`{"Chicago":["Greater Chicago Area"]}`}</small>
-          </label>
           {save.isError ? (
             <div className="form-error" role="alert">
               <strong>Weights were not saved.</strong>
@@ -152,14 +131,31 @@ function LoadedWeightsEditor({
               <button onClick={onRefresh} type="button">Refresh current version</button>
             </div>
           ) : null}
-          {save.isSuccess ? (
-            <p aria-live="polite" className="queued-confirmation">
-              New immutable version saved; candidate scores were refreshed.
-            </p>
-          ) : null}
-          <button className="primary-action" disabled={save.isPending} type="submit">
-            {save.isPending ? 'Saving…' : `Save from ${config.version}`}
-          </button>
+          <div className="weights-save-bar">
+            <p role="status">{save.isPending ? 'Updating scores…' : dirty ? 'Unsaved changes — results update when you save.' : 'Scoring is up to date.'}</p>
+            <button className="primary-action" disabled={!dirty || save.isPending} type="submit">
+              {save.isPending ? 'Saving…' : 'Save scoring weights'}
+            </button>
+          </div>
+          <details className="weights-location-options">
+            <summary>Location matching</summary>
+          <p className="weights-network-note">
+            <span>S-7 · Network context</span>
+            <span>Search only — not a scoring criterion.</span>
+          </p>
+          <label className="field">
+            <span>Metro/region equivalences (JSON)</span>
+            <textarea
+              aria-describedby="metro-help"
+              onChange={(event) => setMetroText(event.target.value)}
+              disabled={save.isPending}
+              rows={5}
+              spellCheck={false}
+              value={metroText}
+            />
+            <small id="metro-help">For example: {`{"Chicago":["Greater Chicago Area"]}`}</small>
+          </label>
+          </details>
         </form>
   )
 }
