@@ -113,3 +113,9 @@ baseline from the affected checks rerun after fixes.
 - [Delivery plan](../PROJECT_PLAN.md): retained roadmap and implementation history.
 - [Screenshot guide](screenshots/README.md): regenerate fictional screenshots with
   `npm run docs:screenshots` from `frontend/`, using isolated, intercepted APIs.
+
+## Additional launcher options
+
+- `./compass --setup-only`: install dependencies without starting services or login.
+- `./compass --no-open`: start services and print the URL without opening the app tab.
+- `./compass --port 8788 --connector-port 8001`: use different local ports.
