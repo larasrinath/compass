@@ -22,7 +22,10 @@ not just its colors.
   originating results and scroll position. Use the prototype’s compact profile
   header, fit observations, career timeline, and saved-source downloads. Put
   scoring calculations and source-offset controls behind a secondary disclosure.
-  Evidence cards use thin neutral borders, without colored side rails.
+  Evidence cards use thin neutral borders, without colored side rails. Verdicts
+  use softly tinted text badges: teal for matches, amber for no exact/partial
+  matches, neutral for unchecked evidence, and rust for conflicts. Do not add
+  tick/circle glyphs or dotted underlines to verdict labels.
 - Show evidence and questions before score calculations. Keep unknown evidence
   distinct from an exact-text mismatch. Never label a text match as independent verification.
 - Select two or three people before explicitly opening comparison; selecting a

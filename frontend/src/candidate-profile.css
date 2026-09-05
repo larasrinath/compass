@@ -44,9 +44,9 @@
 .profile-secondary .detail-columns { display: block; }
 .profile-secondary .candidate-score-summary { align-items: flex-start; }
 .profile-secondary .claim-card { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); padding: 16px; }
-.profile-secondary .claim-card strong, .profile-secondary .claim-card .verdict-symbol { font-weight: 500; }
+.profile-secondary .claim-card strong { font-weight: 500; }
 .profile-secondary .claim-heading { flex-wrap: wrap; }
-.profile-secondary .signal-table { font-size: 12px; }
+.profile-secondary .signal-table { min-width: 480px; font-size: 12px; }
 .profile-secondary .signal-table th, .profile-secondary .signal-table td { padding: 8px 4px; }
 .profile-secondary pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; }
 .profile-secondary .section-map { grid-template-columns: repeat(2, minmax(0, 1fr)); }

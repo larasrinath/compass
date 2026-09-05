@@ -335,6 +335,8 @@ test('evidence opening and verification are separate; unknown and masked states 
     onEvidenceVerified(evidenceId, verified) { calls.push(['verify', evidenceId, verified]) },
   }))
   assert.equal(screen.getByText('not found in the retrieved data', { exact: false }).textContent.includes('not found in the retrieved data'), true)
+  assert.equal(screen.getByText('Partial match').className, 'verdict-badge mixed')
+  assert.equal(screen.getByText('Not checked').className, 'verdict-badge unknown')
   const unparseable = screen.getByText('Rust').closest('.claim-card')
   assert.equal(unparseable.textContent.includes('retrieved, but could not be parsed reliably'), true)
   assert.equal(unparseable.textContent.includes('Searched every required retrieved section'), false)

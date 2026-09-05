@@ -1,5 +1,5 @@
 import type { ScoreSignalRecord } from '../api/client'
-import { verdictCopy } from './scoringCopy'
+import { VerdictBadge } from './VerdictBadge'
 
 export function SignalTable({ signals }: { signals: ScoreSignalRecord[] }) {
   return (
@@ -19,7 +19,7 @@ export function SignalTable({ signals }: { signals: ScoreSignalRecord[] }) {
           {signals.map((signal) => (
             <tr key={signal.id}>
               <th scope="row">{signal.signal_id} · {signal.label}</th>
-              <td><span className={`verdict-symbol ${signal.rollup}`}>{rollupSymbol(signal.rollup)} {verdictCopy(signal.rollup)}</span></td>
+              <td><VerdictBadge verdict={signal.rollup} /></td>
               <td>{signal.weight}</td>
               <td>{signal.contribution.toFixed(1)}</td>
               <td>{Math.round(signal.availability * 100)}%</td>
@@ -29,12 +29,4 @@ export function SignalTable({ signals }: { signals: ScoreSignalRecord[] }) {
       </table>
     </div>
   )
-}
-
-function rollupSymbol(rollup: ScoreSignalRecord['rollup']) {
-  if (rollup === 'matched') return '✓'
-  if (rollup === 'contradicted') return '!'
-  if (rollup === 'not_matched') return '○'
-  if (rollup === 'unknown') return '?'
-  return '±'
 }

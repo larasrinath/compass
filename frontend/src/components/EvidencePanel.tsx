@@ -3,8 +3,8 @@ import {
   ALL_INERT_COPY,
   UNKNOWN_COPY,
   missingReasonCopy,
-  verdictCopy,
 } from './scoringCopy'
+import { VerdictBadge } from './VerdictBadge'
 import { SignalTable } from './SignalTable'
 
 export { ALL_INERT_COPY, UNKNOWN_COPY } from './scoringCopy'
@@ -50,16 +50,13 @@ export function EvidencePanel({
                 <li className={`claim-card ${claim.verdict}`} key={claim.id}>
                   <div className="claim-heading">
                     <strong>{claim.display_term}</strong>
-                    <span className={`verdict-symbol ${claim.verdict}`}>
-                      {claim.verdict === 'unknown'
-                        ? `? ${UNKNOWN_COPY}`
-                        : `${claim.verdict === 'matched' ? '✓' : claim.verdict === 'contradicted' ? '!' : '○'} ${verdictCopy(claim.verdict)}`}
-                    </span>
+                    <VerdictBadge verdict={claim.verdict} />
                   </div>
                   {claim.verdict === 'unknown' ? (
                     <div
                       className="missing-evidence"
                     >
+                      <span>Evidence {UNKNOWN_COPY}.</span>
                       <span className="unknown-explanation">
                         This does not mean the candidate lacks this qualification.
                       </span>

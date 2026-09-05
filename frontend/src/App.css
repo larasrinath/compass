@@ -748,13 +748,11 @@ footer strong {
   font-size: 11px;
   text-transform: uppercase;
 }
-.verdict-symbol {
-  font-weight: 600;
-  text-transform: capitalize;
-}
-.verdict-symbol.unknown { text-transform: none; }
-.verdict-symbol.not_matched,
-.verdict-symbol.unknown { text-decoration: underline dotted; text-underline-offset: 3px; }
+.verdict-badge { display: inline-block; max-width: 100%; padding: 4px 9px; border-radius: 999px; font: 500 11px/1.5 var(--font-body); text-transform: none; text-decoration: none; vertical-align: middle; background: var(--subtle); color: var(--ink-soft); }
+.verdict-badge.matched { background: var(--accent-soft); color: var(--accent); }
+.verdict-badge.not_matched, .verdict-badge.mixed { background: var(--amber-soft); color: var(--amber); }
+.verdict-badge.unknown { background: var(--claim-soft); color: var(--claim); }
+.verdict-badge.contradicted { background: var(--rust-soft); color: var(--rust); }
 .signal-claims,
 .signal-claim-group > ol {
   display: grid;
