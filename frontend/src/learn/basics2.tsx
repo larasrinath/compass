@@ -226,7 +226,7 @@ export function Ch5() {
 
       <section>
         <h2 className="font-display text-lg font-bold text-ink">Control downloads in Settings</h2>
-        <p className="mt-3 text-sm leading-relaxed text-body">Settings separates how Compass retrieves profiles from who you want to find. Keep skills, locations, company and network filters in Role brief.</p>
+        <p className="mt-3 text-sm leading-relaxed text-body">Settings separates how Compass retrieves profiles from who you want to find. Keep skills, locations, company and network filters in Search criteria.</p>
         <dl className="mt-4 divide-y divide-line rounded-2xl border border-line bg-surface px-5">
           {[
             ['Downloads', 'Turn automatic profile downloads on or off, choose one or two profiles at a time, and set the pause between reads.'],

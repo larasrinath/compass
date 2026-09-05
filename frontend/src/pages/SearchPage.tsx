@@ -208,10 +208,10 @@ export function SearchPage({
       </div>)}
       {stopDiscovery.isSuccess ? <p className="field-help">Discovery stopped. Profiles already queued will finish downloading.</p> : null}
       {stopDiscovery.isError ? <p role="alert" className="form-error">{stopDiscovery.error.message}</p> : null}
-      {hasConflicts ? <div className="form-error brief-conflict" role="alert"><strong>Your role brief has conflicting keywords.</strong><span>A keyword is both included and excluded. Correct the brief before searching.</span>{onEditBrief ? <button className="quiet-action" onClick={onEditBrief} type="button">Edit role brief</button> : null}</div> : null}
+      {hasConflicts ? <div className="form-error brief-conflict" role="alert"><strong>Your search criteria have conflicting keywords.</strong><span>A keyword is both included and excluded. Correct the criteria before searching.</span>{onEditBrief ? <button className="quiet-action" onClick={onEditBrief} type="button">Edit search criteria</button> : null}</div> : null}
 
       {!brief ? (
-        <div className="empty-card" role="status"><h2>Save a role brief first.</h2><p>Set up your search criteria on the Role brief page.</p>{onEditBrief ? <button className="quiet-action" type="button" onClick={onEditBrief}>Set up role brief</button> : null}</div>
+        <div className="empty-card" role="status"><h2>Save your search criteria first.</h2><p>Set up your search criteria on the Search criteria page.</p>{onEditBrief ? <button className="quiet-action" type="button" onClick={onEditBrief}>Set up search criteria</button> : null}</div>
       ) : !keywords ? <p className="field-help">Add a role title or key filter to your brief before searching.</p> : null}
       {search.isError ? <div className="form-error" ref={errorRef} role="alert" tabIndex={-1}><strong>Search was not queued.</strong><span>{search.error.message}</span></div> : null}
       {!retrievalReady ? <p className="field-help download-help">Downloads are paused or offline. Check the connector and resume paused downloads above. Saved candidates remain available.</p> : null}

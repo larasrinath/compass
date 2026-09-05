@@ -179,7 +179,7 @@ const COMPARE_GUIDANCE = [
   'Check evidence depth: a matching term means text was found — read the passage to judge its context and relevance.',
   'Consider information completeness: more downloaded sections support more conclusions. Read confidence and missing sections alongside the score.',
   'Inspect meaningful differences: open the profiles and source passages when a criterion could change your assessment.',
-  'Review your priorities: if the ranking feels wrong for the role, inspect Role brief and the scoring weights in Settings — saving changes triggers local rescoring.',
+  'Review your priorities: if the ranking feels wrong for the role, inspect Search criteria and the scoring weights in Settings — saving changes triggers local rescoring.',
   'Identify what remains unresolved: separate supported observations from questions that need more information or a conversation.',
 ];
 

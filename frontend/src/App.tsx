@@ -140,7 +140,7 @@ function App() {
   useEffect(() => {
     document.title =
       view === 'settings' ? 'Settings · Compass' : view === 'learn' ? 'How it works · Compass' : view === 'brief'
-        ? 'Role brief · Compass'
+        ? 'Search criteria · Compass'
         : view === 'candidate'
           ? 'Candidate detail · Compass'
           : view === 'ranked'
@@ -187,7 +187,7 @@ function App() {
           onClick={() => navigate({ view: 'brief', candidateId: null })}
           type="button"
         >
-          <span className="nav-icon" aria-hidden="true"><CompassIcon name="brief" /></span><span className="nav-label">Role brief</span>
+          <span className="nav-icon" aria-hidden="true"><CompassIcon name="brief" /></span><span className="nav-label">Search criteria</span>
         </button>
         <button
           aria-current={contentView === 'search' ? 'page' : undefined}
@@ -273,7 +273,7 @@ function App() {
           </section>
         ) : session.data ? (
           contentView === 'brief' ? (
-            brief.isPending ? <p role="status">Loading your role brief…</p> : brief.isError ? <div className="form-error" role="alert">Your role brief could not be loaded. <button className="quiet-action" onClick={() => void brief.refetch()} type="button">Try again</button></div> : <BriefPage
+            brief.isPending ? <p role="status">Loading your search criteria…</p> : brief.isError ? <div className="form-error" role="alert">Your search criteria could not be loaded. <button className="quiet-action" onClick={() => void brief.refetch()} type="button">Try again</button></div> : <BriefPage
               retrievalReady={retrievalReady}
               queueRevision={queue.revision}
               current={brief.data}

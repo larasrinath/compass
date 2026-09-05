@@ -560,8 +560,7 @@ test('brief preserves experience and credential aliases through create and edit'
   })
 
   await page.goto('/brief')
-  await page.getByLabel('Job description').fill('Platform engineer')
-  await page.getByRole('button', { name: 'Set up search', exact: true }).click()
+  await page.getByLabel('Role description').fill('Platform engineer')
   const increase = page.getByRole('button', { name: 'Increase minimum experience by one year' })
   await increase.click()
   await page.getByLabel('Filter type').selectOption('credential')
