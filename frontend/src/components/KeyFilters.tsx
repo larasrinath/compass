@@ -49,7 +49,6 @@ export function KeyFilters({ skills, credentials, optionalSkills, skillErrors = 
           <button type="button" aria-label="Add filter" onClick={() => { addFilter(); inputRef.current?.focus() }}><CompassIcon name="plus" size={18} /></button>
         </div>
       </div>
-      <p className="criteria-hint">Skills, credentials and nice-to-haves to look for in each profile.</p>
       <div className="criteria-chips criteria-values">
         {groups.flatMap(group => group.values.map((value, index) => (
           <div className="criteria-chip" data-field-prefix={group.field} key={`${group.field}-${index}`}>
