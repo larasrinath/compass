@@ -151,6 +151,21 @@ def test_managed_app_keeps_queue_stopped_during_login_and_guards_retry(tmp_path)
             with TestClient(app, base_url="http://127.0.0.1") as client:
                 assert client.get("/brief").status_code == 200
                 assert client.get("/api/launcher").json()["phase"] == "login_failed"
+                for phase in (
+                    "starting",
+                    "signing_in",
+                    "connecting",
+                    "login_failed",
+                    "failed",
+                ):
+                    manager.phase = phase
+                    response = client.get("/api/mcp/status")
+                    assert response.status_code == 200
+                    assert response.json()["reachable"] is False
+                    assert response.json()["last_error_class"] is None
+                    assert client.get("/api/jobs").json() == []
+                    assert client.get("/api/session").status_code == 200
+                manager.phase = "login_failed"
                 start.assert_not_called()
                 assert (
                     client.post(
@@ -163,3 +178,35 @@ def test_managed_app_keeps_queue_stopped_during_login_and_guards_retry(tmp_path)
                 begin.assert_called_with(login=True)
                 manager.phase = "signing_in"
                 assert client.post("/api/launcher/login").status_code == 409
+
+
+def test_status_probe_starts_only_after_managed_connector_is_ready(tmp_path):
+    from linkedin_dashboard.main import create_app
+    from linkedin_dashboard.queue.jobs import JobKind
+    from linkedin_dashboard.settings import Settings
+
+    calls = []
+
+    class StatusExecutor:
+        async def execute(self, payload, capture_raw, report_progress):
+            calls.append(payload.kind)
+            raw = {"tools": [{"name": "search_people"}]}
+            await capture_raw(raw, None)
+            return raw
+
+    ready = False
+    app = create_app(
+        Settings(db_path=tmp_path / "status.db"),
+        queue_executor=StatusExecutor(),
+        retrieval_ready=lambda: ready,
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.get("/api/mcp/status").json()["reachable"] is False
+        assert calls == []
+        assert client.get("/api/jobs").json() == []
+        ready = True
+        response = client.get("/api/mcp/status")
+        assert response.status_code == 200
+        assert response.json()["reachable"] is True
+        assert response.json()["tools"] == ["search_people"]
+        assert calls == [JobKind.LIST_TOOLS]
