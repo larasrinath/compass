@@ -40,16 +40,6 @@ export function TermEditor({ field, label, values, errors = [], onChange, hint, 
           <button aria-label="Add term" onClick={addTerm} type="button"><CompassIcon name="plus" size={18} /></button>
         </div>
       </div>
-      {values.length > 0 ? <details className="criteria-aliases" open={errors.length > 0 || undefined}>
-        <summary>Alternate names{values.some(value => value.aliases.some(alias => alias.trim())) ? ' · saved' : ''}</summary>
-        <p className="criteria-hint">Other names to match in a profile. Separate with commas.</p>
-        {values.map((value, index) => <label className="field" key={index}>
-          <span>Aliases for {value.term || `${label} term ${index + 1}`}</span>
-          <input value={value.aliases.join(', ')} placeholder="e.g. PostgreSQL, Postgres"
-            onChange={event => onChange(values.map((item, row) => row === index ? { ...item, aliases: event.target.value.split(',').map(alias => alias.trimStart()) } : item))}
-            onKeyDown={event => { if (event.key === 'Enter') event.preventDefault() }} />
-        </label>)}
-      </details> : null}
       {errors.length ? <ul className="field-errors" role="alert">{errors.map(error => <li key={error}>{error}</li>)}</ul> : null}
     </div>
   )

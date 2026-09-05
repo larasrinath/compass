@@ -8,7 +8,10 @@ not just its colors.
 - Figtree for body and controls; Plus Jakarta Sans for headings. Fonts and their
   OFL licenses are bundled in `public/fonts` so local use has no font network dependency.
 - Search starts with one prompt composer. Criteria review is a centered 672px
-  page with one white sheet, editable chips, and secondary settings in disclosures.
+  page with one white sheet, editable chips, and optional preferences always visible
+  below a divider. Skills and credentials share one key-filter section. Minimum
+  experience uses a year stepper; alternate names are preserved without exposing
+  separate editing controls.
 - Results use two columns of equal-width cards, a role summary above them, and
   Review/Compare actions at the bottom of each card. Cards become one column on phones.
 - Show evidence and questions before score calculations. Keep unknown evidence

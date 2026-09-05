@@ -9,6 +9,7 @@ import type {
 import { ApiError, saveBrief } from '../api/client'
 import { CompassIcon } from '../components/CompassIcon'
 import { TermEditor } from '../components/TermEditor'
+import { KeyFilters } from '../components/KeyFilters'
 import { focusBriefError } from './briefErrorFocus'
 
 const EMPTY_FORM: Omit<BriefInput, 'session_id'> = {
@@ -138,9 +139,8 @@ export function BriefPage({
     setter(values)
     markDirty()
   }
-  const experienceLabel = requiredExperienceMonths === null ? 'Any' : requiredExperienceMonths % 12 === 0
-    ? `${requiredExperienceMonths / 12}+ years`
-    : `${Math.floor(requiredExperienceMonths / 12)}y ${requiredExperienceMonths % 12}m+`
+  const experienceLabel = requiredExperienceMonths === null ? 'Any'
+    : `${Number((requiredExperienceMonths / 12).toFixed(2))}+ years`
 
   if (step === 'describe') return (
     <section className="compass-start" aria-labelledby="brief-title">
@@ -177,29 +177,27 @@ export function BriefPage({
         <div className="criteria-sheet">
           {!current ? <p className="criteria-hint">Add the criteria from your description that you want to check against profiles.</p> : null}
           <TermEditor errors={fieldErrors.target_titles} field="target_titles" label="Target titles" placeholder="Add a role title" onChange={editTerms(setTitles)} values={titles} />
-          <TermEditor errors={fieldErrors.required_skills} field="required_skills" label="Required skills" placeholder="Add a skill" hint="The skills you want to find evidence for in each profile." onChange={editTerms(setRequired)} values={required} />
+          <KeyFilters skills={required} credentials={credentials} skillErrors={fieldErrors.required_skills} credentialErrors={fieldErrors.required_credentials} onSkillsChange={editTerms(setRequired)} onCredentialsChange={editTerms(setCredentials)} />
           <div data-field-prefix="required_experience_months">
             <span className="criteria-label" id="experience-label">Minimum experience</span>
             <div className="experience-stepper" role="group" aria-labelledby="experience-label">
-              <button type="button" aria-label="Decrease minimum experience by one year" disabled={requiredExperienceMonths === null || requiredExperienceMonths === 0} onClick={() => { setRequiredExperienceMonths(Math.max(0, (requiredExperienceMonths ?? 0) - 12)); markDirty() }}><CompassIcon name="minus" size={18} /></button>
+              <button type="button" aria-label="Decrease minimum experience by one year" disabled={requiredExperienceMonths === null} onClick={() => { const years = Math.ceil((requiredExperienceMonths ?? 0) / 12) - 1; setRequiredExperienceMonths(years > 0 ? years * 12 : null); markDirty() }}><CompassIcon name="minus" size={18} /></button>
               <output aria-live="polite">{experienceLabel}</output>
-              <button type="button" aria-label="Increase minimum experience by one year" onClick={() => { setRequiredExperienceMonths((requiredExperienceMonths ?? 0) + 12); markDirty() }}><CompassIcon name="plus" size={18} /></button>
+              <button type="button" aria-label="Increase minimum experience by one year" onClick={() => { setRequiredExperienceMonths((Math.floor((requiredExperienceMonths ?? 0) / 12) + 1) * 12); markDirty() }}><CompassIcon name="plus" size={18} /></button>
             </div>
-            <details className="criteria-aliases"><summary>Set exact months</summary><label className="field"><span>Required experience in months</span><input aria-label="Required experience in months" aria-describedby="required-experience-help" min="0" step="1" type="number" value={requiredExperienceMonths ?? ''} onChange={event => setRequiredExperienceMonths(event.target.value === '' ? null : Number(event.target.value))} /><small id="required-experience-help" className="criteria-hint">Leave blank for any experience length.</small></label></details>
           </div>
           <div className="criteria-columns">
             <label className="field"><span>Location</span><input placeholder="Any location" value={location} onChange={event => setLocation(event.target.value)} /></label>
             <TermEditor errors={fieldErrors.industries} field="industries" label="Industries" placeholder="Any industry" onChange={editTerms(setIndustries)} values={industries} />
           </div>
-          <TermEditor errors={fieldErrors.required_credentials} field="required_credentials" label="Required credentials" placeholder="e.g. CPA" hint="Add only credentials this role requires. Profile claims still need verification." onChange={editTerms(setCredentials)} values={credentials} />
-          <details className="criteria-more" open={Boolean(fieldErrors.optional_skills || fieldErrors.positive_keywords || fieldErrors.negative_keywords || conflicts.length) || undefined}>
-            <summary>More options</summary>
-            <div className="criteria-more-content">
+          <section className="criteria-optional" aria-labelledby="optional-title">
+            <h2 id="optional-title">Optional preferences</h2>
+            <div className="criteria-optional-fields">
               <TermEditor errors={fieldErrors.optional_skills} field="optional_skills" label="Nice-to-have skills" placeholder="Add a skill" onChange={editTerms(setOptional)} values={optional} />
               <label className="field" data-field-prefix="positive_keywords"><span>Positive keywords</span><textarea value={positive} onChange={event => setPositive(event.target.value)} rows={2} placeholder="One per line, or separated by commas" />{fieldErrors.positive_keywords?.map(error => <span className="field-error" key={error} role="alert">{error}</span>)}</label>
               <label className="field" data-field-prefix="negative_keywords"><span>Exclusions / negative keywords</span><textarea value={negative} onChange={event => setNegative(event.target.value)} rows={2} placeholder="One per line, or separated by commas" />{fieldErrors.negative_keywords?.map(error => <span className="field-error" key={error} role="alert">{error}</span>)}</label>
             </div>
-          </details>
+          </section>
         </div>
         <div className="criteria-footer">
           <span aria-live="polite">{mutation.isSuccess && !dirty ? `Version ${mutation.data.version} saved. No search was started.` : dirty ? 'Unsaved changes' : current ? `Saved criteria · version ${current.version}` : 'Next: confirm your LinkedIn search'}</span>

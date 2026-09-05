@@ -73,15 +73,12 @@ function briefRecord(overrides = {}) {
   }
 }
 
-test('create serializes credential aliases and preserves zero experience', async () => {
+test('create adds skills and credentials together and saves minimum experience in years', async () => {
   let request = null
   globalThis.fetch = (input, init) => {
-    const path = String(input)
-    if (path === '/api/briefs') {
-      request = { method: init.method, body: JSON.parse(init.body) }
-      return json(briefRecord({ ...request.body, required_experience_months: 0 }))
-    }
-    throw new Error(`unexpected fetch ${path}`)
+    assert.equal(String(input), '/api/briefs')
+    request = { method: init.method, body: JSON.parse(init.body) }
+    return json(briefRecord(request.body))
   }
   const user = userEvent.setup({ document: dom.window.document })
   render(wrapper(React.createElement(BriefPage, { session, current: null })))
@@ -89,75 +86,74 @@ test('create serializes credential aliases and preserves zero experience', async
   await user.type(screen.getByLabelText('Job description'), 'Platform engineer')
   await user.click(screen.getByRole('button', { name: 'Set up search' }))
   assert.equal(request, null, 'review must not save or search')
-  await user.click(screen.getByText('Set exact months'))
-  const experience = screen.getByLabelText('Required experience in months')
-  assert.equal(experience.value, '')
-  await user.type(experience, '-1')
-  assert.equal(experience.checkValidity(), false)
-  await user.click(screen.getByRole('button', { name: 'Save brief' }))
-  assert.equal(request, null, 'negative experience must fail native validation')
-  await user.clear(experience)
-  await user.type(experience, '1.5')
-  assert.equal(experience.checkValidity(), false)
-  await user.click(screen.getByRole('button', { name: 'Save brief' }))
-  assert.equal(request, null, 'fractional experience must fail integer validation')
-  await user.clear(experience)
-  await user.type(experience, '0')
+  assert.equal(screen.getByRole('button', { name: /Decrease minimum experience/ }).disabled, true)
+  await user.click(screen.getByRole('button', { name: /Increase minimum experience/ }))
+  await user.click(screen.getByRole('button', { name: /Increase minimum experience/ }))
+  assert.equal(screen.getByRole('status').textContent, '2+ years')
 
-  const credentials = screen.getByRole('group', { name: 'Required credentials' })
-  await user.type(
-    within(credentials).getByLabelText('New required credentials term'),
-    'AWS Architect',
-  )
-  await user.click(within(credentials).getByRole('button', { name: 'Add term' }))
-  await user.click(within(credentials).getByText('Alternate names'))
-  await user.type(
-    within(credentials).getByLabelText('Aliases for AWS Architect'),
-    'SAA, Solutions Architect Associate',
-  )
+  const filters = screen.getByRole('group', { name: 'Skills & key filters' })
+  await user.type(within(filters).getByLabelText('New key filter'), 'Go{Enter}')
+  await user.type(within(filters).getByLabelText('New key filter'), 'AWS Architect')
+  // Changing type must not prematurely add the pending credential as a skill.
+  await user.selectOptions(within(filters).getByLabelText('Filter type'), 'credential')
+  await user.click(within(filters).getByRole('button', { name: 'Add filter' }))
   await user.click(screen.getByRole('button', { name: 'Save brief' }))
 
   await waitFor(() => assert.notEqual(request, null))
   assert.equal(request.method, 'POST')
-  assert.equal(request.body.required_experience_months, 0)
-  assert.deepEqual(request.body.required_credentials, [{
-    term: 'AWS Architect', aliases: ['SAA', 'Solutions Architect Associate'],
-  }])
+  assert.equal(request.body.required_experience_months, 24)
+  assert.deepEqual(request.body.required_skills, [{ term: 'Go', aliases: [] }])
+  assert.deepEqual(request.body.required_credentials, [{ term: 'AWS Architect', aliases: [] }])
 })
 
-test('loaded experience and credentials survive edit until explicitly removed', async () => {
+test('loaded experience and credentials can be explicitly removed without affecting skills', async () => {
   let request = null
   globalThis.fetch = (input, init) => {
-    const path = String(input)
-    if (path === '/api/briefs/current') {
-      request = { method: init.method, body: JSON.parse(init.body) }
-      return json(briefRecord({ ...request.body, id: 'brief-2', version: 2 }))
-    }
-    throw new Error(`unexpected fetch ${path}`)
+    assert.equal(String(input), '/api/briefs/current')
+    request = { method: init.method, body: JSON.parse(init.body) }
+    return json(briefRecord({ ...request.body, id: 'brief-2', version: 2 }))
   }
   const user = userEvent.setup({ document: dom.window.document })
+  const skills = [{ term: 'Go', aliases: ['Golang'] }]
   render(wrapper(React.createElement(BriefPage, {
-    session,
-    current: briefRecord(),
+    session, current: briefRecord({ required_skills: skills }),
   })))
 
-  await user.click(screen.getByText('Set exact months'))
-  const experience = screen.getByLabelText('Required experience in months')
-  assert.equal(experience.value, '24')
-  const credentials = screen.getByRole('group', { name: 'Required credentials' })
-  assert.equal(within(credentials).getByLabelText('Required credentials term 1').value, 'PMP')
-  assert.equal(
-    within(credentials).getByLabelText('Aliases for PMP').value,
-    'Project Management Professional',
-  )
-
-  await user.clear(experience)
-  await user.click(within(credentials).getByRole('button', { name: 'Remove PMP' }))
+  assert.equal(screen.getByRole('status').textContent, '2+ years')
+  const filters = screen.getByRole('group', { name: 'Skills & key filters' })
+  assert.equal(within(filters).getByLabelText('Credential filter 1').value, 'PMP')
+  await user.click(screen.getByRole('button', { name: /Decrease minimum experience/ }))
+  await user.click(screen.getByRole('button', { name: /Decrease minimum experience/ }))
+  assert.equal(screen.getByRole('status').textContent, 'Any')
+  assert.equal(screen.getByRole('button', { name: /Decrease minimum experience/ }).disabled, true)
+  await user.click(within(filters).getByRole('button', { name: 'Remove PMP' }))
   await user.click(screen.getByRole('button', { name: 'Save new version' }))
   await waitFor(() => assert.notEqual(request, null))
   assert.equal(request.method, 'PUT')
   assert.equal(request.body.required_experience_months, null)
   assert.deepEqual(request.body.required_credentials, [])
+  assert.deepEqual(request.body.required_skills, skills)
+})
+
+test('legacy zero experience is preserved until the user clears it', async () => {
+  const writes = []
+  globalThis.fetch = (_input, init) => {
+    const body = JSON.parse(init.body)
+    writes.push(body)
+    return json(briefRecord({ ...body, version: 2 }))
+  }
+  const user = userEvent.setup({ document: dom.window.document })
+  render(wrapper(React.createElement(BriefPage, {
+    session, current: briefRecord({ required_experience_months: 0 }),
+  })))
+  await user.click(screen.getByRole('button', { name: 'Save new version' }))
+  await waitFor(() => assert.equal(writes.length, 1))
+  assert.equal(writes[0].required_experience_months, 0)
+  await user.click(screen.getByRole('button', { name: /Decrease minimum experience/ }))
+  assert.equal(screen.getByRole('status').textContent, 'Any')
+  await user.click(screen.getByRole('button', { name: 'Save new version' }))
+  await waitFor(() => assert.equal(writes.length, 2))
+  assert.equal(writes[1].required_experience_months, null)
 })
 
 test('protected credential rejection renders beside and focuses the credential editor', async () => {
@@ -184,7 +180,7 @@ test('protected credential rejection renders beside and focuses the credential e
     }),
   })))
 
-  const term = screen.getByLabelText('Required credentials term 1')
+  const term = screen.getByLabelText('Credential filter 1')
   await user.click(screen.getByRole('button', { name: 'Save new version' }))
   const fieldError = await screen.findByText('Remove protected criterion “gender”.')
   assert.equal(fieldError.closest('[data-field-prefix]')?.dataset.fieldPrefix, 'required_credentials')
@@ -210,9 +206,10 @@ test('conflicting include and exclude keywords block saving until corrected', as
   await waitFor(() => assert.equal(writes, 1))
 })
 
-test('editing the description preserves hidden criteria and only saves on final confirmation', async () => {
+test('editing the description preserves saved criteria and only saves on final confirmation', async () => {
   const original = briefRecord({
     required_experience_months: 27,
+    required_skills: [{ term: 'PostgreSQL', aliases: ['Postgres'] }],
     optional_skills: [{ term: 'Go', aliases: ['Golang'] }],
     industries: [{ term: 'Payments', aliases: [] }],
     positive_keywords: ['Platform'], negative_keywords: ['Intern'],
@@ -232,11 +229,17 @@ test('editing the description preserves hidden criteria and only saves on final 
   await user.click(screen.getByRole('button', { name: 'Set up search' }))
   assert.equal(writes.length, 0)
   assert.equal(continued, false)
+  assert.equal(screen.queryByText('Alternate names'), null)
+  assert.equal(screen.queryByText('Set exact months'), null)
+  assert.equal(document.querySelector('details'), null)
+  assert.ok(screen.getByRole('region', { name: 'Optional preferences' }))
+  assert.equal(screen.getByLabelText('Positive keywords').value, 'Platform')
+  assert.equal(screen.getByRole('status').textContent, '2.25+ years')
   await user.click(screen.getByRole('button', { name: 'Continue to search' }))
   await waitFor(() => assert.equal(continued, true))
   assert.equal(writes.length, 1)
   assert.equal(writes[0].job_description, 'Senior platform engineer')
-  for (const key of ['required_experience_months', 'required_credentials', 'optional_skills', 'industries', 'positive_keywords', 'negative_keywords', 'message_tone']) {
+  for (const key of ['required_experience_months', 'required_skills', 'required_credentials', 'optional_skills', 'industries', 'positive_keywords', 'negative_keywords', 'message_tone']) {
     assert.deepEqual(writes[0][key], original[key], `${key} must survive the description step`)
   }
 })
