@@ -132,6 +132,21 @@ class MCPReadExecutor:
 
     def __init__(self, client: MCPClient) -> None:
         self._client = client
+        self.profile_concurrency = 1
+
+    async def prepare(self) -> None:
+        # An older connector remains usable. Never send it an unknown tool or
+        # assume that parallel calls on its shared tab are safe.
+        try:
+            async with asyncio.timeout(5):
+                tools = await self._client.list_tools()
+            self.profile_concurrency = (
+                2
+                if any(tool.name == "get_person_profile_parallel" for tool in tools)
+                else 1
+            )
+        except Exception:
+            self.profile_concurrency = 1
 
     async def execute(
         self,
@@ -147,6 +162,8 @@ class MCPReadExecutor:
             return raw
 
         name, arguments = tool_arguments(payload)
+        if isinstance(payload, PersonProfilePayload) and self.profile_concurrency == 2:
+            name = "get_person_profile_parallel"
         response = await self._client.call_tool(
             name,
             arguments,
@@ -188,7 +205,7 @@ class ClaimedJob:
 
 
 class DurableJobQueue:
-    """A database-claimed, one-slot queue for allowlisted read operations."""
+    """Durable reads: two isolated profile slots, exclusive shared-browser jobs."""
 
     def __init__(
         self,
@@ -801,28 +818,27 @@ class DurableJobQueue:
             }
 
     async def _worker_loop(self) -> None:
-        while True:
-            if self._stopping:
-                return
-            self._wake.clear()
-            dispatch_failed = False
-            if self.before_claim is not None:
-                try:
-                    await self.before_claim()
-                except Exception:
-                    # Keep queued work alive if local dispatch is temporarily broken.
-                    # Retry the durable intent, never the completed search request.
-                    logging.getLogger(__name__).exception(
-                        "Profile batch dispatch failed"
-                    )
-                    dispatch_failed = True
-            claimed, next_delay = self._claim_next()
-            if dispatch_failed and next_delay is None:
-                next_delay = 1.0
-            if claimed is None:
-                # Claiming can terminalize malformed or over-budget rows even
-                # when there is no executable job to announce. Reconcile all
-                # subscribers with that durable state before waiting again.
+        if isinstance(self.executor, MCPReadExecutor):
+            await self.executor.prepare()
+        async with asyncio.TaskGroup() as tasks:
+            while not self._stopping:
+                self._wake.clear()
+                dispatch_failed = False
+                if self.before_claim is not None:
+                    try:
+                        await self.before_claim()
+                    except Exception:
+                        logging.getLogger(__name__).exception(
+                            "Profile batch dispatch failed"
+                        )
+                        dispatch_failed = True
+                started = asyncio.get_running_loop().create_future()
+                tasks.create_task(self._claim_and_run(started))
+                claimed, next_delay = await started
+                if dispatch_failed and next_delay is None:
+                    next_delay = 1.0
+                if claimed is not None:
+                    continue
                 self._publish_snapshot()
                 await self._notify_changed()
                 if self._stopping:
@@ -833,17 +849,31 @@ class DurableJobQueue:
                     else:
                         await asyncio.wait_for(self._wake.wait(), timeout=next_delay)
                 except TimeoutError:
-                    self._wake.set()
-                continue
-            self.events.publish(self._job_event(claimed.id, "running"))
-            self._publish_snapshot()
-            try:
-                await self._run_claimed(claimed)
-            except asyncio.CancelledError:
-                raise
-            except BaseException:
-                # A poison job is terminalized by _run_claimed; never kill the loop.
-                await self._recover_failed_claim(claimed)
+                    pass
+
+    async def _claim_and_run(
+        self, started: asyncio.Future[tuple[ClaimedJob | None, float | None]]
+    ) -> None:
+        # Do not yield between claiming and recording executor entry. Another
+        # lane cannot pause the queue while this claim waits for scheduling.
+        if self._stopping:
+            if not started.done():
+                started.set_result((None, None))
+            return
+        job, next_delay = self._claim_next()
+        started.set_result((job, next_delay))
+        if job is None:
+            return
+        self.events.publish(self._job_event(job.id, "running"))
+        self._publish_snapshot()
+        try:
+            await self._run_claimed(job)
+        except asyncio.CancelledError:
+            raise
+        except BaseException:
+            await self._recover_failed_claim(job)
+        finally:
+            self._wake.set()
 
     async def _recover_failed_claim(self, job: ClaimedJob) -> None:
         """Keep transient SQLite contention from stranding a claimed job."""
@@ -864,8 +894,8 @@ class DurableJobQueue:
                 self.result_processor.reconcile()
             return claimed
         except (IntegrityError, OperationalError):
-            # The database-wide partial unique index is the final concurrency
-            # guard if two app instances accidentally start workers.
+            # Database slot guards are the final concurrency boundary if
+            # another claim races this transaction.
             return None, 0.1
 
     def _claim_next_transaction(self) -> tuple[ClaimedJob | None, float | None]:
@@ -907,9 +937,35 @@ class DurableJobQueue:
                     0.0,
                     (datetime.fromisoformat(control.resume_at) - now).total_seconds(),
                 )
+            running = list(session.scalars(select(Job).where(Job.state == "running")))
+            capacity = min(2, max(1, getattr(self.executor, "profile_concurrency", 1)))
+            if len(running) >= capacity:
+                return None, earliest_delay
             for job in jobs:
+                if running and (
+                    job.kind != JobKind.GET_PERSON_PROFILE.value
+                    or any(
+                        active.kind != JobKind.GET_PERSON_PROFILE.value
+                        for active in running
+                    )
+                ):
+                    # Preserve queue order: drain both profile lanes before a
+                    # shared-browser operation, instead of starving that job.
+                    return None, earliest_delay
                 if paused and job.kind != JobKind.LIST_TOOLS.value:
                     continue
+                if control.last_mcp_finished_at and self.inter_call_delay_seconds:
+                    ready_at = datetime.fromisoformat(
+                        control.last_mcp_finished_at
+                    ) + timedelta(seconds=self.inter_call_delay_seconds)
+                    delay = (ready_at - now).total_seconds()
+                    if delay > 0:
+                        earliest_delay = (
+                            delay
+                            if earliest_delay is None
+                            else min(earliest_delay, delay)
+                        )
+                        continue
                 last_attempt = session.scalar(
                     select(JobAttempt)
                     .where(JobAttempt.job_id == job.id)
@@ -1100,7 +1156,6 @@ class DurableJobQueue:
 
     async def _run_claimed(self, job: ClaimedJob) -> None:
         try:
-            await self._politeness_delay(job)
             external_started_at = utc_now()
             with self.database.sessions.begin() as session:
                 self._require_fence(session, job)
@@ -1672,19 +1727,6 @@ class DurableJobQueue:
                 self._refund_if_external_not_started(session, current, attempt, now)
                 self._terminalize_unstarted_profile(session, current, now)
         await self._terminal_event(job, "failed", error_class)
-
-    async def _politeness_delay(self, job: ClaimedJob) -> None:
-        if self.inter_call_delay_seconds <= 0:
-            return
-        with self.database.sessions() as session:
-            control = session.get(QueueControl, 1)
-            previous = control.last_mcp_finished_at if control else None
-        if previous is None:
-            return
-        elapsed = (datetime.now(UTC) - datetime.fromisoformat(previous)).total_seconds()
-        remaining = self.inter_call_delay_seconds - elapsed
-        if remaining > 0:
-            await asyncio.sleep(remaining)
 
     async def _terminal_event(
         self, job: ClaimedJob, state: str, error_class: ErrorClass | None

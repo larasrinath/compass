@@ -9,7 +9,8 @@ export function QueueStatus({ queue }: { queue: ReturnTypeOfJobEvents }) {
   const [page, setPage] = useState(1)
   const tasksId = useId()
   const waiting = queue.jobs.filter(job => job.state === 'queued' || job.state === 'pending')
-  const running = queue.jobs.find(job => job.state === 'running')
+  const runningJobs = queue.jobs.filter(job => job.state === 'running')
+  const running = runningJobs[0]
   const pageCount = Math.max(1, Math.ceil(queue.jobs.length / 10))
   const currentPage = Math.min(page, pageCount)
   const labels: Record<string, string> = { search_people: 'Candidate search', get_person_profile: 'Profile download', get_company_profile: 'Company lookup', 'tools/list': 'Connection check' }
@@ -39,7 +40,7 @@ export function QueueStatus({ queue }: { queue: ReturnTypeOfJobEvents }) {
           <h2>Activity queue</h2>
           <p className="queue-current">
             {queue.state === 'paused' ? 'Paused' : !queue.connected ? 'Reconnecting…' : running
-              ? { search_people: 'Finding candidates', get_person_profile: 'Downloading a profile', get_company_profile: 'Looking up a company', 'tools/list': 'Checking connection' }[running.kind] ?? 'Working'
+              ? runningJobs.length > 1 ? `Downloading ${runningJobs.length} profiles` : { search_people: 'Finding candidates', get_person_profile: 'Downloading a profile', get_company_profile: 'Looking up a company', 'tools/list': 'Checking connection' }[running.kind] ?? 'Working'
               : waiting.length ? 'Preparing next task' : 'No tasks waiting'}
             {waiting.length > 0 && <span> · {waiting.length.toLocaleString()} waiting</span>}
           </p>

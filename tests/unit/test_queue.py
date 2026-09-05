@@ -379,9 +379,7 @@ async def test_budget_is_reserved_once_and_exhaustion_makes_no_call(tmp_path) ->
 
 
 @pytest.mark.asyncio
-async def test_shutdown_before_executor_entry_refunds_charged_navigation(
-    tmp_path,
-) -> None:
+async def test_shutdown_during_pacing_leaves_job_unclaimed(tmp_path) -> None:
     database = new_database(tmp_path / "pre-executor-shutdown.db")
     executor = RecordingExecutor()
     queue = DurableJobQueue(database, executor, inter_call_delay_seconds=60)
@@ -389,27 +387,20 @@ async def test_shutdown_before_executor_entry_refunds_charged_navigation(
     session_id = add_session(database)
     with database.sessions.begin() as session:
         control = session.get(QueueControl, 1)
-        assert control is not None
         control.last_mcp_finished_at = datetime.now(UTC).isoformat()
     job_id = await queue.enqueue(
         session_id, JobKind.SEARCH_PEOPLE, {"keywords": "reserved"}
     )
-    for _ in range(100):
-        with database.sessions() as session:
-            job = session.get(Job, job_id)
-            if job is not None and job.state == "running":
-                break
-        await asyncio.sleep(0.01)
-    else:
-        raise AssertionError("job was not claimed")
+    await asyncio.sleep(0.03)
     await queue.stop()
     with database.sessions() as session:
-        dashboard_session = session.get(DashboardSession, session_id)
-        reservation = session.get(NavigationReservation, job_id)
-        attempt = session.scalar(select(JobAttempt).where(JobAttempt.job_id == job_id))
-        assert dashboard_session is not None and dashboard_session.nav_used == 0
-        assert reservation is not None and reservation.state == "released"
-        assert attempt is not None and attempt.external_call_started_at is None
+        assert session.get(Job, job_id).state == "queued"
+        assert session.get(DashboardSession, session_id).nav_used == 0
+        assert session.get(NavigationReservation, job_id).state == "reserved"
+        assert (
+            session.scalar(select(JobAttempt).where(JobAttempt.job_id == job_id))
+            is None
+        )
     assert executor.calls == []
     database.dispose()
 
@@ -1001,7 +992,192 @@ async def test_shutdown_is_bounded_when_executor_suppresses_cancellation(
     with pytest.raises(BlockingIOError):
         await standby.start()
     finish.set()
-    await detached
+    with pytest.raises(asyncio.CancelledError):
+        await detached
     await standby.start()
     await standby.stop()
     database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_two_profile_lanes_keep_shared_browser_jobs_exclusive(tmp_path) -> None:
+    database = new_database(tmp_path / "two-lanes.db")
+    both_started = asyncio.Event()
+    release = asyncio.Event()
+    active_kinds = []
+    seen = []
+
+    class ParallelExecutor(RecordingExecutor):
+        profile_concurrency = 2
+
+        async def execute(self, payload, capture_raw, report_progress):
+            kind = "profile" if hasattr(payload, "linkedin_username") else "search"
+            active_kinds.append(kind)
+            seen.append(tuple(active_kinds))
+            assert len(active_kinds) <= 2
+            assert kind != "search" or len(active_kinds) == 1
+            if len(active_kinds) == 2:
+                both_started.set()
+            try:
+                if len(seen) <= 2:
+                    await release.wait()
+                return await super().execute(payload, capture_raw, report_progress)
+            finally:
+                active_kinds.remove(kind)
+
+    executor = ParallelExecutor()
+    queue = DurableJobQueue(database, executor, inter_call_delay_seconds=0)
+    await queue.start()
+    session_id = add_session(database)
+    try:
+        ids = []
+        for index in range(3):
+            ids.append(
+                await queue.enqueue(
+                    session_id,
+                    JobKind.GET_PERSON_PROFILE,
+                    {
+                        "linkedin_username": f"person-{index}",
+                        "sections": ["main_profile", "experience"],
+                    },
+                )
+            )
+        ids.append(
+            await queue.enqueue(
+                session_id, JobKind.SEARCH_PEOPLE, {"keywords": "engineer"}
+            )
+        )
+        await asyncio.wait_for(both_started.wait(), 2)
+        assert queue.snapshot()["counts"]["running"] == 2
+        assert len(seen) == 2
+        release.set()
+        await asyncio.gather(*(queue.wait_for_terminal(job_id) for job_id in ids))
+        assert all(job.state == "done" for job in queue.list_jobs())
+        assert ("profile", "profile") in seen
+        assert seen[-1] == ("search",)
+    finally:
+        release.set()
+        await queue.stop()
+        database.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("supported", [False, True])
+async def test_profile_parallel_tool_is_used_only_when_advertised(supported):
+    from unittest.mock import AsyncMock
+
+    from linkedin_dashboard.mcp.client import ToolDescription
+    from linkedin_dashboard.mcp.envelope import MCPResponseEnvelope
+    from linkedin_dashboard.queue.jobs import PersonProfilePayload
+    from linkedin_dashboard.queue.worker import MCPReadExecutor
+
+    client = AsyncMock()
+    client.list_tools.return_value = [
+        ToolDescription(
+            name=("get_person_profile_parallel" if supported else "get_person_profile")
+        )
+    ]
+    client.call_tool.return_value = MCPResponseEnvelope.model_validate(
+        {
+            "content": [],
+            "structuredContent": {"url": "person", "sections": {}},
+            "isError": False,
+        }
+    )
+    executor = MCPReadExecutor(client)
+    await executor.prepare()
+    assert executor.profile_concurrency == (2 if supported else 1)
+    await executor.execute(
+        PersonProfilePayload(linkedin_username="person", sections=["main_profile"]),
+        AsyncMock(),
+        AsyncMock(),
+    )
+    assert client.call_tool.call_args.args[0] == (
+        "get_person_profile_parallel" if supported else "get_person_profile"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["RATE_LIMIT", "AUTH_REQUIRED"])
+async def test_pause_during_pacing_does_not_claim_or_charge_profile(tmp_path, reason):
+    database = new_database(tmp_path / "pause-before-start.db")
+    executor = RecordingExecutor()
+    executor.profile_concurrency = 2
+    queue = DurableJobQueue(database, executor, inter_call_delay_seconds=60)
+    await queue.start()
+    session_id = add_session(database)
+    try:
+        with database.sessions.begin() as session:
+            session.get(QueueControl, 1).last_mcp_finished_at = datetime.now(
+                UTC
+            ).isoformat()
+        job_id = await queue.enqueue(
+            session_id,
+            JobKind.GET_PERSON_PROFILE,
+            {"linkedin_username": "person", "sections": ["main_profile", "experience"]},
+        )
+        await asyncio.sleep(0.01)
+        with database.sessions.begin() as session:
+            control = session.get(QueueControl, 1)
+            control.state = "paused"
+            control.pause_reason = reason
+            control.operator_resume_required = True
+            control.last_mcp_finished_at = None
+        queue._wake.set()
+        await asyncio.sleep(0.03)
+        assert executor.calls == []
+        with database.sessions() as session:
+            job = session.get(Job, job_id)
+            assert job.state == "queued" and job.attempts == 0
+            assert session.get(DashboardSession, session_id).nav_used == 0
+            assert (
+                session.scalar(select(JobAttempt).where(JobAttempt.job_id == job_id))
+                is None
+            )
+        await queue.resume()
+        assert (await queue.wait_for_terminal(job_id)).state == "done"
+        assert len(executor.calls) == 1
+    finally:
+        await queue.stop()
+        database.dispose()
+
+
+def test_database_caps_profiles_at_two_and_excludes_shared_browser_jobs(database):
+    session_id = add_session(database)
+    with database.sessions.begin() as session:
+        for index, kind in enumerate(
+            [JobKind.GET_PERSON_PROFILE] * 3 + [JobKind.SEARCH_PEOPLE]
+        ):
+            session.add(
+                Job(
+                    id=f"slot-{index}",
+                    session_id=session_id,
+                    kind=kind.value,
+                    payload={},
+                    state="queued",
+                    attempts=0,
+                    max_attempts=2,
+                    queued_at=NOW,
+                    correlation_id="slots",
+                )
+            )
+
+    def claim(index):
+        with database.sessions.begin() as session:
+            session.execute(
+                update(Job)
+                .where(Job.id == f"slot-{index}")
+                .values(
+                    state="running",
+                    attempts=1,
+                    started_at=NOW,
+                    claim_token="same-owner",
+                )
+            )
+
+    claim(0)
+    claim(1)
+    with pytest.raises(IntegrityError, match="browser slots occupied"):
+        claim(2)
+    with pytest.raises(IntegrityError, match="browser slots occupied"):
+        claim(3)
