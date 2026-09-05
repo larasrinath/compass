@@ -49,6 +49,7 @@
 @media(max-width: 1150px) { .results-title-row { flex-wrap: wrap; gap: 16px; } }
 @media(max-width: 650px) { .ranked-page .ranked-list { grid-template-columns: 1fr; } .result-person { padding: 22px; } .results-header-actions { flex-wrap: wrap; } .trust-markers > div { left: 0; right: auto; } }
 .search-workspace { grid-template-columns: minmax(0, 1fr); }
+.search-workspace > .candidate-pool { margin-top: 0; }
 .search-workspace > * { grid-column: 1 / -1; }
 .search-workspace .search-form { grid-template-columns: minmax(0, 1.4fr) minmax(0,1fr) auto; gap: 16px; align-items: start; }
 .search-workspace .search-form > .field { grid-column: auto; }
@@ -85,10 +86,17 @@
 }
 .results-toolbar .comparison-instructions > .quiet-action { width: auto; min-height: 36px; font-size: 12px; padding: 7px 12px; color: var(--accent); }
 
-.search-launch { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 0 0 24px; border-bottom: 1px solid var(--line); }
-.search-launch > p { margin: 0; color: var(--ink-faint); font: 400 14px/1.6 var(--font-body); }
-.search-launch > .primary-action { display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; }
-@media (max-width: 600px) { .search-launch { flex-wrap: wrap; } }
+.results-header-compact { margin-bottom: 0; padding-bottom: 24px; border-bottom: 1px solid var(--line); }
+.results-header-compact .results-title-row { margin-top: 0; }
+.results-header-compact .results-context-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; margin-top: 20px; }
+.results-header-compact .results-criteria { flex: 1; margin: 0; }
+.results-header-compact .results-context-row > .primary-action { display: inline-flex; align-items: center; justify-content: center; gap: 8px; width: auto; flex-shrink: 0; }
+@media (max-width: 650px) {
+  .results-header-compact .results-title-row { flex-wrap: wrap; gap: 16px; }
+  .results-header-compact .results-title { width: 100%; }
+  .results-header-compact .results-context-row { align-items: flex-start; }
+  .results-header-compact .results-criteria { flex-basis: 100%; }
+}
 
 .pool-heading-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 12px; }
 .pool-heading-actions .quiet-action { display: inline-flex; align-items: center; gap: 8px; width: auto; padding: 7px 12px; min-height: 36px; font-size: 12px; font-weight: 500; color: var(--accent); }

@@ -1,19 +1,22 @@
+import type { ReactNode } from 'react'
 import type { BriefRecord } from '../api/client'
 import { CompassIcon } from './CompassIcon'
 
-export function ResultHeader({ brief, titleId, fallback, subtitle, onEdit }: {
+export function ResultHeader({ brief, titleId, fallback, subtitle, onEdit, compact = false, action }: {
   brief?: BriefRecord | null
   titleId: string
   fallback: string
   subtitle: string
   onEdit?: () => void
+  compact?: boolean
+  action?: ReactNode
 }) {
   const title = brief?.target_titles?.map(item => item.term).join(' · ') || brief?.required_credentials?.map(item => item.term).join(' · ') || fallback
   const criteria = brief ? [...(brief.target_titles ?? []).map(item => item.term), ...(brief.required_skills ?? []).map(item => item.term),
     ...(brief.required_experience_months == null ? [] : [`${brief.required_experience_months} months minimum`]),
     ...(brief.location ? [brief.location] : []), ...(brief.industries ?? []).map(item => item.term), ...(brief.required_credentials ?? []).map(item => item.term)] : []
-  return <header className="results-header">
-    {onEdit ? <button type="button" className="compass-back" onClick={onEdit}><CompassIcon name="back" size={16} /> Role brief</button> : null}
+  return <header className={`results-header${compact ? ' results-header-compact' : ''}`}>
+    {onEdit && !compact ? <button type="button" className="compass-back" onClick={onEdit}><CompassIcon name="back" size={16} /> Role brief</button> : null}
     <div className="results-title-row">
       <div className="results-title"><h1 id={titleId} title={title}>{title}</h1><p>{subtitle}</p></div>
       <div className="results-header-actions">
@@ -26,6 +29,9 @@ export function ResultHeader({ brief, titleId, fallback, subtitle, onEdit }: {
         {onEdit ? <button type="button" className="quiet-action" onClick={onEdit}>Adjust criteria</button> : null}
       </div>
     </div>
-    {criteria.length ? <ul className="results-criteria" aria-label="Saved role criteria">{[...new Set(criteria)].map(item => <li key={item}>{item}</li>)}</ul> : null}
+    <div className="results-context-row">
+      {criteria.length ? <ul className="results-criteria" aria-label="Saved role criteria">{[...new Set(criteria)].map(item => <li key={item}>{item}</li>)}</ul> : null}
+      {action}
+    </div>
   </header>
 }

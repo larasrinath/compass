@@ -150,22 +150,19 @@ export function SearchPage({
 
   return (
     <section aria-labelledby="search-title" className="workspace-page search-workspace">
-      <ResultHeader brief={brief} titleId="search-title" fallback="Find candidates" subtitle="Find people using your saved role brief, then save profiles to review." onEdit={onEditBrief} />
+      <ResultHeader brief={brief} titleId="search-title" fallback="Find candidates" subtitle="Find people using your saved role brief, then save profiles to review." onEdit={onEditBrief} compact action={brief ? (
+        <button className="primary-action" disabled={search.isPending || downloadsBlocked || !keywords} type="button" onClick={() => {
+          if (downloadsBlocked || !keywords) return
+          search.mutate({ session_id: session.id, brief_id: brief.id, keywords, location: brief.location || null, network: settings.network.length ? settings.network : null, current_company: settings.companyId || null })
+        }}>{search.isPending ? 'Queueing…' : 'Run search'}<CompassIcon name="search" size={16} /></button>
+      ) : null} />
 
       <QueueStatus queue={queue} />
       {hasConflicts ? <div className="form-error brief-conflict" role="alert"><strong>Your role brief has conflicting keywords.</strong><span>A keyword is both included and excluded. Correct the brief before searching.</span>{onEditBrief ? <button className="quiet-action" onClick={onEditBrief} type="button">Edit role brief</button> : null}</div> : null}
 
       {!brief ? (
         <div className="empty-card" role="status"><h2>Save a role brief first.</h2><p>Set up your search criteria on the Role brief page.</p>{onEditBrief ? <button className="quiet-action" type="button" onClick={onEditBrief}>Set up role brief</button> : null}</div>
-      ) : (
-        <div className="search-launch">
-          <p>{keywords ? 'Ready to search with your saved criteria.' : 'Add a role title or key filter to your brief before searching.'}</p>
-          <button className="primary-action" disabled={search.isPending || downloadsBlocked || !keywords} type="button" onClick={() => {
-            if (downloadsBlocked || !keywords) return
-            search.mutate({ session_id: session.id, brief_id: brief.id, keywords, location: brief.location || null, network: settings.network.length ? settings.network : null, current_company: settings.companyId || null })
-          }}>{search.isPending ? 'Queueing…' : 'Run search'}<CompassIcon name="search" size={16} /></button>
-        </div>
-      )}
+      ) : !keywords ? <p className="field-help">Add a role title or key filter to your brief before searching.</p> : null}
       {search.isError ? <div className="form-error" ref={errorRef} role="alert" tabIndex={-1}><strong>Search was not queued.</strong><span>{search.error.message}</span></div> : null}
       {!retrievalReady ? <p className="field-help download-help">Downloads are paused or offline. Check the connector and resume paused downloads above. Saved candidates remain available.</p> : null}
       {search.data ? <p aria-live="polite" className="queued-confirmation">Search queued. Results will appear automatically in your candidate list.</p> : null}
