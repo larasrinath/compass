@@ -6,6 +6,7 @@ import {
   getCandidateSection,
   getProfileSections,
 } from '../api/client'
+import { SourceCheck } from '../components/SourceCheck'
 import { CandidateOverview } from '../components/CandidateOverview'
 import { QueueStatus } from '../components/QueueStatus'
 import { ConfidenceBand } from '../components/ConfidenceBand'
@@ -49,6 +50,7 @@ export function CandidateDetailPage({
   ) => void
   onScoreInputsChanged: () => void
 }) {
+  const [reviewEvidenceId, setReviewEvidenceId] = useState<string | null>(null)
   const scoreEvidenceRef = useRef<HTMLDivElement>(null)
   const diagnosticsRef = useRef<HTMLDetailsElement>(null)
   const sourceRef = useRef<HTMLElement>(null)
@@ -166,10 +168,34 @@ export function CandidateDetailPage({
           {scoringEmptyState ? <p className="profile-muted" role="status">{scoringEmptyState}</p> : null}
           {hasScoreSignals && !allInert ? <SignalTable signals={candidate.signals ?? []} /> : null}
           {hasScoreSignals || allInert ? <button className="profile-text-action" type="button" onClick={() => {
-            if (diagnosticsRef.current) diagnosticsRef.current.open = true
             requestAnimationFrame(() => { scoreEvidenceRef.current?.scrollIntoView?.({ block: 'start' }); scoreEvidenceRef.current?.focus() })
           }}>Review score evidence</button> : null}
         </section>
+      ) : null} reviewContent={rankingUnlocked && (hasScoreSignals || allInert) ? (
+        <div ref={scoreEvidenceRef} tabIndex={-1} className="profile-score-evidence">
+        <EvidencePanel
+          showSummary={false}
+          selectedEvidenceId={reviewEvidenceId}
+          renderSource={(evidence, label) => <SourceCheck candidateId={candidateId} evidence={evidence} label={label}
+            checked={verifiedEvidenceIds.has(evidence.id)} onChange={verified => {
+              if (currentScoreIdentity) onEvidenceVerified({ evidenceId: evidence.id, ...currentScoreIdentity }, verified)
+            }} /> }
+          allInert={allInert}
+          onEvidenceOpen={(_sectionName, evidenceId) => {
+            setReviewEvidenceId(current => current === evidenceId ? null : evidenceId)
+          }}
+          onEvidenceVerified={(evidenceId, verified) => {
+            if (currentScoreIdentity) {
+              onEvidenceVerified(
+                { evidenceId, ...currentScoreIdentity },
+                verified,
+              )
+            }
+          }}
+          signals={candidate.signals ?? []}
+          verifiedEvidenceIds={verifiedEvidenceIds}
+        />
+        </div>
       ) : null} candidate={candidate} rankingUnlocked={rankingUnlocked} onCompare={onCompare} comparing={comparing} comparisonFull={comparisonFull} onSourceOpen={(section, fieldId) => {
         setSelectedSectionName(section)
         setSelectedFieldId(fieldId ?? null)
@@ -223,7 +249,7 @@ export function CandidateDetailPage({
           ) : null}
         </div>
         {candidate.stage !== 'discovered' ? <fieldset>
-          <legend>Promoted sections</legend>
+          <legend>Sections to download</legend>
           {promotedSections.map((section) => (
             <label key={section}>
               <input
@@ -281,33 +307,11 @@ export function CandidateDetailPage({
       </details>
 
       <details className="profile-diagnostics" ref={diagnosticsRef}>
-        <summary>Scoring & source details</summary>
+        <summary>All saved text & score history</summary>
         <div className="profile-diagnostic-content">
-        <p className="profile-muted">Opening evidence does not mark it verified. Check the original text before confirming a source.</p>
+        <p className="profile-muted">Browse complete saved sections and previous scores here. Check individual passages in Review against your criteria above.</p>
       <details className="simple-options"><summary>Downloaded sections <span>{Object.keys(candidate.available_sections).length} saved</span></summary><SectionAvailabilityMap available={candidate.available_sections} /></details>
 
-      {rankingUnlocked && (hasScoreSignals || allInert) ? (
-        <div ref={scoreEvidenceRef} tabIndex={-1} className="profile-score-evidence">
-        <EvidencePanel
-          showSummary={false}
-          allInert={allInert}
-          onEvidenceOpen={(sectionName, evidenceId) => {
-            setSelectedSectionName(sectionName)
-            setSelectedFieldId(evidenceId)
-          }}
-          onEvidenceVerified={(evidenceId, verified) => {
-            if (currentScoreIdentity) {
-              onEvidenceVerified(
-                { evidenceId, ...currentScoreIdentity },
-                verified,
-              )
-            }
-          }}
-          signals={candidate.signals ?? []}
-          verifiedEvidenceIds={verifiedEvidenceIds}
-        />
-        </div>
-      ) : null}
 
       {rankingUnlocked && candidate.score_history?.length ? (
         <details className="panel score-history simple-options"><summary>Previous scores</summary>

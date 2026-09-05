@@ -63,8 +63,8 @@ test('Gate A structurally separates candidate pool from ranking', () => {
   assert.match(api, /\/api\/candidate-pool\?session_id=/)
   assert.match(api, /`\/api\/candidates\?\$\{params\}`/)
   assert.match(candidates, /enabled: Boolean\(session\.phase_gates\?\.A\)/)
-  assert.match(candidates, /Inspect the candidate pool before ranking/)
-  assert.match(search, /Confirm review & compare/)
+  assert.match(candidates, /Check the candidate list first/)
+  assert.match(search, /Confirm list & show ranking/)
   assert.match(detail, /rankingUnlocked && \(hasScoreSignals \|\| allInert\)/)
   assert.match(detail, /rankingUnlocked && !candidate\.score && !hasScoreSignals/)
   assert.match(detail, /rankingUnlocked && candidate\.score_history/)
@@ -81,7 +81,7 @@ test('M4 keeps context outside scoring and sending outside the UI', () => {
 
 test('evidence copy and Gate B controls preserve human verification', () => {
   assert.match(copy, /'not found in the retrieved data'/)
-  assert.match(evidence, /Opening is not verification/)
+  assert.match(evidence, /Open source to check/)
   assert.match(evidence, /I verified this exact source span/)
   assert.match(evidence, /Evidence withheld/)
   assert.match(candidates, /eligibleEvidence\.size < 10/)

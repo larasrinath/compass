@@ -296,22 +296,23 @@ test('historical queue revisions and candidate remounts preserve score-bound ver
   assert.equal(scoreSummary.compareDocumentPosition(document.querySelector('.profile-actions')) & 4, 4)
   assert.equal(document.querySelectorAll('.signal-table').length, 1, 'do not repeat the score table below')
   await userEvent.setup({ document: dom.window.document }).click(screen.getByRole('button', { name: 'Review score evidence' }))
-  await waitFor(() => assert.equal(document.querySelector('.profile-diagnostics').open, true))
-  assert.equal(screen.getByRole('checkbox', { name: /^I verified this exact source span for/ }).checked, true)
+  assert.equal(document.querySelector('.profile-diagnostics').open, false)
+  await userEvent.setup({ document: dom.window.document }).click(document.querySelector('.evidence-link'))
+  assert.equal(document.querySelector('.evidence-link').textContent.includes('Source checked'), true)
   assert.equal(scoreChanges, 0, 'preexisting revision 7 must be the observation baseline')
 
   rendered.rerender(wrapper(React.createElement(Harness, {
     candidateId: 'second', detailKey: 'detail', currentQueue: historicalQueue,
   })))
   await screen.findByRole('heading', { name: 'Second Candidate' })
-  assert.equal(screen.getByRole('checkbox', { name: /^I verified this exact source span for/ }).checked, true)
+  assert.equal(document.querySelector('.evidence-link').textContent.includes('Source checked'), true)
   assert.equal(scoreChanges, 0, 'opening a second candidate is not a score mutation')
 
   rendered.rerender(wrapper(React.createElement(Harness, {
     candidateId: 'second', detailKey: 'uncached-remount', currentQueue: historicalQueue,
   })))
   await screen.findByRole('heading', { name: 'Second Candidate' })
-  assert.equal(screen.getByRole('checkbox', { name: /^I verified this exact source span for/ }).checked, true)
+  assert.equal(document.querySelector('.evidence-link').textContent.includes('Source checked'), true)
   assert.equal(scoreChanges, 0, 'an uncached remount must retain the historical baseline')
 
   rendered.rerender(wrapper(React.createElement(Harness, {
@@ -320,7 +321,7 @@ test('historical queue revisions and candidate remounts preserve score-bound ver
     currentQueue: { ...historicalQueue, revision: 8, scoringRevision: 4 },
   })))
   await waitFor(() => assert.equal(scoreChanges, 1))
-  assert.equal(screen.getByRole('checkbox', { name: /^I verified this exact source span for/ }).checked, false)
+  assert.equal(document.querySelector('.evidence-link').textContent.includes('Source checked'), false)
 })
 
 test('candidate pool renders queued, failed, and focused enqueue errors', { timeout: 5000 }, async () => {
@@ -381,7 +382,7 @@ test('offline discovery keeps saved profiles browseable and filters names locall
   })))
   await screen.findByRole('heading', { name: 'Ada' })
   assert.equal(document.querySelector('#pool-review'), null)
-  assert.ok(screen.getByText('List reviewed'))
+  assert.ok(screen.getByText('List check recorded'))
   const history = document.querySelector('.search-history')
   const cards = document.querySelector('.candidate-grid')
   assert.ok(history.compareDocumentPosition(cards) & 4)
@@ -444,9 +445,8 @@ test('profile overview keeps withheld evidence hidden and exports the actual sav
   assert.ok(screen.getByText('Staff engineer · Example Co'))
   assert.equal(screen.queryByText('Withheld role'), null)
   assert.equal(screen.queryByText(/Sensitive source content/), null)
-  assert.ok(screen.getByText('Not yet checked'))
-  await user.click(screen.getByRole('button', { name: 'View evidence' }))
-  assert.deepEqual(opened, ['experience', 'visible'])
+  await user.click(screen.getByRole('button', { name: /View source/ }))
+  assert.deepEqual(opened, ['experience'])
   await user.click(screen.getByRole('button', { name: 'Compare' }))
   assert.equal(comparisons, 1)
 

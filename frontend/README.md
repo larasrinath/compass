@@ -100,3 +100,21 @@ weight control.
 The only accepted weight keys, in display and request order, are S-1 through S-6 and S-8.
 Unexpected or missing keys are treated as contract errors before a `PUT` can be issued; S-7 has
 no weight control.
+
+
+### Review workflow
+
+The list check confirms names and source searches before ranking. Its successful
+submission stays on Find candidates and selects Ranked list. It never certifies
+candidate qualifications.
+
+CandidateDetailPage puts EvidencePanel before career history. SourceCheck loads
+the selected passage inline and enables its checkbox only when candidate, section,
+span identity, provenance, and Unicode bounds match the current evidence. Opening
+text never verifies it or changes its score. A failed or stale source cannot be
+checked. The existing score-fingerprint reconciliation still clears stale checks.
+
+Compare matches exposes Record source checks above the results as an optional
+audit. The existing ten-current-evidence requirement is unchanged; the note starts
+empty. Comparison does not require this audit. How it works teaches these same
+controls and distinguishes identity checks, candidate assessment, and source checks.

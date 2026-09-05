@@ -52,7 +52,7 @@ export function CandidatesPage({
   const [sort, setSort] = useState('score_desc')
   const [hasReconciledCompleteDataset, setHasReconciledCompleteDataset] =
     useState(false)
-  const [gateNote, setGateNote] = useState('Exact evidence spans spot-checked against stored raw text.')
+  const [gateNote, setGateNote] = useState('')
   const candidates = useQuery({
     queryKey: ['ranked-candidates', session.id, stage, confidence, minimum, sort],
     queryFn: () =>
@@ -110,8 +110,8 @@ export function CandidatesPage({
       <section className="workspace-page" aria-labelledby="ranking-locked-title">
         <div className="empty-card phase-lock" role="status">
           <p className="eyebrow">Review required</p>
-          <h1 id="ranking-locked-title">Inspect the candidate pool before ranking.</h1>
-          <p>Return to Find candidates, inspect extraction and dedupe, then confirm your review.</p>
+          <h1 id="ranking-locked-title">Check the candidate list first.</h1>
+          <p>In Find candidates, check names and source searches, then choose Confirm list & show ranking.</p>
         </div>
       </section>
     )
@@ -129,6 +129,48 @@ export function CandidatesPage({
         onRemove={id => { setComparisonIds(ids => ids.filter(value => value !== id)); if (comparisonIds.length <= 2) setShowComparison(false) }}
         onOpen={onCandidateOpen}
       /> : null}
+      <details className="phase-gate-card panel simple-options"><summary>Record source checks <span>{eligibleEvidence.size} links checked</span></summary>
+        <div>
+          <p className="eyebrow">Record source checks</p>
+          <h2 id="gate-b-title">Keep a record of your source checks</h2>
+          <p>
+            This optional record needs at least 10 distinct passages checked against current scores. Open a candidate, choose Review score evidence, then open a passage and check it in context. You can compare candidates without recording this audit.
+          </p>
+        </div>
+        <p className="field-help">Unrecorded checks are temporary. Reloading the page or changing scoring inputs clears them.</p>
+        {session.phase_gates?.B ? (
+          <p className="gate-accepted" role="status">Source checks recorded · {session.phase_gates.B.evidence_ids.length} evidence spans recorded</p>
+        ) : (
+          <form
+            onSubmit={(event) => {
+              event.preventDefault()
+              gateB.mutate()
+            }}
+          >
+            <p className="verification-count" aria-live="polite">
+              <strong>{eligibleEvidence.size} / 10</strong> passages checked for current scores
+            </p>
+            <label className="field">
+              <span>Verification note</span>
+              <textarea required onChange={(event) => setGateNote(event.target.value)} rows={2} value={gateNote} />
+            </label>
+            <button
+              className="primary-action"
+              disabled={
+                !gateNote.trim() ||
+                eligibleEvidence.size < 10 ||
+                gateB.isPending ||
+                !hasReconciledCompleteDataset ||
+                (isUnfiltered && !hasCompleteIdentityDataset)
+              }
+              type="submit"
+            >
+              {gateB.isPending ? 'Recording…' : 'Record checks'}
+            </button>
+            {gateB.isError ? <p className="field-error" role="alert">{gateB.error.message}</p> : null}
+          </form>
+        )}
+      </details>
       <details className="results-options"><summary>Filter, sort & scoring settings</summary>
       <WeightsEditor onScoresChanged={onScoresChanged} />
 
@@ -195,47 +237,7 @@ export function CandidatesPage({
         </div>
       )}
 
-      <details className="phase-gate-card panel simple-options"><summary>Evidence quality check <span>{eligibleEvidence.size} links checked</span></summary>
-        <div>
-          <p className="eyebrow">Evidence quality check</p>
-          <h2 id="gate-b-title">Verify at least 10 exact evidence links</h2>
-          <p>
-            Open candidate evidence, compare each highlighted span with stored raw text,
-            then check its separate verification box. Coverage and search context never count.
-          </p>
-        </div>
-        {session.phase_gates?.B ? (
-          <p className="gate-accepted" role="status">✓ Gate B accepted · {session.phase_gates.B.evidence_ids.length} evidence spans recorded</p>
-        ) : (
-          <form
-            onSubmit={(event) => {
-              event.preventDefault()
-              gateB.mutate()
-            }}
-          >
-            <p className="verification-count" aria-live="polite">
-              <strong>{eligibleEvidence.size} / 10</strong> exact spans verified for current scores
-            </p>
-            <label className="field">
-              <span>Verification note</span>
-              <textarea onChange={(event) => setGateNote(event.target.value)} rows={2} value={gateNote} />
-            </label>
-            <button
-              className="primary-action"
-              disabled={
-                eligibleEvidence.size < 10 ||
-                gateB.isPending ||
-                !hasReconciledCompleteDataset ||
-                (isUnfiltered && !hasCompleteIdentityDataset)
-              }
-              type="submit"
-            >
-              {gateB.isPending ? 'Recording…' : 'Accept Gate B'}
-            </button>
-            {gateB.isError ? <p className="field-error" role="alert">{gateB.error.message}</p> : null}
-          </form>
-        )}
-      </details>
+
     </section>
   )
 }

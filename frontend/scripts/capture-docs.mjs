@@ -70,6 +70,7 @@ signals[0].claims = ['Go', 'PostgreSQL'].map(skill => ({
     availability: { state: 'available' },
   }],
 }))
+signals[1].claims = [{ id: 'docs-distributed', claim_key: 'optional:distributed', display_term: 'Distributed systems', verdict: 'unknown', evidence: [], coverage: [], missing_sections: [{ section_name: 'skills', reason: 'not_requested' }] }]
 const fields = [
   ['headline', ranked[0].headline], ['location', 'Berlin, Germany'],
   ['experience.0.title', 'Backend Engineer'], ['experience.0.company', companies[0]],
@@ -98,7 +99,7 @@ const responses = {
   '/api/briefs/current': brief, '/api/searches': [run], '/api/candidate-pool': pool,
   '/api/candidates': ranked, '/api/candidates/docs-person-0': detail,
   '/api/profile-sections': ['experience', 'skills', 'education', 'projects'], '/api/weights': weights,
-  '/api/candidates/docs-person-0/sections/experience': { candidate_id: ranked[0].id, section_name: 'experience', profile_section_id: 'docs-section', raw_text: rawText, span_unit: 'unicode_code_point', spans: [] },
+  '/api/candidates/docs-person-0/sections/experience': { candidate_id: ranked[0].id, section_name: 'experience', profile_section_id: 'docs-section', raw_text: rawText, span_unit: 'unicode_code_point', spans: signals[0].claims.flatMap(claim => claim.evidence.map(item => ({ ...item, provenance_available: true, provenance_label: 'Exact saved text' }))) },
 }
 
 await mkdir(output, { recursive: true })
@@ -142,6 +143,9 @@ try {
   await capture('candidate-results')
   await page.getByRole('button', { name: `Open evidence for ${names[0]}` }).click()
   await page.getByRole('heading', { name: 'Match score', exact: true }).waitFor()
+  await page.getByRole('button', { name: 'Review score evidence' }).click()
+  await page.locator('.evidence-link').first().click()
+  await page.locator('.source-check mark').waitFor()
   await capture('candidate-review')
   await page.goto(`${origin}/search`)
   await page.getByRole('heading', { name: names[0], exact: true }).waitFor()

@@ -22,11 +22,14 @@ contain real candidate records or represent live search results.*
    their profile text for review. Keep the current **Cards** view, or switch to
    **Ranked list** after reviewing the list to see rank, score, and confidence.
    Ranked results use highest-score-first order, with unscored profiles last.
-3. **Review the list** — inspect names and duplicates, add a review note, and
-   confirm **Review list to compare** to unlock ranking.
+3. **Check the candidate list** — inspect names, LinkedIn links, and repeated
+   source searches. Add a note under **What did you check?** and choose
+   **Confirm list & show ranking**. You stay in Find candidates, now in Ranked list.
 4. **Compare matches** — inspect evidence summaries, select two or three people,
    then choose **View comparison**. **Review** opens the candidate drawer with the
-   score and signal breakdown first, followed by profile information and sources.
+   score first. Under **Review against your criteria**, open a quoted passage to
+   read its highlighted saved source. Check whether it supports the criterion, then
+   continue to career history and any missing information.
 5. **Saved searches** — return to a previous run. Each card previews up to three
    saved profiles; **Open results** opens its full candidate pool.
 6. **How it works** — explore interactive examples and guided tours. Exercises
@@ -35,7 +38,9 @@ contain real candidate records or represent live search results.*
 Matching is based on retrieved text and supported aliases. A match is not
 independent verification, and missing evidence is not proof that someone lacks a
 qualification. **Review score evidence** opens the source checks; opening a source
-alone does not mark it verified. Network and company search context do not affect
+alone does not mark it verified or change the score. **Record source checks** on
+Compare matches is an optional audit record requiring ten distinct current
+passages and a note. Unrecorded checks clear on reload or changes to scoring inputs. Network and company search context do not affect
 match scores.
 
 ### Role brief
@@ -178,6 +183,7 @@ baseline from the affected checks rerun after fixes.
 | --- | --- |
 | [Frontend guide](frontend/README.md) | Routes, components, API contracts, local guide, and browser checks |
 | [Design system](frontend/DESIGN.md) | Compass layout, typography, controls, and interaction rules |
+| [Review workflow](docs/reviews/review-workflow.md) | User questions, source checks, and verification boundaries |
 | [Project review](docs/reviews/2026-09-04-project-review.md) | Findings, fixes, verification, and remaining issues |
 | [Implementation history](docs/implementation-history.md) | Queue, parsing, privacy, persistence, and dated acceptance records |
 | [Delivery plan](PROJECT_PLAN.md) | Current scope and retained historical roadmap |

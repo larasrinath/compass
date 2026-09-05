@@ -222,11 +222,7 @@ async function mockApi(
     else if (path === '/api/candidates/candidate-1') body = detailPayload
     else if (path === '/api/candidates/candidate-1/sections/experience') body = {
       candidate_id: 'candidate-1', section_name: 'experience', profile_section_id: 'section-experience',
-      raw_text: rawText, span_unit: 'unicode_code_point', spans: [{
-        id: 'evidence-far', profile_section_id: 'section-experience', span_start: spanStart,
-        span_end: spanEnd, value: target, snippet: target, verbatim: target,
-        provenance_available: true, provenance_label: 'Exact stored text',
-      }],
+      raw_text: rawText, span_unit: 'unicode_code_point', spans: (detailPayload.signals ?? []).flatMap((signal: any) => signal.claims.flatMap((claim: any) => claim.evidence.map((item: any) => ({ ...item, value: target, verbatim: target, provenance_available: true, provenance_label: 'Exact stored text' })))),
     }
     else if (path === '/api/profile-sections') body = ['experience', 'skills', 'education', 'projects']
     else if (path === '/api/candidates') body = [rankedPayload]
@@ -351,7 +347,7 @@ test('keyboard evidence flow scrolls the actual far-down astral mark and keeps f
   const link = page.getByRole('button', { name: /🚀 Alpha/ })
   await link.focus()
   await page.keyboard.press('Enter')
-  const raw = page.getByLabel('Raw experience profile text')
+  const raw = page.locator('.source-check').getByLabel('Raw experience profile text')
   const mark = raw.locator('mark')
   await expect(mark).toHaveText(target)
   await expect(raw).toBeFocused()
@@ -387,14 +383,18 @@ test('ten Gate B evidence controls expose unique names and keyboard toggles', as
   const checkboxes = page.getByRole('checkbox', {
     name: /^I verified this exact source span for/,
   })
-  await expect(checkboxes).toHaveCount(10)
-  const names = await checkboxes.evaluateAll((elements) =>
-    elements.map((element) => element.getAttribute('aria-label')),
-  )
+  await expect(checkboxes).toHaveCount(0)
+  const names = []
+  for (let index = 0; index < 10; index++) {
+    await page.locator('.evidence-link').nth(index).click()
+    await expect(checkboxes).toHaveCount(1)
+    await expect(checkboxes).toBeEnabled()
+    names.push(await checkboxes.getAttribute('aria-label'))
+    await checkboxes.focus()
+    await page.keyboard.press('Space')
+    await expect(checkboxes).toBeChecked()
+  }
   expect(new Set(names).size).toBe(10)
-  await checkboxes.nth(9).focus()
-  await page.keyboard.press('Space')
-  await expect(checkboxes.nth(9)).toBeChecked()
 })
 
 test('backend scoring empty state suppresses an empty evidence panel', async ({ page }) => {
@@ -480,8 +480,9 @@ test('hostile unbroken API strings never widen the 390px candidate views', async
 
   await page.getByRole('button', { name: 'Open evidence for Ada Lovelace' }).click()
   await page.getByRole('button', { name: 'Review score evidence' }).click()
-  await expect(page.getByRole('heading', { name: 'Evidence by criterion' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Review against your criteria' })).toBeVisible()
   await expect(page.locator('.evidence-link')).toBeVisible()
+  await page.getByText('All saved text & score history', { exact: true }).click()
   await page.getByText('Search details', { exact: true }).click()
   await expect(page.locator('.context-panel')).toBeVisible()
   expect(await page.locator('.candidate-drawer').evaluate(el => el.scrollWidth <= el.clientWidth)).toBeTruthy()
@@ -636,4 +637,27 @@ test('Find candidates ranked list retains filters and drawer navigation on deskt
   await page.getByRole('button',{name:'Cards',exact:true}).click()
   await expect(table).toHaveCount(0)
   await expect(page.getByRole('heading',{name:'Ada Lovelace',exact:true})).toBeVisible()
+})
+
+
+test('list check stays in Find candidates and opens ranking without verifying a candidate', async ({ page }) => {
+  await mockApi(page, false)
+  let accepted = false
+  await page.route('**/api/session', route => route.fulfill({ json: { ...sessionBase, phase_gates: accepted ? { A: { gate: 'A', accepted_at: 'now', note: 'Checked identities', evidence_ids: [] } } : {} } }))
+  await page.route('**/api/searches?**', route => route.fulfill({ json: [{ id: 'run-1', status: 'ok', created_at: '2026-09-04', keywords: 'Alpha', person_reference_count: 1, reference_count: 1, network: [], location: null, current_company: null, new_candidate_count: 1, existing_candidate_count: 0 }] }))
+  await page.route('**/api/session/gates/A', async route => {
+    expect(route.request().postDataJSON().note).toBe('Checked names and LinkedIn links.')
+    accepted = true
+    await route.fulfill({ json: { gate: 'A', accepted_at: 'now', note: 'Checked identities', evidence_ids: [] } })
+  })
+  await page.goto('/search')
+  const confirm = page.getByRole('button', { name: 'Confirm list & show ranking' })
+  await expect(confirm).toBeDisabled()
+  await page.getByRole('textbox', { name: 'What did you check?' }).fill('Checked names and LinkedIn links.')
+  await confirm.click()
+  await expect(page).toHaveURL(/\/search$/)
+  await expect(page.getByRole('button', { name: 'Ranked list', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByRole('table', { name: 'Candidates ranked by score' })).toBeVisible()
+  await expect(page.getByText('List check recorded')).toBeVisible()
+  await expect(page.getByRole('checkbox', { name: /^I verified/ })).toHaveCount(0)
 })

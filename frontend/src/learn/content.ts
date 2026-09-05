@@ -14,11 +14,11 @@ export const CHAPTERS: ChapterMeta[] = [
   { id: 'discover-candidates', group: 'The basics', title: 'Discover candidates before downloading', blurb: 'Finding someone and saving their profile are two different things.' },
   { id: 'download-evidence', group: 'The basics', title: 'Download and inspect evidence', blurb: 'Saved sections, extracted details, and the original text behind them.' },
   { id: 'after-a-request', group: 'The basics', title: 'What happens after a request', blurb: 'Follow one click through the queue, the connector, and local matching.' },
-  { id: 'review-and-compare', group: 'Working with results', title: 'Review the pool and compare people', blurb: 'Confirm your review to unlock side-by-side comparison.' },
+  { id: 'review-and-compare', group: 'Working with results', title: 'Review the pool and compare people', blurb: 'Check identities, assess fit, then compare the evidence.' },
   { id: 'scores-uncertainty', group: 'Working with results', title: 'Understand scores and uncertainty', blurb: 'Score, range, and confidence are three different things.' },
   { id: 'priorities-verify', group: 'Working with results', title: 'Change priorities and verify evidence', blurb: 'Adjust weights, rescore locally, and record what you have checked.' },
   { id: 'return-to-work', group: 'Working with results', title: 'Return to saved work', blurb: 'What still works when the connector is unavailable.' },
-  { id: 'tour-review', group: 'Guided tours', title: 'How to review a candidate', blurb: 'A six-step reading journey through one fictional profile.' },
+  { id: 'tour-review', group: 'Guided tours', title: 'How to review a candidate', blurb: 'A seven-step reading journey through one fictional profile.' },
   { id: 'tour-compare', group: 'Guided tours', title: 'How to compare candidates', blurb: 'Read criterion-by-criterion — with a worked PostgreSQL example.' },
 ];
 

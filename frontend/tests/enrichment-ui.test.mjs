@@ -13,7 +13,7 @@ const sections = readFileSync(
 
 test('candidate detail preserves explicit staged retrieval alongside evidence', () => {
   assert.match(detail, /Retrieve up to three more sections/)
-  assert.match(detail, /Opening evidence does not mark it verified/)
+  assert.match(detail, /SourceCheck/)
   assert.match(detail, /selected\.length >= 3/)
   assert.match(detail, /getProfileSections/)
   assert.match(detail, /section !== 'experience'/)

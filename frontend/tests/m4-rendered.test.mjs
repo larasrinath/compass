@@ -36,6 +36,7 @@ const vite = await createServer({
 })
 const { CandidatesPage } = await vite.ssrLoadModule('/src/pages/CandidatesPage.tsx')
 const { CandidateDetailPage } = await vite.ssrLoadModule('/src/pages/CandidateDetailPage.tsx')
+const { SourceCheck } = await vite.ssrLoadModule('/src/components/SourceCheck.tsx')
 const { EvidencePanel } = await vite.ssrLoadModule('/src/components/EvidencePanel.tsx')
 const { missingReasonCopy } = await vite.ssrLoadModule('/src/components/scoringCopy.ts')
 const { WeightsEditor } = await vite.ssrLoadModule('/src/components/WeightsEditor.tsx')
@@ -135,12 +136,13 @@ test('candidate-pool inspection records Gate A before ranking navigation', async
     session: { id: 'session' }, brief: null, queue,
     onCandidateOpen() {}, onGateAChanged() { changed = true },
   })))
-  const accept = await screen.findByRole('button', { name: 'Confirm review & compare' })
-  await waitFor(() => assert.equal(accept.disabled, false))
-  await user.type(screen.getByLabelText('Inspection note'), 'Candidate extraction and dedupe inspected.')
+  const accept = await screen.findByRole('button', { name: 'Confirm list & show ranking' })
+  await waitFor(() => assert.equal(accept.disabled, true))
+  await user.type(screen.getByLabelText('What did you check?'), 'Candidate extraction and dedupe inspected.')
   accept.focus()
   await user.keyboard('{Enter}')
-  await waitFor(() => assert.equal(changed, true))
+  await waitFor(() => assert.ok(gateBody))
+  assert.equal(changed, false, 'list confirmation stays on Find candidates')
   assert.equal(gateBody.note, 'Candidate extraction and dedupe inspected.')
 })
 
@@ -174,10 +176,11 @@ test('Gate A accepts only persisted eligible search outcomes', async () => {
     })))
     await waitFor(() => assert.ok(document.getElementById('gate-a-eligibility').textContent.includes(explanation)))
     const review = document.querySelector('.pool-review')
-    if (!review.open) await userEvent.setup({ document: dom.window.document }).click(within(review).getByText('Review candidate list & unlock comparison'))
+    if (!review.open) await userEvent.setup({ document: dom.window.document }).click(within(review).getByText('Check candidate list'))
     const button = await screen.findByRole('button', {
-      name: /Confirm review & compare/,
+      name: /Confirm list & show ranking/,
     })
+    await userEvent.setup({ document: dom.window.document }).type(screen.getByLabelText('What did you check?'), 'Checked names and links.')
     await waitFor(() => assert.equal(button.disabled, disabled))
     assert.equal(
       document.getElementById('gate-a-eligibility').textContent.includes(explanation),
@@ -474,7 +477,9 @@ test('Gate B posts only the separately verified exact evidence ids', async () =>
     verifiedEvidence: verified, onEvidenceReconciled() {}, onScoresChanged() {},
     onCandidateOpen() {},
   })))
-  const button = await screen.findByRole('button', { name: 'Accept Gate B' })
+  const button = await screen.findByRole('button', { name: 'Record checks' })
+  assert.equal(button.disabled, true)
+  await user.type(screen.getByLabelText('Verification note'), 'Checked passages in context.')
   await waitFor(() => assert.equal(button.disabled, false))
   button.focus()
   await user.keyboard('{Enter}')
@@ -709,4 +714,34 @@ test('saved search cards group downloaded profiles by source run and open the ch
   assert.equal(within(second).queryByText('Ada'), null)
   await user.click(within(second).getByRole('button', { name: 'Review Grace' }))
   assert.equal(opened, 'grace')
+})
+
+
+test('source checks require a successfully linked current passage and never verify on open', async () => {
+  const evidence = { id: 'source-e', section_name: 'experience', profile_section_id: 'section', span_start: 2, span_end: 4, availability: { state: 'available' } }
+  const goodSource = { candidate_id: 'person', section_name: 'experience', profile_section_id: 'section', raw_text: '🚀 Go systems', spans: [{ id: 'source-e', profile_section_id: 'section', span_start: 2, span_end: 4, provenance_available: true }] }
+  const cases = [
+    ['valid', goodSource, 200, true],
+    ['failed', {}, 500, false],
+    ['stale section', { ...goodSource, profile_section_id: 'old' }, 200, false],
+    ['withheld', { ...goodSource, spans: [{ ...goodSource.spans[0], provenance_available: false }] }, 200, false],
+    ['wrong span', { ...goodSource, spans: [{ ...goodSource.spans[0], span_start: 0 }] }, 200, false],
+    ['wrong candidate', { ...goodSource, candidate_id: 'someone-else' }, 200, false],
+  ]
+  for (const [name, value, status, valid] of cases) {
+    const calls = []
+    globalThis.fetch = () => json(value, status)
+    render(wrapper(React.createElement(SourceCheck, { candidateId: 'person', evidence, label: 'Check Go source', checked: false, onChange: value => calls.push(value) })))
+    const checkbox = screen.getByRole('checkbox', { name: 'Check Go source' })
+    assert.equal(checkbox.disabled, true, 'cannot check before loading')
+    await waitFor(() => assert.equal(screen.queryByText('Opening saved source…') === null, true))
+    assert.equal(checkbox.disabled, !valid, name)
+    assert.deepEqual(calls, [], 'opening is never verification')
+    if (valid) {
+      assert.equal(document.querySelector('mark').textContent, 'Go')
+      await userEvent.setup({ document: dom.window.document }).click(checkbox)
+      assert.deepEqual(calls, [true])
+    }
+    cleanup()
+  }
 })
