@@ -22,6 +22,7 @@ import { ResultHeader } from '../components/ResultHeader'
 import { CompassIcon } from '../components/CompassIcon'
 import { QueueStatus } from '../components/QueueStatus'
 import { RankedPoolList } from '../components/RankedPoolList'
+import { CandidatePagination, CANDIDATES_PER_PAGE } from '../components/CandidatePagination'
 import type { ReturnTypeOfJobEvents } from '../hooks/useJobEvents'
 
 const GATE_A_ELIGIBLE_STATUSES = new Set<SearchRunStatus>([
@@ -82,6 +83,10 @@ export function SearchPage({
   const [poolRun, setPoolRun] = useState<string | null>(initialRunId)
   const [nameFilter, setNameFilter] = useState('')
   const [poolView, setPoolView] = useState<'cards' | 'ranked'>('cards')
+  const pageScope = JSON.stringify([session.id, poolRun, nameFilter, poolView])
+  const [pageSelection, setPageSelection] = useState({ scope: pageScope, page: 1 })
+  if (pageSelection.scope !== pageScope) setPageSelection({ scope: pageScope, page: 1 })
+  const requestedPage = pageSelection.scope === pageScope ? pageSelection.page : 1
   const rankingUnlocked = Boolean(session.phase_gates?.A)
   const settings = readSearchSettings(brief?.id)
   const keywords = defaultSearchKeywords(brief)
@@ -166,6 +171,17 @@ export function SearchPage({
   const runCandidates = (candidates.data ?? []).filter(candidate => !poolRun || candidate.sources.some(source => source.search_run_id === poolRun))
   const filteredCandidates = runCandidates.filter(candidate => `${candidate.display_name ?? ''} ${candidate.username}`.toLowerCase().includes(nameFilter.toLowerCase()))
 
+  const pageCount = Math.max(1, Math.ceil(filteredCandidates.length / CANDIDATES_PER_PAGE))
+  const currentPage = Math.min(requestedPage, pageCount)
+  const pageStart = (currentPage - 1) * CANDIDATES_PER_PAGE
+  const pageEnd = Math.min(pageStart + CANDIDATES_PER_PAGE, filteredCandidates.length)
+  const visibleCandidates = filteredCandidates.slice(pageStart, pageEnd)
+  const listReady = candidates.isSuccess && (!(poolView === 'ranked' && rankingUnlocked) || ranking.isSuccess)
+  function changePage(page: number) {
+    setPageSelection({ scope: pageScope, page })
+    document.getElementById('pool-title')?.scrollIntoView?.({ block: 'start' })
+  }
+
   function queuePosition(jobId: string): string | null {
     const job = queue.jobs.find((item) => item.id === jobId)
     if (!job) return null
@@ -210,7 +226,7 @@ export function SearchPage({
             <p className="eyebrow">Saved candidates</p>
             <h2 id="pool-title">Candidate pool</h2>
           </div>
-          <div className="pool-heading-meta"><span>{filteredCandidates.length} shown · {poolView === 'ranked' && rankingUnlocked ? 'highest score first' : 'first-seen order'}</span><div className="pool-heading-actions">{session.phase_gates?.A ? <><span className="pool-review-status">List check recorded</span>{onGateAChanged ? <button className="quiet-action" type="button" onClick={onGateAChanged}>Compare candidates <CompassIcon name="compare" size={16} /></button> : null}</> : gateAEligible ? <a href="#pool-review">Check candidate list</a> : null}</div></div>
+          <div className="pool-heading-meta"><span>{filteredCandidates.length ? `${pageStart + 1}–${pageEnd} of ${filteredCandidates.length}` : '0 profiles'} · {poolView === 'ranked' && rankingUnlocked ? 'highest score first' : 'first-seen order'}</span><div className="pool-heading-actions">{session.phase_gates?.A ? <><span className="pool-review-status">List check recorded</span>{onGateAChanged ? <button className="quiet-action" type="button" onClick={onGateAChanged}>Compare candidates <CompassIcon name="compare" size={16} /></button> : null}</> : gateAEligible ? <a href="#pool-review">Check candidate list</a> : null}</div></div>
         </div>
         <div className="pool-view-toolbar">
           <div className="pool-view-switch" role="group" aria-label="Candidate view">
@@ -378,14 +394,15 @@ export function SearchPage({
             <span>{enrich.error.message}</span>
           </div>
         ) : null}
+        {listReady ? <CandidatePagination page={currentPage} pageCount={pageCount} onChange={changePage} /> : null}
         {candidates.isPending ? <p role="status">Loading saved candidates…</p> : filteredCandidates.length ? (
           poolView === 'ranked' && rankingUnlocked ? (
             ranking.isPending ? <p role="status">Loading scores…</p> : ranking.isError ? <div className="form-error" role="alert">Scores could not be loaded. <button className="quiet-action" type="button" onClick={() => void ranking.refetch()}>Try again</button></div> : <>
               {ranking.isFetching ? <p role="status" className="field-help">Updating scores…</p> : null}
-              <RankedPoolList candidates={runCandidates} scores={ranking.data} nameFilter={nameFilter} onOpen={onCandidateOpen} onSave={id => enrich.mutate(id)} downloadsBlocked={downloadsBlocked} savingId={enrich.isPending ? enrich.variables : undefined} />
+              <RankedPoolList offset={pageStart} limit={CANDIDATES_PER_PAGE} candidates={runCandidates} scores={ranking.data} nameFilter={nameFilter} onOpen={onCandidateOpen} onSave={id => enrich.mutate(id)} downloadsBlocked={downloadsBlocked} savingId={enrich.isPending ? enrich.variables : undefined} />
             </>
           ) : <div className="candidate-grid">
-            {filteredCandidates.map((candidate) => (
+            {visibleCandidates.map((candidate) => (
               <article className="candidate-card" key={candidate.id}>
                 <div className="discovery-person-heading"><span className="result-initials" aria-hidden="true">{(candidate.display_name || candidate.username).split(/\s+/).slice(0, 2).map(part => part[0]).join('')}</span><div>
                   <span className={`status-label ${candidate.stage}`}>
@@ -477,10 +494,8 @@ export function SearchPage({
           </div>
         )}
 
+        {listReady ? <CandidatePagination page={currentPage} pageCount={pageCount} onChange={changePage} bottom /> : null}
       </section>
-
-
-
 
     </section>
   )
