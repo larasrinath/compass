@@ -639,10 +639,12 @@ test('saved searches open the selected persisted run without starting a download
     assert.equal(init?.method ?? 'GET', 'GET')
     if (String(input).startsWith('/api/candidate-pool?')) return json([])
     assert.ok(String(input).startsWith('/api/searches?'))
-    return json([{ id: 'run-2', keywords: 'Planning specialist', location: 'India', created_at: '2026-09-04T00:00:00Z', person_reference_count: 5, status: 'ok' }])
+    return json([{ id: 'run-2', keywords: '"Planning specialist" India', location: 'india', created_at: '2026-09-04T00:00:00Z', person_reference_count: 5, status: 'ok' }])
   }
   render(wrapper(React.createElement(SavedSearchesPage, { sessionId: 'session', onOpenRun: id => { opened = id }, onSearch() {} })))
   const user = userEvent.setup({ document: dom.window.document })
+  await screen.findByRole('heading', { name: 'Planning specialist', exact: true })
+  assert.ok(screen.getByText(/^India · 5 profile references/))
   await user.click(await screen.findByRole('button', { name: /Planning specialist/ }))
   assert.equal(opened, 'run-2')
 })

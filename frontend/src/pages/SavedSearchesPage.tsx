@@ -2,6 +2,17 @@ import { useQuery } from '@tanstack/react-query'
 import { listCandidatePool, listSearches, type SearchRun } from '../api/client'
 import { CompassIcon } from '../components/CompassIcon'
 
+function searchTitle(run: SearchRun) {
+  // Query punctuation belongs to the search, not its display name.
+  let title = run.keywords.replace(/["“”]/g, '').replace(/\s+/g, ' ').trim()
+  const location = run.location?.trim()
+  if (location && !/\b(?:AND|OR|NOT)\b|[()]/.test(title) &&
+      title.toLocaleLowerCase().endsWith(` ${location.toLocaleLowerCase()}`)) {
+    title = title.slice(0, -(location.length + 1)).trim()
+  }
+  return title || 'Candidate search'
+}
+
 function runSummary(run: SearchRun) {
   const date = new Date(run.created_at).toLocaleDateString(undefined, {
     day: 'numeric', month: 'short', year: 'numeric',
@@ -12,8 +23,8 @@ function runSummary(run: SearchRun) {
     interrupted: 'Interrupted', cancelled: 'Cancelled',
   }[run.status]
   return [
+    run.location?.trim().replace(/^./, letter => letter.toLocaleUpperCase()),
     `${run.person_reference_count} profile references`,
-    run.location,
     `last run ${date}`,
     status,
   ].filter(Boolean).join(' · ')
@@ -57,7 +68,7 @@ export function SavedSearchesPage({ sessionId, onOpenRun, onSearch, onOpenCandid
               <section className="saved-search-card" key={run.id} aria-labelledby={`saved-run-${run.id}`}>
                 <button className="saved-search-open" onClick={() => onOpenRun(run.id)} type="button">
                   <div className="saved-search-description">
-                    <h2 id={`saved-run-${run.id}`}>{run.keywords}</h2>
+                    <h2 id={`saved-run-${run.id}`}>{searchTitle(run)}</h2>
                     <p>{runSummary(run)}</p>
                   </div>
                   <span className="saved-search-link">Open results <CompassIcon name="chevron" size={16} /></span>
