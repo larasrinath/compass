@@ -188,7 +188,6 @@ export function BriefPage({
       }}>
         <div className="criteria-sheet">
           {!current ? <p className="criteria-hint">Add the criteria from your description that you want to check against profiles.</p> : null}
-          <TermEditor errors={fieldErrors.target_titles} field="target_titles" label="Target titles" placeholder="Add a role title" onChange={editTerms(setTitles)} values={titles} />
           <KeyFilters skills={required} credentials={credentials} optionalSkills={optional} optionalSkillErrors={fieldErrors.optional_skills} onOptionalSkillsChange={editTerms(setOptional)} skillErrors={fieldErrors.required_skills} credentialErrors={fieldErrors.required_credentials} onSkillsChange={editTerms(setRequired)} onCredentialsChange={editTerms(setCredentials)} />
           <TermEditor errors={fieldErrors.location} field="location" label="Locations" placeholder="Add a location" values={splitLocations(location).map(term => ({ term, aliases: [] }))} onChange={values => { setLocation(values.map(value => value.term).join('; ')); markDirty() }} />
           <div data-field-prefix="required_experience_months">
@@ -202,6 +201,7 @@ export function BriefPage({
           <section className="criteria-optional" aria-labelledby="optional-title">
             <h2 id="optional-title">Optional preferences</h2>
             <div className="criteria-optional-fields">
+              <TermEditor errors={fieldErrors.target_titles} field="target_titles" label="Target titles" placeholder="Add a role title" onChange={editTerms(setTitles)} values={titles} />
               <TermEditor errors={fieldErrors.industries} field="industries" label="Industries" placeholder="Any industry" onChange={editTerms(setIndustries)} values={industries} />
               <SearchSettingsEditor sessionId={session.id} value={searchSettings} onChange={value => { setSearchSettings(value); markDirty() }} retrievalReady={retrievalReady} queueRevision={queueRevision} />
               <label className="field" data-field-prefix="positive_keywords"><span>Positive keywords</span><textarea value={positive} onChange={event => setPositive(event.target.value)} rows={2} placeholder="One per line, or separated by commas" />{fieldErrors.positive_keywords?.map(error => <span className="field-error" key={error} role="alert">{error}</span>)}</label>
