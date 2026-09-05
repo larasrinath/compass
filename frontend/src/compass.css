@@ -11,8 +11,12 @@ body { background: var(--canvas); }
 .topbar-status .local-badge { display: none; }
 .topbar-status > span:last-child { width: 100%; color: var(--ink-faint); }
 .workflow-nav { grid-column: 1; grid-row: 2 / 4; background: #fff; border-right: 1px solid var(--line); padding: 10px 16px 170px; justify-content: start; gap: 8px; }
-.workflow-nav button { border-radius: 28px; color: var(--ink-soft); padding: 13px 16px; font-weight: 500; }
-.workflow-nav button span { color: inherit; font-size: 19px; font-weight: 400; }
+.workflow-nav button { display: grid; grid-template-columns: 20px minmax(0, 1fr); align-items: center; column-gap: 12px; border-radius: 28px; color: var(--ink-soft); padding: 12px 16px; font-weight: 500; text-align: left; line-height: 20px; }
+.workflow-nav .nav-icon { display: flex; align-items: center; justify-content: center; width: 20px; height: 20px; color: inherit; }
+.workflow-nav .nav-icon svg { display: block; width: 20px; height: 20px; }
+.workflow-nav .nav-label { display: block; margin: 0; font: inherit; color: inherit; text-align: left; }
+.brand-mark img { display: block; width: 28px; height: 28px; }
+
 .workflow-nav button[aria-current="page"] { background: var(--ink); color: var(--canvas); box-shadow: none; }
 .workflow-nav button:hover:not(:disabled) { background: #f0ede5; color: var(--ink); }
 .workflow-nav button[aria-current="page"]:hover { background: #37362e; color: var(--canvas); }
@@ -94,7 +98,7 @@ a, .pool-heading-meta a { color: var(--accent); }
   .topbar-status { position: static; width: auto; margin-left: auto; border: 0; padding: 0; font-size: 11px; }
   .topbar-status > span:last-child { display: none; }
   .workflow-nav { border: 0; border-bottom: 1px solid var(--line); padding: 8px 12px 14px; }
-  .workflow-nav button { font-size: 12px; padding: 10px; }
+  .workflow-nav button { font-size: 12px; padding: 10px; column-gap: 8px; }
   main { padding: 26px 18px; }
   footer { margin: 0 18px; }
   .page-intro .version-card { text-align: left; padding: 0; }

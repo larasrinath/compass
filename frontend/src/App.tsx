@@ -135,7 +135,7 @@ function App() {
       </a>
       <header className="topbar">
         <div aria-hidden="true" className="brand-mark">
-          <CompassIcon name="compass" size={28} />
+          <img src="/favicon.svg?v=compass" width="28" height="28" alt="" />
         </div>
         <div>
           <p className="eyebrow">Personal recruiting</p>
@@ -167,7 +167,7 @@ function App() {
           onClick={() => navigate({ view: 'brief', candidateId: null })}
           type="button"
         >
-          <span aria-hidden="true"><CompassIcon name="plus" /></span> Role brief
+          <span className="nav-icon" aria-hidden="true"><CompassIcon name="brief" /></span><span className="nav-label">Role brief</span>
         </button>
         <button
           aria-current={view === 'search' || (view === 'candidate' && !rankingUnlocked && !returnToSaved) ? 'page' : undefined}
@@ -175,9 +175,9 @@ function App() {
           onClick={() => { setSourceRun(null); navigate({ view: 'search', candidateId: null }) }}
           type="button"
         >
-          <span aria-hidden="true"><CompassIcon name="search" /></span> Find candidates
+          <span className="nav-icon" aria-hidden="true"><CompassIcon name="search" /></span><span className="nav-label">Find candidates</span>
         </button>
-        <button aria-current={view === 'saved' || (view === 'candidate' && returnToSaved) ? 'page' : undefined} disabled={!session.data} onClick={() => navigate({ view: 'saved', candidateId: null })} type="button"><span aria-hidden="true"><CompassIcon name="folder" /></span> Saved searches</button>
+        <button aria-current={view === 'saved' || (view === 'candidate' && returnToSaved) ? 'page' : undefined} disabled={!session.data} onClick={() => navigate({ view: 'saved', candidateId: null })} type="button"><span className="nav-icon" aria-hidden="true"><CompassIcon name="folder" /></span><span className="nav-label">Saved searches</span></button>
         <button
           aria-current={view === 'ranked' || (view === 'candidate' && rankingUnlocked && !returnToSaved) ? 'page' : undefined}
           disabled={!rankingUnlocked}
@@ -185,7 +185,7 @@ function App() {
           onClick={() => navigate({ view: 'ranked', candidateId: null })}
           type="button"
         >
-          <span aria-hidden="true"><CompassIcon name="compare" /></span> Compare matches
+          <span className="nav-icon" aria-hidden="true"><CompassIcon name="compare" /></span><span className="nav-label">Compare matches</span>
         </button>
       </nav>
 
