@@ -18,10 +18,12 @@ not just its colors.
   this browser; the role brief remains the source of the search location.
 - Results use two columns of equal-width cards, a role summary above them, and
   Review/Compare actions at the bottom of each card. Cards become one column on phones.
-- Candidate review opens in a 576px right-side modal drawer, preserving the
+- Candidate review opens in a 760px right-side modal drawer, preserving the
   originating results and scroll position. Use the prototype’s compact profile
-  header, fit observations, career timeline, and saved-source downloads. Put
-  scoring calculations and source-offset controls behind a secondary disclosure.
+  header, then show the match score and criteria breakdown immediately. Follow
+  with profile actions, fit observations, questions, career history, and downloads.
+  Keep detailed source verification and history behind a secondary disclosure,
+  reachable through Review score evidence beside the score summary.
   Evidence cards use thin neutral borders, without colored side rails. Verdicts
   use softly tinted text badges: teal for matches, amber for no exact/partial
   matches, neutral for unchecked evidence, and rust for conflicts. Do not add

@@ -15,8 +15,10 @@ export function EvidencePanel({
   verifiedEvidenceIds,
   onEvidenceOpen,
   onEvidenceVerified,
+  showSummary = true,
 }: {
   signals: ScoreSignalRecord[]
+  showSummary?: boolean
   allInert: boolean
   verifiedEvidenceIds: Set<string>
   onEvidenceOpen: (sectionName: string, evidenceId: string) => void
@@ -36,11 +38,11 @@ export function EvidencePanel({
       <div className="section-heading">
         <div>
           <p className="eyebrow">Evidence, claim by claim</p>
-          <h2 id="evidence-title">Why this score changed</h2>
+          <h2 id="evidence-title">{showSummary ? 'Why this score changed' : 'Evidence by criterion'}</h2>
         </div>
         <span>Opening is not verification</span>
       </div>
-      <SignalTable signals={signals} />
+      {showSummary ? <SignalTable signals={signals} /> : null}
       <div className="signal-claims">
         {signals.map((signal) => (
           <section aria-labelledby={`signal-${signal.id}`} className="signal-claim-group" key={signal.id}>

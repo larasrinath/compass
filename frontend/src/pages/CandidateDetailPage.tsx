@@ -11,6 +11,7 @@ import { QueueStatus } from '../components/QueueStatus'
 import { ConfidenceBand } from '../components/ConfidenceBand'
 import { EvidencePanel } from '../components/EvidencePanel'
 import { RawTextViewer } from '../components/RawTextViewer'
+import { SignalTable } from '../components/SignalTable'
 import { ScoreBadge } from '../components/ScoreBadge'
 import { SectionAvailabilityMap } from '../components/SectionAvailabilityMap'
 import type { ReturnTypeOfJobEvents } from '../hooks/useJobEvents'
@@ -48,6 +49,7 @@ export function CandidateDetailPage({
   ) => void
   onScoreInputsChanged: () => void
 }) {
+  const scoreEvidenceRef = useRef<HTMLDivElement>(null)
   const diagnosticsRef = useRef<HTMLDetailsElement>(null)
   const sourceRef = useRef<HTMLElement>(null)
   const queryClient = useQueryClient()
@@ -152,7 +154,23 @@ export function CandidateDetailPage({
       : null
   return (
     <section aria-labelledby="candidate-title" className="candidate-profile">
-      <CandidateOverview candidate={candidate} rankingUnlocked={rankingUnlocked} onCompare={onCompare} comparing={comparing} comparisonFull={comparisonFull} onSourceOpen={(section, fieldId) => {
+      <CandidateOverview scoreSummary={rankingUnlocked && (candidate.score || hasScoreSignals || scoringEmptyState) ? (
+        <section className="profile-score-overview" aria-labelledby="profile-score-title">
+          <div className="profile-score-topline">
+            <div>
+              <h2 id="profile-score-title">Match score</h2>
+              {candidate.score ? <ScoreBadge candidate={candidate.score} /> : <p className="profile-muted">Score unavailable</p>}
+            </div>
+            {candidate.score ? <div className="profile-score-context"><ConfidenceBand candidate={candidate.score} /><p>Confidence reflects available evidence.</p></div> : null}
+          </div>
+          {scoringEmptyState ? <p className="profile-muted" role="status">{scoringEmptyState}</p> : null}
+          {hasScoreSignals && !allInert ? <SignalTable signals={candidate.signals ?? []} /> : null}
+          {hasScoreSignals || allInert ? <button className="profile-text-action" type="button" onClick={() => {
+            if (diagnosticsRef.current) diagnosticsRef.current.open = true
+            requestAnimationFrame(() => { scoreEvidenceRef.current?.scrollIntoView?.({ block: 'start' }); scoreEvidenceRef.current?.focus() })
+          }}>Review score evidence</button> : null}
+        </section>
+      ) : null} candidate={candidate} rankingUnlocked={rankingUnlocked} onCompare={onCompare} comparing={comparing} comparisonFull={comparisonFull} onSourceOpen={(section, fieldId) => {
         setSelectedSectionName(section)
         setSelectedFieldId(fieldId ?? null)
         if (diagnosticsRef.current) diagnosticsRef.current.open = true
@@ -266,13 +284,12 @@ export function CandidateDetailPage({
         <summary>Scoring & source details</summary>
         <div className="profile-diagnostic-content">
         <p className="profile-muted">Opening evidence does not mark it verified. Check the original text before confirming a source.</p>
-        {rankingUnlocked && candidate.score ? <div className="candidate-score-summary">
-          <ScoreBadge candidate={candidate.score} /><ConfidenceBand candidate={candidate.score} />
-        </div> : null}
       <details className="simple-options"><summary>Downloaded sections <span>{Object.keys(candidate.available_sections).length} saved</span></summary><SectionAvailabilityMap available={candidate.available_sections} /></details>
 
       {rankingUnlocked && (hasScoreSignals || allInert) ? (
+        <div ref={scoreEvidenceRef} tabIndex={-1} className="profile-score-evidence">
         <EvidencePanel
+          showSummary={false}
           allInert={allInert}
           onEvidenceOpen={(sectionName, evidenceId) => {
             setSelectedSectionName(sectionName)
@@ -289,18 +306,7 @@ export function CandidateDetailPage({
           signals={candidate.signals ?? []}
           verifiedEvidenceIds={verifiedEvidenceIds}
         />
-      ) : null}
-
-      {scoringEmptyState ? (
-        <section
-          aria-labelledby="scoring-empty-title"
-          className="panel scoring-empty-state"
-          role="status"
-        >
-          <p className="eyebrow">Scoring</p>
-          <h2 id="scoring-empty-title">Score unavailable</h2>
-          <p>{scoringEmptyState}</p>
-        </section>
+        </div>
       ) : null}
 
       {rankingUnlocked && candidate.score_history?.length ? (

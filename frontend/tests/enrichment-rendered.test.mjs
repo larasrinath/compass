@@ -290,6 +290,12 @@ test('historical queue revisions and candidate remounts preserve score-bound ver
     candidateId: 'first', detailKey: 'detail', currentQueue: historicalQueue,
   })))
   await screen.findByRole('heading', { name: 'First Candidate' })
+  const scoreSummary = screen.getByRole('region', { name: 'Match score' })
+  assert.equal(scoreSummary.closest('details'), null, 'score must be visible before opening any disclosure')
+  assert.equal(scoreSummary.compareDocumentPosition(document.querySelector('.profile-actions')) & 4, 4)
+  assert.equal(document.querySelectorAll('.signal-table').length, 1, 'do not repeat the score table below')
+  await userEvent.setup({ document: dom.window.document }).click(screen.getByRole('button', { name: 'Review score evidence' }))
+  await waitFor(() => assert.equal(document.querySelector('.profile-diagnostics').open, true))
   assert.equal(screen.getByRole('checkbox', { name: /^I verified this exact source span for/ }).checked, true)
   assert.equal(scoreChanges, 0, 'preexisting revision 7 must be the observation baseline')
 

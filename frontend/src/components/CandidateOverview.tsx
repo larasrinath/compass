@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { getCandidateSection, type CandidateDetail, type ParsedFieldRecord } from '../api/client'
 import { CompassIcon } from './CompassIcon'
 
@@ -36,8 +36,9 @@ function SavedSection({ candidateId, name, savedAt, onOpen }: { candidateId: str
   </li>
 }
 
-export function CandidateOverview({ candidate, rankingUnlocked, onSourceOpen, onCompare, comparing, comparisonFull }: {
+export function CandidateOverview({ candidate, rankingUnlocked, onSourceOpen, onCompare, comparing, comparisonFull, scoreSummary }: {
   candidate: CandidateDetail
+  scoreSummary?: ReactNode
   rankingUnlocked: boolean
   onSourceOpen: (section: string, fieldId?: string) => void
   onCompare?: () => void
@@ -68,6 +69,7 @@ export function CandidateOverview({ candidate, rankingUnlocked, onSourceOpen, on
       </div>
     </header>
     <div className="profile-overview">
+      {scoreSummary}
       <div className="profile-actions">
         <a className="primary-action" href={candidate.profile_url} target="_blank" rel="noreferrer">Open LinkedIn profile <CompassIcon name="arrow" size={16} /></a>
         {onCompare && rankingUnlocked && candidate.score ? <button className="quiet-action" type="button" aria-pressed={comparing} disabled={!comparing && comparisonFull} onClick={onCompare}><CompassIcon name="compare" size={16} />{comparing ? 'Comparing' : 'Compare'}</button> : null}
