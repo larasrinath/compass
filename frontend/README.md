@@ -10,8 +10,9 @@ npm run dev
 ```
 
 Vite defaults to `http://127.0.0.1:5173` and proxies `/api` to the local dashboard
-API on port 8787. See the [root README](../README.md#run-locally) for the three-service
-setup and numeric-loopback configuration rules.
+API on port 8787. This is the developer hot-reload setup. Normal users run
+`./compass` from the repository root; the API serves the built interface directly.
+See [development setup](../docs/development.md) for separate-service commands.
 
 By default, Find candidates starts profile-and-experience downloads with each
 search. Settings controls automatic downloads, pagination, pacing, and batch limits. Queue events refresh the pool and scores; historical searches have an
@@ -47,6 +48,13 @@ Nice-to-haves are used when primary terms are absent. Query construction keeps
 up to four normalized unique terms within 500 characters. Multiple locations
 are stored as semicolon-separated alternatives and queued separately.
 Company and network preferences use browser storage keyed to the saved brief.
+
+## Managed startup
+
+`src/components/LauncherStatus.tsx` displays first-time login and startup progress
+when `/api/launcher` is available. A ready transition refreshes MCP status; cancelled
+login can be retried through `/api/launcher/login`. In manual developer mode, that
+endpoint returns 404 and the existing connection controls remain available.
 
 ## Settings
 

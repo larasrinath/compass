@@ -39,7 +39,7 @@ export function Ch1() {
       chapterId="what-compass-does"
       kicker="The basics · 1 of 9"
       title="What Compass does"
-      intro="Compass is your local candidate research workspace. Describe a role, search LinkedIn, automatically download profiles, and compare the evidence against your criteria. You choose what matters and inspect the sources behind the results."
+      intro="Start Compass with ./compass from the repository folder. The app and first-time LinkedIn sign-in window open for you. Finish signing in, then create your role brief and choose Run search. Compass is your local candidate research workspace. Describe a role, search LinkedIn, automatically download profiles, and compare the evidence against your criteria. You choose what matters and inspect the sources behind the results."
     >
       <section>
         <h2 className="font-display text-lg font-bold text-ink">From role brief to your decision</h2>

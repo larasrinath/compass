@@ -92,6 +92,7 @@ const weights = {
   active_signal_ids: signals.map(s => s.signal_id), inert_reasons: {}, metro_region_equivalences: {},
 }
 const responses = {
+  '/api/launcher': null,
   '/api/settings': { profile_concurrency: 2, inter_call_delay_seconds: 3, download_batch_limit: 1000, search_page_limit: 1000, automatic_downloads: true, automatic_pagination: true, busy_retry_seconds: 30, timeout_retry_seconds: 0 },
   '/api/health': { status: 'ok', database: 'ok', send_enabled: false, llm_provider: 'null' },
   '/api/mcp/status': { reachable: true, tools: [], last_error_class: null, correlation_id: 'docs' },

@@ -8,7 +8,15 @@ people-search pages and two isolated profile download tabs.
 The connector and this derivative patch are **Apache-2.0**, separately from
 Compass's MIT license. The upstream LICENSE and NOTICE are included here.
 
-## Install
+## Normal startup
+
+Run `./compass` from the Compass root. It installs the pinned connector and applies
+these extensions in a private, versioned `.compass/` directory automatically.
+You do not need a separate checkout or any patch commands. Sign-in uses a dedicated
+`~/.compass-linkedin/profile` browser profile; existing manual connector installations
+are left alone.
+
+## Manual installation (connector maintainers)
 
 Use a separate connector checkout; do not apply this patch in the Compass root.
 The tested upstream base is `f410bfdc32569f8763fde11338b24ec6a0797f0d`.

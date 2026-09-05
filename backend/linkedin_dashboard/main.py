@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -122,7 +122,10 @@ def _safe_validation_errors(error: RequestValidationError) -> list[dict[str, Any
 
 
 def create_app(
-    app_settings: Settings, *, queue_executor: JobExecutor | None = None
+    app_settings: Settings,
+    *,
+    queue_executor: JobExecutor | None = None,
+    retrieval_ready: Callable[[], bool] | None = None,
 ) -> FastAPI:
     database = Database(app_settings.db_path)
     executor = queue_executor or MCPReadExecutor(MCPClient(app_settings.mcp_url))
@@ -188,13 +191,20 @@ def create_app(
             status_code=422, content={"detail": _safe_validation_errors(error)}
         )
 
+    async def initialize_runtime() -> None:
+        if retrieval_ready is not None and not retrieval_ready():
+            # Saved work stays accessible while the managed connector is signing in.
+            database.initialize()
+        else:
+            await job_queue.start()
+
     app.add_middleware(RequestBodyLimitMiddleware, max_bytes=_MAX_REQUEST_BODY_BYTES)
     app.add_middleware(
         RuntimeBoundaryMiddleware,
         host=app_settings.host,
         port=app_settings.port,
         database=database,
-        on_ready=job_queue.start,
+        on_ready=initialize_runtime,
     )
     app.add_middleware(ConfiguredHostMiddleware, allowed_host=app_settings.host)
     app.add_middleware(

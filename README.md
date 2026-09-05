@@ -11,6 +11,49 @@ when the connector is offline.
 *Screenshots show the actual app with fictional documentation data. They do not
 contain real candidate records or represent live search results.*
 
+## Start Compass
+
+Download or clone this repository, open its folder in a terminal, and run:
+
+```sh
+./compass
+```
+
+Compass prepares its dependencies, opens the app at
+[127.0.0.1:8787](http://127.0.0.1:8787/brief), and opens a LinkedIn sign-in window
+on first use. Sign in there, set up your role brief in Compass, then choose
+**Run search**. Later launches reuse the saved login and installed dependencies.
+
+You do not need to install Python, Node.js, or uv separately, apply connector
+patches, or start multiple terminals. The launcher handles those steps. The first
+run needs internet access and may take a few minutes. It supports macOS and desktop
+Linux with Git and curl installed; Linux also needs Chromium's system libraries.
+No administrator privileges are requested by the launcher.
+
+Keep the terminal open while using Compass. **Ctrl+C** stops its services; saved
+profiles and searches remain on disk. If sign-in is cancelled, use **Sign in to
+LinkedIn** in Compass to try again. To replace an expired login, stop Compass and
+run `./compass --login`. Passwords are entered only in LinkedIn's browser window.
+
+The launcher uses a dedicated LinkedIn session under `~/.compass-linkedin/` and
+does not import cookies from your everyday browser. Retrieval still opens LinkedIn
+pages in that session; it is not a bulk API.
+
+<details>
+<summary>Startup options and developer setup</summary>
+
+- `./compass --setup-only` installs dependencies without launching services or login.
+- `./compass --no-open` starts Compass and prints its URL without opening the app tab.
+- `./compass --port 8788 --connector-port 8001` selects different local ports.
+- Startup details are saved in `.compass/connector.log`. If a port is already used,
+  stop the previous process or select another port. Compass never kills an unrelated service.
+
+For frontend hot reload, separate processes, and connector maintenance, see the
+[development setup](docs/development.md). The normal launcher serves the built
+interface from the API, so a separate Vite process is unnecessary.
+
+</details>
+
 ## Automatic profile downloads
 
 With **Download profiles automatically** enabled in Settings (the default),
@@ -24,8 +67,8 @@ exact-title search misses; no search guarantees complete LinkedIn coverage.
 
 With **Continue through search pages** enabled (the default), Compass follows
 people-search pages automatically, preserving the same keywords,
-location, network and company filters. Install the [bundled connector pagination
-patch](integrations/linkedin-mcp-server/README.md) before using this feature.
+location, network and company filters. The launcher installs the compatible connector automatically.
+[Connector integration notes](integrations/linkedin-mcp-server/README.md) explain the extensions.
 Each page is a separate checkpointed queue job; all pages appear as one saved search.
 Discovery stops at the configured download or page limit, an empty or repeated
 page, a failed/incomplete page, or **Stop discovery**. Already queued profile downloads continue after stopping.
@@ -140,53 +183,6 @@ own save action below the download settings.
 
 </details>
 
-## Run locally
-
-Requires Python **3.12.4–3.14**, [uv](https://docs.astral.sh/uv/), npm, and a Node.js
-version supported by Vite: **20.19+ on the 20.x line, or 22.12+**. Browser checks
-and screenshot capture use installed Google Chrome.
-
-Install dashboard dependencies once from this repository:
-
-```bash
-uv sync --group dev
-cd frontend
-npm ci
-```
-
-Run the three services in separate terminals. The connector is a separate checkout
-with its own installation and authentication; Compass does not start it or access
-its browser profile.
-
-**1. Connector — from the patched `linkedin-mcp-server` checkout**
-
-Apply the [bundled pagination patch](integrations/linkedin-mcp-server/README.md) first.
-
-```bash
-uv run -m linkedin_mcp_server --transport streamable-http --host 127.0.0.1 --port 8000 --no-auto-import
-```
-
-**2. Dashboard API — from this repository root**
-
-```bash
-MCP_URL=http://127.0.0.1:8000/mcp uv run -m linkedin_dashboard
-```
-
-**3. Frontend — from this repository root**
-
-```bash
-cd frontend
-npm run dev
-```
-
-Open [Compass](http://127.0.0.1:5173/brief). The API defaults to
-`http://127.0.0.1:8787`; the frontend proxies `/api` to it. Start the API through
-`uv run -m linkedin_dashboard` so its loopback checks remain in effect.
-
-The connector is needed for new searches and profile retrieval. To review already
-saved work offline, keep the dashboard API and frontend running; use **Check
-connection** when reconnecting. Downloads of already saved text are local.
-
 ### Configuration and local data
 
 Open **Settings** in the sidebar to configure simultaneous profile downloads
@@ -261,6 +257,7 @@ baseline from the affected checks rerun after fixes.
 
 | Document | Purpose |
 | --- | --- |
+| [Development setup](docs/development.md) | Launcher internals and manual hot-reload setup |
 | [Frontend guide](frontend/README.md) | Routes, components, API contracts, local guide, and browser checks |
 | [Design system](frontend/DESIGN.md) | Compass layout, typography, controls, and interaction rules |
 | [Settings reference](docs/settings.md) | Defaults, limits, persistence, and API behavior |

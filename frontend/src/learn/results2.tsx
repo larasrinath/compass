@@ -150,7 +150,7 @@ export function Ch9() {
           <div className="rounded-xl border border-line p-4">
             <h2 className="font-semibold"><CloudOff className="mr-1 inline h-4 w-4" />New retrieval</h2><p className="mt-2 text-sm">Needs a reachable connector and an active queue.</p>
             <button disabled={!connectorUp || paused || queued} onClick={() => setQueued(true)} className="mt-3 rounded-full border border-line px-3 py-2 text-sm disabled:opacity-40">{queued ? 'Example task queued' : 'Simulate a download'}</button>
-            <p role="status" className="mt-2 text-xs">{!connectorUp ? 'Start the connector and use Check connection in the dashboard.' : paused ? 'Resolve the pause below before requesting more work.' : 'Ready for a new request.'}</p>
+            <p role="status" className="mt-2 text-xs">{!connectorUp ? 'Start Compass with ./compass and finish LinkedIn sign-in if prompted.' : paused ? 'Resolve the pause below before requesting more work.' : 'Ready for a new request.'}</p>
           </div>
         </div>
         <div className="mt-4 rounded-xl border border-line p-4">
@@ -160,7 +160,7 @@ export function Ch9() {
           <p className="mt-3 text-xs text-faint">The dashboard can cancel pending tasks and resume the queue; it does not expose per-task Pause buttons. Some timeout or browser-busy reads get one automatic retry. Interrupted work is not silently replayed.</p>
         </div>
       </Figure>
-      <Callout>Recalculating never refreshes a LinkedIn profile. For a connection issue, start the separate connector, sign in there if needed, then use Check connection. For a rate limit, follow the queue’s suggested wait. Failed retrieval preserves previously saved data.</Callout>
+      <Callout>Recalculating never refreshes a LinkedIn profile. For a connection issue, keep the ./compass terminal running. If sign-in failed, use Sign in to LinkedIn in the app. For an expired session, stop Compass and run ./compass --login. For a rate limit, follow the queue’s suggested wait. Failed retrieval preserves previously saved data.</Callout>
     </ChapterShell>
   );
 }
