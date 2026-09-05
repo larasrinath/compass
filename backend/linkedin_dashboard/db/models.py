@@ -225,6 +225,37 @@ class SearchRun(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False)
 
 
+class SearchPagination(Base):
+    __tablename__ = "search_pagination"
+    __table_args__ = (
+        CheckConstraint(
+            "profile_limit BETWEEN 1 AND 1000", name="ck_pagination_profiles"
+        ),
+        CheckConstraint("page_limit BETWEEN 1 AND 1000", name="ck_pagination_pages"),
+    )
+    root_run_id: Mapped[str] = mapped_column(
+        ForeignKey("search_run.id", ondelete="CASCADE"), primary_key=True
+    )
+    profile_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=1000)
+    page_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=1000)
+    stop_reason: Mapped[str | None] = mapped_column(String(32))
+
+
+class SearchPage(Base):
+    __tablename__ = "search_page"
+    __table_args__ = (
+        UniqueConstraint("root_run_id", "page_number", name="uq_search_page_number"),
+        CheckConstraint("page_number BETWEEN 1 AND 1000", name="ck_search_page_number"),
+    )
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("search_run.id", ondelete="CASCADE"), primary_key=True
+    )
+    root_run_id: Mapped[str] = mapped_column(
+        ForeignKey("search_pagination.root_run_id", ondelete="CASCADE"), nullable=False
+    )
+    page_number: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
 class SearchDownload(Base):
     """Durable, explicit permission to download one search's returned people."""
 

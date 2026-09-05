@@ -90,6 +90,7 @@ class LinkedInReadTools:
         location: str | None = None,
         network: list[NetworkToken] | None = None,
         current_company: str | None = None,
+        page: int | None = None,
     ) -> SearchPeopleResult:
         invalid = [token for token in network or [] if token not in {"F", "S", "O"}]
         if invalid:
@@ -103,10 +104,13 @@ class LinkedInReadTools:
                 "ignored by LinkedIn. Look up the URN via get_company_profile "
                 '-> references["about"].'
             )
+        if page is not None and (type(page) is not int or not 1 <= page <= 1000):
+            raise ValueError("page must be an integer between 1 and 1000")
         arguments: dict[str, object] = {"keywords": keywords}
         _include(arguments, "location", location)
         _include(arguments, "network", network)
         _include(arguments, "current_company", current_company)
+        _include(arguments, "page", page)
         response = await self._client.call_tool("search_people", arguments)
         return _parse_result(response, ProfilePayload)
 

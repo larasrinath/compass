@@ -291,7 +291,7 @@ export function Ch3() {
       title="Find, download and score candidates"
       intro="Searching LinkedIn uses your keywords and available preferences — location, network distance, a current-company identifier. Results enter a saved candidate pool: when the same person appears twice, Compass combines them into one record that keeps a link to every search that found them. Newly found people are queued automatically for a profile and experience download. Scores update as each download completes. Choose 3rd-degree and beyond or all networks to look beyond your direct and mutual connections."
     >
-      <Figure caption="Two fictional searches both return Robin Serrano. In the pool she becomes one candidate record with two search links — not a duplicate. Add both searches to see the merge and the simulated automatic queue. The live connector returns only the first results page; a 1,000-profile download limit does not guarantee 1,000 search results.">
+      <Figure caption="Two fictional searches both return Robin Serrano. In the pool she becomes one candidate record with two search links — not a duplicate. Add both searches to see the merge and the simulated automatic queue. Compass follows additional results pages with the same filters, downloading new profiles one at a time. It stops at 1,000 candidates or when LinkedIn returns no new people. Stop discovery ends further pages while queued downloads finish.">
         <div className="grid gap-4 sm:grid-cols-2">
           <SearchCard which="A" names={SEARCH_A} added={addedA} addResults={addResults} />
           <SearchCard which="B" names={SEARCH_B} added={addedB} addResults={addResults} />

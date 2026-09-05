@@ -4,6 +4,7 @@ import {
   acceptPhaseGateA,
   enrichCandidate,
   downloadSearchResults,
+  stopSearchDiscovery,
   getSearch,
   listCandidatePool,
   listCandidates,
@@ -142,6 +143,10 @@ export function SearchPage({
       await client.invalidateQueries({ queryKey: ['candidates', session.id] })
     },
   })
+  const stopDiscovery = useMutation({
+    mutationFn: stopSearchDiscovery,
+    onSuccess: () => client.invalidateQueries({ queryKey: ['searches', session.id] }),
+  })
   const gateA = useMutation({
     mutationFn: () => acceptPhaseGateA(gateNote),
     onSuccess: async () => {
@@ -173,12 +178,18 @@ export function SearchPage({
       <ResultHeader brief={brief} titleId="search-title" fallback="Find candidates" subtitle="Find people, download their profiles and calculate matches automatically." onEdit={onEditBrief} compact action={brief ? (
         <button className="primary-action" disabled={search.isPending || downloadsBlocked || !keywords} type="button" onClick={() => {
           if (downloadsBlocked || !keywords) return
-          search.mutate({ automatic_downloads: true, session_id: session.id, brief_id: brief.id, keywords, location: brief.location || null, network: settings.network.length ? settings.network : null, current_company: settings.companyId || null })
+          search.mutate({ paginate: true, automatic_downloads: true, session_id: session.id, brief_id: brief.id, keywords, location: brief.location || null, network: settings.network.length ? settings.network : null, current_company: settings.companyId || null })
         }}>{search.isPending ? 'Queueing…' : 'Run search'}<CompassIcon name="search" size={16} /></button>
       ) : null} />
 
-      <p className="field-help">First-page results · up to 1,000 downloads per batch · {settings.network.length && settings.network.length < 3 ? NETWORKS.filter(item => settings.network.includes(item.value)).map(item => item.label).join(', ') : 'All networks'}. Scores use your role criteria.</p>
+      <p className="field-help">Automatic search pages · up to 1,000 profiles per session · {settings.network.length && settings.network.length < 3 ? NETWORKS.filter(item => settings.network.includes(item.value)).map(item => item.label).join(', ') : 'All networks'}. Scores use your role criteria.</p>
       <QueueStatus queue={queue} />
+      {runs.data?.filter(run => run.pagination && (poolRun ? run.id === poolRun : !run.pagination.stop_reason)).map(run => <div className="pool-download-action" key={run.id}>
+        <span>{run.keywords} · {run.pagination!.people_found} people · {run.pagination!.pages_completed} pages · {run.pagination!.stop_reason ? ({ exhausted: 'All returned pages searched', repeated_page: 'No new people returned', profile_limit: 'Profile limit reached', page_limit: 'Page limit reached', stopped: 'Discovery stopped', failed: 'Search failed', rate_limited: 'LinkedIn limited this search', partial: 'Page incomplete' }[run.pagination!.stop_reason] ?? 'Search ended') : 'Searching more pages'}</span>
+        {!run.pagination!.stop_reason ? <button className="quiet-action" type="button" disabled={stopDiscovery.isPending} onClick={() => stopDiscovery.mutate(run.id)}>Stop discovery</button> : null}
+      </div>)}
+      {stopDiscovery.isSuccess ? <p className="field-help">Discovery stopped. Profiles already queued will finish downloading.</p> : null}
+      {stopDiscovery.isError ? <p role="alert" className="form-error">{stopDiscovery.error.message}</p> : null}
       {hasConflicts ? <div className="form-error brief-conflict" role="alert"><strong>Your role brief has conflicting keywords.</strong><span>A keyword is both included and excluded. Correct the brief before searching.</span>{onEditBrief ? <button className="quiet-action" onClick={onEditBrief} type="button">Edit role brief</button> : null}</div> : null}
 
       {!brief ? (
@@ -321,13 +332,7 @@ export function SearchPage({
             <div><dt>Current company</dt><dd>{detail.data.current_company || 'Any company'}</dd></div>
             <div><dt>Created</dt><dd>{new Date(detail.data.created_at).toLocaleString()}</dd></div>
           </dl>
-          {detail.data.reference_count === 15 ? (
-            <p className="cap-notice">
-              LinkedIn returned the shared 15-reference cap. Non-person references can
-              use part of that limit; run another narrower search instead of assuming
-              more pages exist.
-            </p>
-          ) : null}
+          {detail.data.pages?.length ? <div className="pool-view-toolbar"><span>Original responses</span>{detail.data.pages.map((page, index) => <button className="quiet-action" key={page.run_id} type="button" onClick={() => setSelectedRun(page.run_id)}>Page {index + 1}</button>)}</div> : null}
           {detail.data.errors.map((error, index) => (
             <div className="inline-error" key={`${error.error_type}-${index}`} role="alert">
               <strong>{error.error_type.replaceAll('_', ' ')}</strong>
@@ -443,12 +448,12 @@ export function SearchPage({
                   <summary>{candidate.source_count} source {candidate.source_count === 1 ? 'search' : 'searches'}</summary>
                   <ol className="source-list">
                     {candidate.sources.map((source) => (
-                      <li key={source.search_run_id}>
+                      <li key={source.page_run_id ?? source.search_run_id}>
                         <strong>{source.keywords}</strong>
                         <span>{source.reference_context || source.reference_text}</span>
                         <span>
                           {new Date(source.created_at).toLocaleString()} · reference{' '}
-                          {source.reference_position + 1} ·{' '}
+                          {source.reference_position + 1}{source.page_number ? ` · page ${source.page_number}` : ''} ·{' '}
                           {source.location || 'any location'} ·{' '}
                           {source.network_filter.length
                             ? `network ${source.network_filter.join('/')}`

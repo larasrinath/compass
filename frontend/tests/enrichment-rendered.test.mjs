@@ -532,7 +532,7 @@ test('Find candidates derives keywords from the brief and ignores legacy overrid
     assert.equal(submitted, null, 'opening results must not start a search')
     await user.click(screen.getByRole('button', { name: 'Run search' }))
     await waitFor(() => assert.notEqual(submitted, null))
-    assert.deepEqual(submitted, { automatic_downloads: true, session_id: 'session', brief_id: 'launch-brief', keywords: 'Engineer Go payments', location: 'Berlin', network: ['O'], current_company: '123' })
+    assert.deepEqual(submitted, { paginate: true, automatic_downloads: true, session_id: 'session', brief_id: 'launch-brief', keywords: 'Engineer Go payments', location: 'Berlin', network: ['O'], current_company: '123' })
     await user.click(screen.getByRole('button', { name: 'Adjust criteria' }))
     assert.equal(edited, true)
   } finally { window.localStorage.removeItem('compass:search-settings:launch-brief') }
@@ -666,4 +666,27 @@ test('old-search catch-up targets only the selected run and cannot double-submit
   await userEvent.setup({ document: dom.window.document }).click(button)
   await waitFor(() => assert.equal(screen.queryByRole('button', { name: 'Download remaining profiles' }) === null, true))
   assert.deepEqual(submitted, ['/api/searches/chosen/downloads'])
+})
+
+test('paginated search shows progress and stops only the selected discovery', async () => {
+  const submitted = []
+  let stopReason = null
+  globalThis.fetch = (input, init) => {
+    const path = String(input)
+    if (path.startsWith('/api/searches?')) return json([{ id: 'paged', status: 'ok', keywords: 'Go', created_at: '2026-09-05', network: ['O'], automatic_downloads: true, pagination: { pages_completed: 2, people_found: 26, profile_limit: 1000, stop_reason: stopReason } }])
+    if (path === '/api/searches/paged') return json(null)
+    if (path.startsWith('/api/candidate-pool?')) return json([])
+    if (path === '/api/searches/paged/stop' && init?.method === 'POST') {
+      submitted.push(path)
+      stopReason = 'stopped'
+      return json({ search_run_id: 'paged' })
+    }
+    throw new Error(path)
+  }
+  render(wrapper(React.createElement(SearchPage, { session: { id: 'session' }, brief: null, queue, initialRunId: 'paged', onCandidateOpen() {} })))
+  await screen.findByText(/26 people · 2 pages · Searching more pages/)
+  await userEvent.setup({ document: dom.window.document }).click(screen.getByRole('button', { name: 'Stop discovery' }))
+  await screen.findByText('Discovery stopped. Profiles already queued will finish downloading.')
+  await waitFor(() => assert.equal(screen.queryByRole('button', { name: 'Stop discovery' }), null))
+  assert.deepEqual(submitted, ['/api/searches/paged/stop'])
 })

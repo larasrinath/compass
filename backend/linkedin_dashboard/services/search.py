@@ -20,6 +20,8 @@ from linkedin_dashboard.db.models import (
     ProfileFetch,
     RoleBrief,
     SearchDownload,
+    SearchPage,
+    SearchPagination,
     SearchRun,
     SectionError,
 )
@@ -476,6 +478,7 @@ class SearchService:
         network: list[str] | None,
         current_company: str | None,
         automatic_downloads: bool = False,
+        paginate: bool = False,
     ) -> tuple[str, str]:
         keywords = keywords.strip()
         location = location.strip() if location else None
@@ -505,7 +508,13 @@ class SearchService:
             run_count = int(
                 session.scalar(
                     select(func.count(SearchRun.id)).where(
-                        SearchRun.session_id == session_id
+                        SearchRun.session_id == session_id,
+                        ~select(SearchPage.run_id)
+                        .where(
+                            SearchPage.run_id == SearchRun.id,
+                            SearchPage.page_number > 1,
+                        )
+                        .exists(),
                     )
                 )
                 or 0
@@ -550,6 +559,17 @@ class SearchService:
                 )
             )
 
+            if paginate:
+                session.flush()
+                session.add(
+                    SearchPagination(
+                        root_run_id=run_id, profile_limit=1000, page_limit=1000
+                    )
+                )
+                session.flush()
+                session.add(
+                    SearchPage(run_id=run_id, root_run_id=run_id, page_number=1)
+                )
             if automatic_downloads:
                 session.flush()
                 session.add(
@@ -570,6 +590,7 @@ class SearchService:
                 "network": network,
                 "current_company": current_company,
                 "search_run_id": run_id,
+                **({"page": 1} if paginate else {}),
             },
             related_factory=add_run,
         )
@@ -683,7 +704,15 @@ class SearchService:
             rows = list(
                 session.scalars(
                     select(SearchRun)
-                    .where(SearchRun.session_id == session_id)
+                    .where(
+                        SearchRun.session_id == session_id,
+                        ~select(SearchPage.run_id)
+                        .where(
+                            SearchPage.run_id == SearchRun.id,
+                            SearchPage.page_number > 1,
+                        )
+                        .exists(),
+                    )
                     .order_by(SearchRun.created_at.desc(), SearchRun.id.desc())
                 )
             )
@@ -709,22 +738,43 @@ class SearchService:
             )
             else row.status
         )
+        page_ids = list(
+            session.scalars(
+                select(SearchPage.run_id)
+                .where(SearchPage.root_run_id == row.id)
+                .order_by(SearchPage.page_number)
+            )
+        ) or [row.id]
         sources = list(
             session.scalars(
-                select(CandidateSource).where(CandidateSource.search_run_id == row.id)
+                select(CandidateSource).where(
+                    CandidateSource.search_run_id.in_(page_ids)
+                )
             )
         )
+        source_ids = {source.candidate_id for source in sources}
         first_count = 0
-        for source in sources:
-            first_run = session.scalar(
-                select(SearchRun.id)
-                .join(CandidateSource, CandidateSource.search_run_id == SearchRun.id)
-                .where(CandidateSource.candidate_id == source.candidate_id)
+        seen_candidates: set[str] = set()
+        if source_ids:
+            appearances = session.execute(
+                select(CandidateSource.candidate_id, SearchRun.id)
+                .join(SearchRun, CandidateSource.search_run_id == SearchRun.id)
+                .where(CandidateSource.candidate_id.in_(source_ids))
                 .order_by(SearchRun.created_at, SearchRun.id)
-                .limit(1)
             )
-            first_count += int(first_run == row.id)
+            for candidate_id, first_run in appearances:
+                if candidate_id not in seen_candidates:
+                    first_count += int(first_run in page_ids)
+                    seen_candidates.add(candidate_id)
         download = session.get(SearchDownload, row.id)
+        pagination = session.get(SearchPagination, row.id)
+        page_runs = list(
+            session.scalars(
+                select(SearchRun)
+                .where(SearchRun.id.in_(page_ids))
+                .order_by(SearchRun.created_at, SearchRun.id)
+            )
+        )
         result: dict[str, Any] = {
             "automatic_downloads": download is not None,
             "downloads_dispatched": bool(download and download.dispatched_at),
@@ -738,10 +788,27 @@ class SearchService:
             "network": row.network or [],
             "current_company": row.current_company,
             "status": effective_status,
-            "reference_count": row.reference_count,
-            "person_reference_count": row.person_reference_count,
+            "reference_count": sum(page.reference_count for page in page_runs),
+            "person_reference_count": len(source_ids)
+            if pagination
+            else row.person_reference_count,
+            "pagination": (
+                {
+                    "pages_completed": sum(
+                        page.processed_at is not None for page in page_runs
+                    ),
+                    "people_found": len(source_ids),
+                    "profile_limit": pagination.profile_limit,
+                    "stop_reason": pagination.stop_reason,
+                }
+                if pagination
+                else None
+            ),
+            "pages": [{"run_id": page.id, "status": page.status} for page in page_runs]
+            if pagination
+            else [],
             "new_candidate_count": first_count,
-            "existing_candidate_count": max(0, len(sources) - first_count),
+            "existing_candidate_count": max(0, len(source_ids) - first_count),
         }
         if detail:
             refs = list(
@@ -823,6 +890,10 @@ class SearchService:
                     )
                 )
             )
+            page_map = {
+                page.run_id: (page.root_run_id, page.page_number)
+                for page in session.scalars(select(SearchPage))
+            }
             output: list[dict[str, Any]] = []
             for candidate in candidates:
                 active_job_id = session.scalar(
@@ -860,10 +931,17 @@ class SearchService:
                         ),
                         "profile_contract_error": candidate.profile_contract_error,
                         "active_job_id": active_job_id,
-                        "source_count": len(source_rows),
+                        "source_count": len(
+                            {
+                                page_map.get(run.id, (run.id, 1))[0]
+                                for _, run, _ in source_rows
+                            }
+                        ),
                         "sources": [
                             {
-                                "search_run_id": run.id,
+                                "search_run_id": page_map.get(run.id, (run.id, 1))[0],
+                                "page_run_id": run.id,
+                                "page_number": page_map.get(run.id, (run.id, 1))[1],
                                 "created_at": run.created_at,
                                 "keywords": run.keywords,
                                 "location": run.location,

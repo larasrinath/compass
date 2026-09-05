@@ -1,0 +1,235 @@
+From e5b86905f318ae51b0d9ea6cf3cd5bb3b9aa0c20 Mon Sep 17 00:00:00 2001
+From: Lara Srinath <larasrinathp@gmail.com>
+Date: Sat, 5 Sep 2026 14:52:34 -0500
+Subject: [PATCH] feat(search): support explicit results pages
+
+---
+ README.md                                 |  2 +-
+ docs/docker-hub.md                        |  7 ++++
+ linkedin_mcp_server/scraping/extractor.py |  6 ++++
+ linkedin_mcp_server/tools/person.py       |  6 ++++
+ tests/test_scraping.py                    | 37 +++++++++++++++++++
+ tests/test_tools.py                       | 44 +++++++++++++++++++++++
+ 6 files changed, 101 insertions(+), 1 deletion(-)
+
+diff --git a/README.md b/README.md
+index 8060dcf..35406c0 100644
+--- a/README.md
++++ b/README.md
+@@ -53,7 +53,7 @@ This MCP server is **free** and **open source**, supported by [**Unipile**](http
+ | `get_company_employees` | List employees at a company from the /people/ page, with optional keyword filter |
+ | `search_jobs` | Search for jobs with keywords and location filters |
+ | `get_saved_jobs` | List job postings saved by the authenticated user |
+-| `search_people` | Search for people by keywords, location, connection degree (1st/2nd/3rd), and current company |
++| `search_people` | Search for people by keywords, location, connection degree (1st/2nd/3rd), current company, and results page (`page=1..1000`; one navigation per call) |
+ | `get_job_details` | Get detailed information about a specific job posting |
+ | `get_feed` | Get recent posts from the authenticated user's home feed |
+ | `search_posts` | Search posts/content globally by keyword (the "Posts" tab) with an optional recency filter (past-24h/past-week/past-month) |
+diff --git a/docs/docker-hub.md b/docs/docker-hub.md
+index 5aa2d7a..5063a35 100644
+--- a/docs/docker-hub.md
++++ b/docs/docker-hub.md
+@@ -190,3 +190,10 @@ Use `$env:USERPROFILE\.linkedin-mcp` when constructing the host path outside JSO
+ 
+ - **Source**: <https://github.com/stickerdaniel/linkedin-mcp-server>
+ - **License**: Apache 2.0
++
++### People-search pagination
++
++`search_people` accepts `page` (1–1000, default 1). Request one page per call,
++keeping filters unchanged. Stop on empty or repeated profile URLs, and respect
++rate limits. The page ceiling does not guarantee that LinkedIn exposes that many
++results. Profile downloads remain individual `get_person_profile` calls.
+diff --git a/linkedin_mcp_server/scraping/extractor.py b/linkedin_mcp_server/scraping/extractor.py
+index 7833c1f..e672047 100644
+--- a/linkedin_mcp_server/scraping/extractor.py
++++ b/linkedin_mcp_server/scraping/extractor.py
+@@ -4406,6 +4406,7 @@ class LinkedInExtractor:
+         location: str | None = None,
+         network: list[str] | None = None,
+         current_company: str | None = None,
++        page: int = 1,
+     ) -> dict[str, Any]:
+         """Search for people and extract the results page.
+ 
+@@ -4427,6 +4428,8 @@ class LinkedInExtractor:
+         Returns:
+             {url, sections: {name: text}}
+         """
++        if isinstance(page, bool) or not isinstance(page, int) or not 1 <= page <= 1000:
++            raise FilterValidationError("page must be an integer between 1 and 1000")
+         if network is not None:
+             invalid = [t for t in network if t not in _NETWORK_TOKENS]
+             if invalid:
+@@ -4451,6 +4454,8 @@ class LinkedInExtractor:
+         if current_company:
+             params += f"&currentCompany={_encode_list_facet([current_company])}"
+ 
++        if page > 1:
++            params += f"&page={page}"
+         url = f"https://www.linkedin.com/search/results/people/?{params}"
+         extracted = await self.extract_page(url, section_name="search_results")
+ 
+@@ -4468,6 +4473,7 @@ class LinkedInExtractor:
+ 
+         result: dict[str, Any] = {
+             "url": url,
++            "page": page,
+             "sections": sections,
+         }
+         if references:
+diff --git a/linkedin_mcp_server/tools/person.py b/linkedin_mcp_server/tools/person.py
+index 1926f38..bd0a122 100644
+--- a/linkedin_mcp_server/tools/person.py
++++ b/linkedin_mcp_server/tools/person.py
+@@ -114,6 +114,7 @@ def register_person_tools(
+         location: str | None = None,
+         network: list[str] | None = None,
+         current_company: str | None = None,
++        page: Annotated[int, Field(ge=1, le=1000, strict=True)] = 1,
+         extractor: Any | None = None,
+     ) -> dict[str, Any]:
+         """
+@@ -126,6 +127,10 @@ def register_person_tools(
+             network: Optional connection-degree filter. Each element is one of
+                 "F" (1st-degree), "S" (2nd-degree), "O" (3rd-degree and beyond).
+                 Example: ["F"] to only return 1st-degree connections.
++            page: One-based results page (1-1000). Each call visits one page.
++                Call successive pages with the same filters, deduplicate profile
++                URLs, and stop on empty or repeated results. LinkedIn may expose
++                fewer pages; this parameter does not guarantee result coverage.
+             current_company: Optional current-employer filter. LinkedIn's
+                 currentCompany facet only filters on the numeric company URN id
+                 (e.g. "1115" for SAP); plain company names are accepted by the
+@@ -161,6 +166,7 @@ def register_person_tools(
+                     location,
+                     network=network,
+                     current_company=current_company,
++                    page=page,
+                 )
+             except FilterValidationError as e:
+                 # Validation messages carry actionable detail; surface
+diff --git a/tests/test_scraping.py b/tests/test_scraping.py
+index f3df60a..aa4df4a 100644
+--- a/tests/test_scraping.py
++++ b/tests/test_scraping.py
+@@ -6041,6 +6041,43 @@ class TestSingleSectionRateLimits:
+ 
+ 
+ class TestSearchPeople:
++    @pytest.mark.parametrize("page", [2, 100, 1000])
++    async def test_explicit_page_preserves_filters_and_navigates_once(
++        self, mock_page, page
++    ):
++        extractor = LinkedInExtractor(mock_page)
++        with patch.object(
++            extractor,
++            "extract_page",
++            new_callable=AsyncMock,
++            return_value=extracted("Result"),
++        ) as fetch:
++            result = await extractor.search_people(
++                "platform engineer",
++                "Berlin",
++                network=["O"],
++                current_company="1115",
++                page=page,
++            )
++        query = parse_qs(urlparse(result["url"]).query)
++        assert query == {
++            "keywords": ["platform engineer"],
++            "location": ["Berlin"],
++            "network": ['["O"]'],
++            "currentCompany": ['["1115"]'],
++            "page": [str(page)],
++        }
++        assert result["page"] == page
++        fetch.assert_awaited_once_with(result["url"], section_name="search_results")
++
++    @pytest.mark.parametrize("page", [0, -1, 1001, True, "2", 1.5])
++    async def test_invalid_page_never_navigates(self, mock_page, page):
++        extractor = LinkedInExtractor(mock_page)
++        with patch.object(extractor, "extract_page", new_callable=AsyncMock) as fetch:
++            with pytest.raises(ValueError, match="page"):
++                await extractor.search_people("engineer", page=page)
++        fetch.assert_not_awaited()
++
+     async def test_search_people_omits_orphaned_references(self, mock_page):
+         extractor = LinkedInExtractor(mock_page)
+         with patch.object(
+diff --git a/tests/test_tools.py b/tests/test_tools.py
+index 81014d2..5dbfdfd 100644
+--- a/tests/test_tools.py
++++ b/tests/test_tools.py
+@@ -268,6 +268,7 @@ class TestPersonTool:
+             "New York",
+             network=None,
+             current_company=None,
++            page=1,
+         )
+ 
+     async def test_search_people_with_network_and_company_filters(self, mock_context):
+@@ -294,6 +295,7 @@ class TestPersonTool:
+             mock_context,
+             network=["F"],
+             current_company="1115",
++            page=2,
+             extractor=mock_extractor,
+         )
+         assert "search_results" in result["sections"]
+@@ -302,6 +304,7 @@ class TestPersonTool:
+             None,
+             network=["F"],
+             current_company="1115",
++            page=2,
+         )
+ 
+     async def test_search_people_validation_error_surfaced_as_tool_error(
+@@ -1424,3 +1427,44 @@ class TestToolTimeouts:
+             tool = await mcp.get_tool(name)
+             assert tool is not None
+             assert tool.timeout == DEFAULT_TOOL_TIMEOUT_SECONDS
++
++
++@pytest.mark.parametrize("page", [0, 1001, True, "2", 1.5])
++async def test_search_people_mcp_rejects_invalid_page(page):
++    from fastmcp.exceptions import ValidationError
++    from linkedin_mcp_server.tools.person import register_person_tools
++
++    mcp = FastMCP("pagination")
++    register_person_tools(mcp)
++    with patch(
++        "linkedin_mcp_server.tools.person.get_ready_extractor", new_callable=AsyncMock
++    ) as ready:
++        with pytest.raises(ValidationError, match="page"):
++            await mcp.call_tool("search_people", {"keywords": "engineer", "page": page})
++        ready.assert_not_awaited()
++
++
++async def test_search_people_mcp_forwards_second_page():
++    from linkedin_mcp_server.tools.person import register_person_tools
++
++    mock = _make_mock_extractor({"page": 2, "sections": {"search_results": "Result"}})
++    mcp = FastMCP("pagination")
++    register_person_tools(mcp)
++    with patch(
++        "linkedin_mcp_server.tools.person.get_ready_extractor",
++        new_callable=AsyncMock,
++        return_value=mock,
++    ):
++        await mcp.call_tool(
++            "search_people",
++            {
++                "keywords": "engineer",
++                "page": 2,
++                "network": ["O"],
++                "location": "Berlin",
++                "current_company": "1115",
++            },
++        )
++    mock.search_people.assert_awaited_once_with(
++        "engineer", "Berlin", network=["O"], current_company="1115", page=2
++    )
+-- 
+2.50.1 (Apple Git-155)
+

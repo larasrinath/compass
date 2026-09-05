@@ -21,8 +21,8 @@ test('brief and search are separate explicit actions', () => {
 
 test('discovery explains cap, provenance and uncertainty', () => {
   assert.match(search, /references were\s+people/)
-  assert.match(search, /shared 15-reference cap/)
-  assert.match(search, /another narrower search/)
+  assert.match(search, /Stop discovery/)
+  assert.match(search, /Profile limit reached/)
   assert.match(search, /source\.notice/)
   assert.match(search, /Profile not retrieved/)
   assert.match(search, /first-seen order/)

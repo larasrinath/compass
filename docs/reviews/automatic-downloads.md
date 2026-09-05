@@ -2,7 +2,7 @@
 
 Running a search authorizes one initial profile-and-experience download for each
 newly discovered person in that search, up to 1,000. It does not authorize extra
-sections or repeat retrievals of already requested profiles. The first-page
+sections or repeat retrievals of already requested profiles. The original first-page
 connector limitation still applies to discovery.
 
 ## Durable flow
@@ -48,3 +48,7 @@ requeueing, paused restart, local projection recovery, and 1,000-profile admissi
 with 2,000 reserved page reads. The 1,001-profile batch is rejected before work.
 Queue and database regression checks retain the existing concurrency and budget
 invariants. Frontend checks cover the search payload and run-scoped catch-up.
+
+## Paginated discovery
+
+The first-page limitation described above is superseded by the bundled connector patch and durable page jobs. See [pagination](search-pagination.md) for the current behavior and verification.
