@@ -94,3 +94,5 @@ h1, h2, h3, .brand-title { font-family: var(--font-display); }
 @media (max-width: 600px) {
   .criteria-optional-fields, .brief-company-fields { grid-template-columns: 1fr; }
 }
+
+.pool-download-action { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 12px 0; color: var(--ink-faint); }

@@ -264,6 +264,7 @@ def current_brief(
 
 
 class SearchInput(BaseModel):
+    automatic_downloads: bool = False
     model_config = ConfigDict(extra="forbid")
 
     session_id: str = Field(min_length=1, max_length=36)
@@ -363,3 +364,14 @@ def company_lookup_result(
         return service.company_lookup(lookup_id)
     except LookupError as error:
         raise HTTPException(404, str(error)) from error
+
+
+@router.post("/searches/{run_id}/downloads", status_code=202)
+async def download_search_results(run_id: str, request: Request) -> dict[str, str]:
+    try:
+        await request.app.state.download_service.request(run_id)
+    except LookupError as error:
+        raise HTTPException(404, str(error)) from error
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    return {"search_run_id": run_id}

@@ -345,7 +345,7 @@ test('candidate pool renders queued, failed, and focused enqueue errors', { time
     session: { id: 'session' }, brief: null, queue,
     onCandidateOpen(id) { opened = id },
   })))
-  const queued = await screen.findByRole('button', { name: 'Retrieval queued' })
+  const queued = await screen.findByRole('button', { name: 'Waiting to download' })
   assert.equal(queued.disabled, true)
   await user.click(screen.getByRole('button', { name: 'Review retrieval failure' }))
   assert.equal(opened, 'failed')
@@ -532,7 +532,7 @@ test('Find candidates derives keywords from the brief and ignores legacy overrid
     assert.equal(submitted, null, 'opening results must not start a search')
     await user.click(screen.getByRole('button', { name: 'Run search' }))
     await waitFor(() => assert.notEqual(submitted, null))
-    assert.deepEqual(submitted, { session_id: 'session', brief_id: 'launch-brief', keywords: 'Engineer Go payments', location: 'Berlin', network: ['O'], current_company: '123' })
+    assert.deepEqual(submitted, { automatic_downloads: true, session_id: 'session', brief_id: 'launch-brief', keywords: 'Engineer Go payments', location: 'Berlin', network: ['O'], current_company: '123' })
     await user.click(screen.getByRole('button', { name: 'Adjust criteria' }))
     assert.equal(edited, true)
   } finally { window.localStorage.removeItem('compass:search-settings:launch-brief') }
@@ -613,7 +613,7 @@ test('ranked pool preserves API ties, keeps unscored last, filters without renum
   assert.deepEqual(rows.map(row=>row.querySelector('.pool-rank').textContent),['1','2','—'])
   assert.equal(within(rows[2]).queryByText('0.0'),null)
   assert.ok(within(rows[2]).getByText('Not scored'))
-  assert.equal(screen.getByRole('button',{name:'Save profile for Unscored'}).disabled,true)
+  assert.equal(screen.getByRole('button',{name:'Download profile for Unscored'}).disabled,true)
   await user.type(screen.getByLabelText('Find a saved candidate'),'ada')
   assert.equal(within(table).getAllByRole('row').length,2)
   assert.equal(within(table).getAllByRole('row')[1].querySelector('.pool-rank').textContent,'2')
@@ -644,4 +644,26 @@ test('ranked pool shows a recoverable error and refreshes after queue updates', 
   view.rerender(node({...props,queue:{...queue,revision:1}}))
   await screen.findByText('90.0')
   assert.equal(screen.queryByText('60.0'),null)
+})
+
+test('old-search catch-up targets only the selected run and cannot double-submit', async () => {
+  const submitted = []
+  let requested = false
+  globalThis.fetch = (input, init) => {
+    const path = String(input)
+    if (path.startsWith('/api/searches?')) return json([{ id: 'chosen', status: 'ok', keywords: 'Go', created_at: '2026-09-05', network: ['O'], automatic_downloads: requested }])
+    if (path === '/api/searches/chosen') return json(null)
+    if (path.startsWith('/api/candidate-pool?')) return json([{ ...rankingPool()[0], sources: [{ search_run_id: 'chosen', keywords: 'Go', network_filter: ['O'], reference_position: 0 }] }])
+    if (path === '/api/searches/chosen/downloads' && init?.method === 'POST') {
+      submitted.push(path)
+      requested = true
+      return json({ search_run_id: 'chosen' })
+    }
+    throw new Error(path)
+  }
+  render(wrapper(React.createElement(SearchPage, { session: { id: 'session' }, brief: null, queue, initialRunId: 'chosen', onCandidateOpen() {} })))
+  const button = await screen.findByRole('button', { name: 'Download remaining profiles' })
+  await userEvent.setup({ document: dom.window.document }).click(button)
+  await waitFor(() => assert.equal(screen.queryByRole('button', { name: 'Download remaining profiles' }) === null, true))
+  assert.deepEqual(submitted, ['/api/searches/chosen/downloads'])
 })

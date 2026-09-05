@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -887,8 +888,16 @@ class EnrichmentService:
             ) from error
 
     async def enqueue_batch(
-        self, candidate_ids: list[str], sections: list[str]
+        self,
+        candidate_ids: list[str],
+        sections: list[str],
+        *,
+        transaction_callback: Callable[[Any], None] | None = None,
+        authorize_profile_reads: bool = False,
+        new_only: bool = False,
     ) -> list[str]:
+        if len(candidate_ids) > 1000:
+            raise ValueError("a download batch supports at most 1000 profiles")
         if not candidate_ids or len(set(candidate_ids)) != len(candidate_ids):
             raise ValueError("candidate_ids must be a non-empty unique list")
         requested = canonical_sections(sections)
@@ -917,7 +926,7 @@ class EnrichmentService:
                 raise LookupError("session does not exist")
             required = len(candidate_ids) * (1 + len(requested))
             remaining = dashboard_session.nav_budget - dashboard_session.nav_used
-            if required > remaining:
+            if required > remaining and not authorize_profile_reads:
                 raise RuntimeError(
                     f"navigation budget shortfall: need {required}, have {remaining}"
                 )
@@ -956,6 +965,20 @@ class EnrichmentService:
                 candidate = db.get(Candidate, candidate_id)
                 if candidate is None:
                     raise LookupError("candidate does not exist")
+                if (
+                    new_only
+                    and db.scalar(
+                        select(ProfileFetch.id)
+                        .where(ProfileFetch.candidate_id == candidate_id)
+                        .limit(1)
+                    )
+                    is not None
+                ):
+                    raise IntegrityError(
+                        "candidate was already requested",
+                        {},
+                        ValueError("already requested"),
+                    )
                 candidate.retrieval_status = "pending"
                 db.add(
                     ProfileFetch(
@@ -993,7 +1016,12 @@ class EnrichmentService:
                 )
             )
         try:
-            return await self.queue.enqueue_many(candidates[0].session_id, requests)
+            return await self.queue.enqueue_many(
+                candidates[0].session_id,
+                requests,
+                transaction_callback=transaction_callback,
+                authorize_profile_reads=authorize_profile_reads,
+            )
         except IntegrityError as error:
             raise RuntimeError(
                 "one or more candidates already have an active fetch"

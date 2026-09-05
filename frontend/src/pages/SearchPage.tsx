@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   acceptPhaseGateA,
   enrichCandidate,
+  downloadSearchResults,
   getSearch,
   listCandidatePool,
   listCandidates,
@@ -15,7 +16,7 @@ import type {
   SessionRecord,
 } from '../api/client'
 import { searchLocations } from '../searchLocations'
-import { defaultSearchKeywords, readSearchSettings } from '../searchSettings'
+import { defaultSearchKeywords, readSearchSettings, NETWORKS } from '../searchSettings'
 import { ResultHeader } from '../components/ResultHeader'
 import { CompassIcon } from '../components/CompassIcon'
 import { QueueStatus } from '../components/QueueStatus'
@@ -134,6 +135,13 @@ export function SearchPage({
     onError: () =>
       requestAnimationFrame(() => enrichmentErrorRef.current?.focus()),
   })
+  const downloadRun = useMutation({
+    mutationFn: downloadSearchResults,
+    onSuccess: async () => {
+      await client.invalidateQueries({ queryKey: ['searches', session.id] })
+      await client.invalidateQueries({ queryKey: ['candidates', session.id] })
+    },
+  })
   const gateA = useMutation({
     mutationFn: () => acceptPhaseGateA(gateNote),
     onSuccess: async () => {
@@ -162,13 +170,14 @@ export function SearchPage({
 
   return (
     <section aria-labelledby="search-title" className="workspace-page search-workspace">
-      <ResultHeader brief={brief} titleId="search-title" fallback="Find candidates" subtitle="Find people using your saved role brief, then save profiles to review." onEdit={onEditBrief} compact action={brief ? (
+      <ResultHeader brief={brief} titleId="search-title" fallback="Find candidates" subtitle="Find people, download their profiles and calculate matches automatically." onEdit={onEditBrief} compact action={brief ? (
         <button className="primary-action" disabled={search.isPending || downloadsBlocked || !keywords} type="button" onClick={() => {
           if (downloadsBlocked || !keywords) return
-          search.mutate({ session_id: session.id, brief_id: brief.id, keywords, location: brief.location || null, network: settings.network.length ? settings.network : null, current_company: settings.companyId || null })
+          search.mutate({ automatic_downloads: true, session_id: session.id, brief_id: brief.id, keywords, location: brief.location || null, network: settings.network.length ? settings.network : null, current_company: settings.companyId || null })
         }}>{search.isPending ? 'Queueing…' : 'Run search'}<CompassIcon name="search" size={16} /></button>
       ) : null} />
 
+      <p className="field-help">First-page results · up to 1,000 downloads per batch · {settings.network.length && settings.network.length < 3 ? NETWORKS.filter(item => settings.network.includes(item.value)).map(item => item.label).join(', ') : 'All networks'}. Scores use your role criteria.</p>
       <QueueStatus queue={queue} />
       {hasConflicts ? <div className="form-error brief-conflict" role="alert"><strong>Your role brief has conflicting keywords.</strong><span>A keyword is both included and excluded. Correct the brief before searching.</span>{onEditBrief ? <button className="quiet-action" onClick={onEditBrief} type="button">Edit role brief</button> : null}</div> : null}
 
@@ -177,8 +186,12 @@ export function SearchPage({
       ) : !keywords ? <p className="field-help">Add a role title or key filter to your brief before searching.</p> : null}
       {search.isError ? <div className="form-error" ref={errorRef} role="alert" tabIndex={-1}><strong>Search was not queued.</strong><span>{search.error.message}</span></div> : null}
       {!retrievalReady ? <p className="field-help download-help">Downloads are paused or offline. Check the connector and resume paused downloads above. Saved candidates remain available.</p> : null}
-      {search.data ? <p aria-live="polite" className="queued-confirmation">{search.data.queued.length === 1 ? '1 search queued.' : `${search.data.queued.length} searches queued.`} Results will appear automatically in your candidate list.</p> : null}
+      {search.data ? <p aria-live="polite" className="queued-confirmation">{search.data.queued.length === 1 ? '1 search queued.' : `${search.data.queued.length} searches queued.`} Profiles download one at a time; scores update as evidence arrives.</p> : null}
       {search.data?.failed.length ? <p className="form-error" role="alert">Could not queue searches for {search.data.failed.join(', ')}. Earlier locations are already queued.</p> : null}
+
+      {runCandidates.length ? <p className="field-help" aria-live="polite">{runCandidates.filter(candidate => candidate.stage !== 'discovered').length} profiles downloaded · {runCandidates.filter(candidate => candidate.active_job_id).length} waiting or downloading · {runCandidates.filter(candidate => candidate.retrieval_status === 'failed').length} failed</p> : null}
+      {poolRun && runs.data?.some(run => run.id === poolRun && !run.automatic_downloads && GATE_A_ELIGIBLE_STATUSES.has(run.status)) && runCandidates.some(candidate => candidate.stage === 'discovered' && !candidate.active_job_id) ? <div className="pool-download-action"><span>This search has profiles waiting to download.</span><button type="button" className="quiet-action" disabled={downloadsBlocked || downloadRun.isPending} onClick={() => downloadRun.mutate(poolRun)}>{downloadRun.isPending ? 'Queueing…' : 'Download remaining profiles'}</button></div> : null}
+      {downloadRun.isError ? <p className="form-error" role="alert">{downloadRun.error.message}</p> : null}
 
       <section aria-labelledby="pool-title" className="discovery-section candidate-pool">
         <div className="section-heading">
@@ -387,7 +400,7 @@ export function SearchPage({
                 </div></div>
                 {candidate.active_job_id ? (
                   <button className="primary-action" disabled type="button">
-                    Retrieval queued
+                    {queue.jobs.some(job => job.id === candidate.active_job_id && job.state === 'running') ? 'Downloading…' : 'Waiting to download'}
                   </button>
                 ) : candidate.retrieval_status === 'failed' ? (
                   <button
@@ -407,7 +420,7 @@ export function SearchPage({
                     onClick={() => enrich.mutate(candidate.id)}
                     type="button"
                   >
-                    Save profile
+                    Download profile
                   </button>
                 ) : (
                   <button

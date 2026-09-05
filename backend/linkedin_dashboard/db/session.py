@@ -48,6 +48,7 @@ from linkedin_dashboard.db.migrations import (
     v0027_m4_bounded_manifests,
     v0028_m4_text_storage,
     v0029_m4_claim_stage_identity,
+    v0030_search_downloads,
 )
 from linkedin_dashboard.db.models import Base
 from linkedin_dashboard.db.unicode_identity import (
@@ -86,6 +87,7 @@ _MIGRATION_MODULES = (
     v0027_m4_bounded_manifests,
     v0028_m4_text_storage,
     v0029_m4_claim_stage_identity,
+    v0030_search_downloads,
 )
 
 _SCHEMA_ACTIONS = {

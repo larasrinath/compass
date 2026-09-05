@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Check, Download, Plus, Search, UserRound, X } from 'lucide-react';
 import { ChapterShell, Figure, Callout, DownArrow, FictionalTag, StatePill } from './ui';
 import { FICTION } from './content';
@@ -14,11 +14,11 @@ const STAGES = [
   {
     label: 'Find candidates', where: 'Find candidates',
     detail: 'Run a search from the brief. Each location queues a separate request. Results enter one candidate pool; repeated profiles are combined while keeping a link to every search that found them.',
-    outcome: 'You have candidate references to inspect. Their full profile text has not been downloaded yet.',
+    outcome: 'Each new person is queued for a profile and experience download. Scores update as saved evidence arrives.',
   },
   {
-    label: 'Save the evidence', where: 'Save profile, then Review',
-    detail: 'Choose the people worth a closer look and request their profiles. Compass saves the original response before extracting details. Review the saved text, career history and available sections; request additional sections when something useful is missing.',
+    label: 'Download and score', where: 'Automatic downloads, then Review',
+    detail: 'Compass downloads up to 1,000 new profiles per search, one at a time. Existing downloads are reused. It saves each original response before extracting details and calculating a score. Review the saved text, career history and available sections; request additional sections when something useful is missing.',
     outcome: 'Saved profile evidence stays on this computer and remains available without the connector.',
   },
   {
@@ -39,7 +39,7 @@ export function Ch1() {
       chapterId="what-compass-does"
       kicker="The basics · 1 of 9"
       title="What Compass does"
-      intro="Compass is your local candidate research workspace. Describe a role, search LinkedIn, save selected profiles, and compare the evidence against your criteria. You choose what matters and inspect the sources behind the results."
+      intro="Compass is your local candidate research workspace. Describe a role, search LinkedIn, automatically download profiles, and compare the evidence against your criteria. You choose what matters and inspect the sources behind the results."
     >
       <section>
         <h2 className="font-display text-lg font-bold text-ink">From role brief to your decision</h2>
@@ -251,6 +251,13 @@ export function Ch3() {
   const [filter, setFilter] = useState<'all' | 'A' | 'B'>('all');
   const [nameQuery, setNameQuery] = useState('');
 
+  useEffect(() => {
+    const next = pool.find(person => !person.downloaded);
+    if (!next) return;
+    const timer = window.setTimeout(() => setPool(previous => previous.map(person => person.name === next.name ? { ...person, downloaded: true } : person)), 700);
+    return () => window.clearTimeout(timer);
+  }, [pool]);
+
   const addResults = (which: 'A' | 'B') => {
     const names = which === 'A' ? SEARCH_A : SEARCH_B;
     const label = which === 'A' ? FICTION.searches[0] : FICTION.searches[1];
@@ -281,10 +288,10 @@ export function Ch3() {
     <ChapterShell
       chapterId="discover-candidates"
       kicker="The basics · 3 of 9"
-      title="Discover candidates before downloading profiles"
-      intro="Searching LinkedIn uses your keywords and available preferences — location, network distance, a current-company identifier. Results enter a saved candidate pool: when the same person appears twice, Compass combines them into one record that keeps a link to every search that found them. Finding someone does not mean their profile is downloaded — you request that separately."
+      title="Find, download and score candidates"
+      intro="Searching LinkedIn uses your keywords and available preferences — location, network distance, a current-company identifier. Results enter a saved candidate pool: when the same person appears twice, Compass combines them into one record that keeps a link to every search that found them. Newly found people are queued automatically for a profile and experience download. Scores update as each download completes. Choose 3rd-degree and beyond or all networks to look beyond your direct and mutual connections."
     >
-      <Figure caption="Two fictional searches both return Robin Serrano. In the pool she becomes one candidate record with two search links — not a duplicate. “Found in search” and “Profile information saved” are different states, marked by different labels and icons, not just color. Add both searches to see the merge.">
+      <Figure caption="Two fictional searches both return Robin Serrano. In the pool she becomes one candidate record with two search links — not a duplicate. Add both searches to see the merge and the simulated automatic queue. The live connector returns only the first results page; a 1,000-profile download limit does not guarantee 1,000 search results.">
         <div className="grid gap-4 sm:grid-cols-2">
           <SearchCard which="A" names={SEARCH_A} added={addedA} addResults={addResults} />
           <SearchCard which="B" names={SEARCH_B} added={addedB} addResults={addResults} />
@@ -325,18 +332,11 @@ export function Ch3() {
                     {p.downloaded ? (
                       <StatePill tone="sage"><span className="inline-flex items-center gap-1"><Download className="h-3 w-3" /> Profile information saved</span></StatePill>
                     ) : (
-                      <StatePill tone="plain"><span className="inline-flex items-center gap-1"><Search className="h-3 w-3" /> Found in search only</span></StatePill>
+                      <StatePill tone="plain"><span className="inline-flex items-center gap-1"><Search className="h-3 w-3" /> Waiting to download</span></StatePill>
                     )}
                   </div>
                   <p className="mt-1 text-[11px] text-faint">Found in: {p.foundIn.join(' · ')}</p>
-                  {!p.downloaded && (
-                    <button
-                      onClick={() => setPool((prev) => prev.map((x) => (x.name === p.name ? { ...x, downloaded: true } : x)))}
-                      className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-xs font-medium text-accent transition-colors hover:border-accent"
-                    >
-                      <Download className="h-3 w-3" /> Request profile download
-                    </button>
-                  )}
+
                 </li>
               ))}
               {visible.length === 0 && <p className="mt-3 text-sm text-faint">Nobody matches that filter.</p>}

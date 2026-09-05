@@ -19,6 +19,7 @@ from linkedin_dashboard.db.models import (
     JobAttempt,
     ProfileFetch,
     RoleBrief,
+    SearchDownload,
     SearchRun,
     SectionError,
 )
@@ -38,8 +39,8 @@ from linkedin_dashboard.services.enrichment import profile_urn_routing_allowed
 if TYPE_CHECKING:
     from linkedin_dashboard.services.scoring_service import ScoringService
 
-MAX_SEARCHES_PER_SESSION = 40
-MAX_CANDIDATES_PER_SESSION = 200
+MAX_SEARCHES_PER_SESSION = 200
+MAX_CANDIDATES_PER_SESSION = 1000
 
 
 def current_company_error(value: str) -> str:
@@ -474,6 +475,7 @@ class SearchService:
         location: str | None,
         network: list[str] | None,
         current_company: str | None,
+        automatic_downloads: bool = False,
     ) -> tuple[str, str]:
         keywords = keywords.strip()
         location = location.strip() if location else None
@@ -547,6 +549,17 @@ class SearchService:
                     status="queued",
                 )
             )
+
+            if automatic_downloads:
+                session.flush()
+                session.add(
+                    SearchDownload(
+                        search_run_id=run_id,
+                        profile_limit=1000,
+                        requested_at=_now(),
+                        queued_count=0,
+                    )
+                )
 
         job_id = await self.queue.enqueue(
             session_id,
@@ -711,7 +724,11 @@ class SearchService:
                 .limit(1)
             )
             first_count += int(first_run == row.id)
+        download = session.get(SearchDownload, row.id)
         result: dict[str, Any] = {
+            "automatic_downloads": download is not None,
+            "downloads_dispatched": bool(download and download.dispatched_at),
+            "download_limit": download.profile_limit if download else 1000,
             "id": row.id,
             "job_id": row.job_id,
             "brief_id": row.brief_id,
