@@ -20,7 +20,7 @@ h1, h2, h3, .brand-title { font-family: var(--font-display); }
 .compass-setup-heading blockquote { margin: 20px 0 0; border-left: 2px solid #b0c0ba; padding-left: 16px; font-size: 14px; line-height: 1.7; color: var(--ink-soft); overflow-wrap: anywhere; }
 .compass-setup .form-error { margin-bottom: 20px; }
 .compass-criteria-form { display: block; }
-.criteria-sheet { display: flex; flex-direction: column; gap: 30px; background: white; border: 1px solid var(--line); border-radius: 16px; padding: 32px; }
+.criteria-sheet { --pill-height: 40px; display: flex; flex-direction: column; gap: 30px; background: white; border: 1px solid var(--line); border-radius: 16px; padding: 32px; }
 .criteria-sheet > * { min-width: 0; }
 .criteria-label, .criteria-sheet .field > span { display: block; font-size: 14px; line-height: 1.5; color: var(--ink); font-weight: 600; }
 .criteria-label { margin-bottom: 8px; }
@@ -36,7 +36,7 @@ h1, h2, h3, .brand-title { font-family: var(--font-display); }
 .criteria-sheet .field > input, .criteria-sheet .field > textarea { background: var(--canvas); border: 1px solid var(--line); border-radius: 12px; font-size: 14px; line-height: 1.5; padding: 10px 16px; width: 100%; min-width: 0; }
 .criteria-sheet .field > textarea { resize: vertical; }
 .criteria-chips { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
-.criteria-chip { --pill-height: 40px; display: inline-flex; align-items: center; height: var(--pill-height); max-width: 100%; min-width: 0; border: 1px solid var(--line); border-radius: 24px; background: #fff; padding-left: 12px; }
+.criteria-chip { display: inline-flex; align-items: center; height: var(--pill-height); max-width: 100%; min-width: 0; border: 1px solid var(--line); border-radius: 24px; background: #fff; padding-left: 12px; }
 .criteria-chip input { border: 0; border-radius: 0; background: transparent; min-height: 38px; padding: 6px 0; font-size: 14px; line-height: 1.5; min-width: 0; max-width: calc(100% - 36px); }
 .criteria-chip input:focus { outline: none; }
 .criteria-chip button { display: inline-flex; align-items: center; justify-content: center; min-width: 36px; min-height: 38px; padding: 0; background: transparent; color: var(--ink-faint); border: 0; border-radius: 20px; }
@@ -54,8 +54,8 @@ h1, h2, h3, .brand-title { font-family: var(--font-display); }
 .criteria-optional-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px 16px; align-items: start; }
 .criteria-optional-fields > .field { min-width: 0; }
 .criteria-optional-fields > .criteria-terms, .criteria-optional-fields > .brief-search-settings { grid-column: 1 / -1; }
-.experience-stepper { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 28px; padding: 0 4px; }
-.experience-stepper button { display: inline-flex; align-items: center; justify-content: center; background: none; border: 0; padding: 0; min-width: 42px; height: 42px; color: var(--ink-faint); border-radius: 50%; }
+.experience-stepper { display: inline-flex; align-items: center; height: var(--pill-height); border: 1px solid var(--line); border-radius: 28px; padding: 0 4px; }
+.experience-stepper button { display: inline-flex; align-items: center; justify-content: center; background: none; border: 0; padding: 0; min-width: 38px; height: calc(var(--pill-height) - 2px); min-height: 0; color: var(--ink-faint); border-radius: 50%; }
 .experience-stepper button:hover:not(:disabled) { background: var(--subtle); }
 .experience-stepper output { min-width: 76px; text-align: center; font-size: 14px; font-weight: 600; }
 .criteria-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: start; }

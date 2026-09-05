@@ -190,6 +190,7 @@ export function BriefPage({
           {!current ? <p className="criteria-hint">Add the criteria from your description that you want to check against profiles.</p> : null}
           <TermEditor errors={fieldErrors.target_titles} field="target_titles" label="Target titles" placeholder="Add a role title" onChange={editTerms(setTitles)} values={titles} />
           <KeyFilters skills={required} credentials={credentials} optionalSkills={optional} optionalSkillErrors={fieldErrors.optional_skills} onOptionalSkillsChange={editTerms(setOptional)} skillErrors={fieldErrors.required_skills} credentialErrors={fieldErrors.required_credentials} onSkillsChange={editTerms(setRequired)} onCredentialsChange={editTerms(setCredentials)} />
+          <TermEditor errors={fieldErrors.location} field="location" label="Locations" placeholder="Add a location" values={splitLocations(location).map(term => ({ term, aliases: [] }))} onChange={values => { setLocation(values.map(value => value.term).join('; ')); markDirty() }} />
           <div data-field-prefix="required_experience_months">
             <span className="criteria-label" id="experience-label">Minimum experience</span>
             <div className="experience-stepper" role="group" aria-labelledby="experience-label">
@@ -198,7 +199,6 @@ export function BriefPage({
               <button type="button" aria-label="Increase minimum experience by one year" onClick={() => { setRequiredExperienceMonths((Math.floor((requiredExperienceMonths ?? 0) / 12) + 1) * 12); markDirty() }}><CompassIcon name="plus" size={18} /></button>
             </div>
           </div>
-          <TermEditor errors={fieldErrors.location} field="location" label="Locations" placeholder="Add a location" values={splitLocations(location).map(term => ({ term, aliases: [] }))} onChange={values => { setLocation(values.map(value => value.term).join('; ')); markDirty() }} />
           <section className="criteria-optional" aria-labelledby="optional-title">
             <h2 id="optional-title">Optional preferences</h2>
             <div className="criteria-optional-fields">
