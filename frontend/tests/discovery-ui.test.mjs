@@ -8,6 +8,7 @@ const app = readFileSync(`${root}/src/App.tsx`, 'utf8')
 const brief = readFileSync(`${root}/src/pages/BriefPage.tsx`, 'utf8')
 const search = readFileSync(`${root}/src/pages/SearchPage.tsx`, 'utf8')
 const terms = readFileSync(`${root}/src/components/TermEditor.tsx`, 'utf8')
+const settings = readFileSync(`${root}/src/components/SearchSettingsEditor.tsx`, 'utf8')
 const css = readFileSync(`${root}/src/App.css`, 'utf8')
 
 test('brief and search are separate explicit actions', () => {
@@ -44,8 +45,8 @@ test('M2 does not expose selection, ranking, drafting or messaging actions', () 
 })
 
 test('forms and mobile layout retain accessible controls', () => {
-  assert.match(search, /<fieldset className="network-fieldset">/)
-  assert.match(search, /<legend>Network distance/)
+  assert.match(settings, /<fieldset className="network-fieldset">/)
+  assert.match(settings, /<legend>Network distance/)
   assert.match(search, /rel="noopener noreferrer"/)
   assert.match(terms, /aria-label=\{`Remove/)
   assert.match(terms, /event\.key === 'Enter'/)

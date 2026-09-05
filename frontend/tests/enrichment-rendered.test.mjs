@@ -488,3 +488,36 @@ test('drawer closes on cancel, locks page scrolling, and restores focus', async 
   assert.equal(dialog.isConnected, false)
   opener.remove()
 })
+
+
+test('Find candidates launches the saved setup without repeating its form', async () => {
+  let submitted = null
+  window.localStorage.setItem('compass:search-settings:launch-brief', JSON.stringify({ keywords: '"Platform engineer" Go', network: ['O'], companyId: '123' }))
+  globalThis.fetch = (input, init) => {
+    const path = String(input)
+    if (path.startsWith('/api/searches?') || path.startsWith('/api/candidate-pool?')) return json([])
+    if (path === '/api/searches') {
+      submitted = JSON.parse(init.body)
+      return json({ search_run_id: 'new-run', job_id: 'job' })
+    }
+    if (path === '/api/searches/new-run') return json(null)
+    throw new Error(`unexpected fetch ${path}`)
+  }
+  let edited = false
+  const user = userEvent.setup({ document: dom.window.document })
+  try {
+    render(wrapper(React.createElement(SearchPage, {
+      session: { id: 'session', phase_gates: {} }, brief: { id: 'launch-brief', location: 'Berlin', target_titles: [{ term: 'Engineer' }], required_skills: [], required_credentials: [], positive_keywords: [], negative_keywords: [] },
+      queue, onCandidateOpen() {}, onEditBrief() { edited = true },
+    })))
+    assert.equal(screen.queryByLabelText('Keywords'), null)
+    assert.equal(screen.queryByLabelText('Location preference'), null)
+    assert.equal(screen.queryByText('Network & company filters'), null)
+    assert.equal(submitted, null, 'opening results must not start a search')
+    await user.click(screen.getByRole('button', { name: 'Run search' }))
+    await waitFor(() => assert.notEqual(submitted, null))
+    assert.deepEqual(submitted, { session_id: 'session', brief_id: 'launch-brief', keywords: '"Platform engineer" Go', location: 'Berlin', network: ['O'], current_company: '123' })
+    await user.click(screen.getByRole('button', { name: 'Adjust criteria' }))
+    assert.equal(edited, true)
+  } finally { window.localStorage.removeItem('compass:search-settings:launch-brief') }
+})

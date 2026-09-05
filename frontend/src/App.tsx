@@ -258,6 +258,8 @@ function App() {
         ) : session.data ? (
           contentView === 'brief' ? (
             brief.isPending ? <p role="status">Loading your role brief…</p> : brief.isError ? <div className="form-error" role="alert">Your role brief could not be loaded. <button className="quiet-action" onClick={() => void brief.refetch()} type="button">Try again</button></div> : <BriefPage
+              retrievalReady={retrievalReady}
+              queueRevision={queue.revision}
               current={brief.data}
               key={brief.data?.id ?? 'new-brief'}
               session={session.data}

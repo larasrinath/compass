@@ -3,12 +3,10 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   acceptPhaseGateA,
   enrichCandidate,
-  getCompanyLookup,
   getSearch,
   listCandidatePool,
   listSearches,
   runSearch,
-  startCompanyLookup,
 } from '../api/client'
 import type {
   BriefRecord,
@@ -16,16 +14,11 @@ import type {
   SearchRunStatus,
   SessionRecord,
 } from '../api/client'
+import { defaultSearchKeywords, readSearchSettings } from '../searchSettings'
 import { ResultHeader } from '../components/ResultHeader'
 import { CompassIcon } from '../components/CompassIcon'
 import { QueueStatus } from '../components/QueueStatus'
 import type { ReturnTypeOfJobEvents } from '../hooks/useJobEvents'
-
-const NETWORKS = [
-  { value: 'F', label: '1st-degree connections' },
-  { value: 'S', label: '2nd-degree connections' },
-  { value: 'O', label: '3rd-degree and beyond' },
-] as const
 
 const GATE_A_ELIGIBLE_STATUSES = new Set<SearchRunStatus>([
   'ok',
@@ -84,21 +77,8 @@ export function SearchPage({
   const enrichmentErrorRef = useRef<HTMLDivElement>(null)
   const [poolRun, setPoolRun] = useState<string | null>(initialRunId)
   const [nameFilter, setNameFilter] = useState('')
-  const [keywords, setKeywords] = useState(() =>
-    brief
-      ? [
-          ...brief.target_titles.map((item) => item.term),
-          ...brief.positive_keywords,
-        ]
-          .slice(0, 4)
-          .join(' ')
-      : '',
-  )
-  const [location, setLocation] = useState(() => brief?.location ?? '')
-  const [network, setNetwork] = useState<string[]>(['F', 'S'])
-  const [companyId, setCompanyId] = useState('')
-  const [companySlug, setCompanySlug] = useState('')
-  const [lookupId, setLookupId] = useState<string | null>(null)
+  const settings = readSearchSettings(brief?.id)
+  const keywords = settings.keywords.trim() || defaultSearchKeywords(brief)
   const [selectedRun, setSelectedRun] = useState<string | null>(initialRunId)
   const [gateNote, setGateNote] = useState('')
 
@@ -115,11 +95,6 @@ export function SearchPage({
     queryFn: () => getSearch(selectedRun!),
     enabled: Boolean(selectedRun),
   })
-  const lookup = useQuery({
-    queryKey: ['company-lookup', lookupId],
-    queryFn: () => getCompanyLookup(lookupId!),
-    enabled: Boolean(lookupId),
-  })
 
   useEffect(() => {
     if (queue.revision === 0) return
@@ -128,10 +103,7 @@ export function SearchPage({
     if (selectedRun) {
       void client.invalidateQueries({ queryKey: ['search', selectedRun] })
     }
-    if (lookupId) {
-      void client.invalidateQueries({ queryKey: ['company-lookup', lookupId] })
-    }
-  }, [client, lookupId, queue.revision, selectedRun, session.id])
+  }, [client, queue.revision, selectedRun, session.id])
 
   const search = useMutation({
     mutationFn: runSearch,
@@ -140,11 +112,6 @@ export function SearchPage({
       setPoolRun(result.search_run_id)
       await client.invalidateQueries({ queryKey: ['searches', session.id] })
     },
-    onError: () => requestAnimationFrame(() => errorRef.current?.focus()),
-  })
-  const company = useMutation({
-    mutationFn: () => startCompanyLookup(session.id, companySlug),
-    onSuccess: (result) => setLookupId(result.lookup_id),
     onError: () => requestAnimationFrame(() => errorRef.current?.focus()),
   })
   const enrich = useMutation({
@@ -183,160 +150,25 @@ export function SearchPage({
 
   return (
     <section aria-labelledby="search-title" className="workspace-page search-workspace">
-      <ResultHeader brief={brief} titleId="search-title" fallback="Find candidates" subtitle="Search LinkedIn, then save profiles you want to review." onEdit={onEditBrief} />
+      <ResultHeader brief={brief} titleId="search-title" fallback="Find candidates" subtitle="Find people using your saved role brief, then save profiles to review." onEdit={onEditBrief} />
 
       <QueueStatus queue={queue} />
       {hasConflicts ? <div className="form-error brief-conflict" role="alert"><strong>Your role brief has conflicting keywords.</strong><span>A keyword is both included and excluded. Correct the brief before searching.</span>{onEditBrief ? <button className="quiet-action" onClick={onEditBrief} type="button">Edit role brief</button> : null}</div> : null}
 
       {!brief ? (
-        <div className="empty-card" role="status">
-          <h2>Save a valid role brief first.</h2>
-          <p>Search uses only the latest saved version, never unsaved edits.</p>
-        </div>
+        <div className="empty-card" role="status"><h2>Save a role brief first.</h2><p>Set up your search criteria on the Role brief page.</p>{onEditBrief ? <button className="quiet-action" type="button" onClick={onEditBrief}>Set up role brief</button> : null}</div>
       ) : (
-        <div className="search-layout">
-          <form
-            className="search-form panel"
-            onSubmit={(event) => {
-              event.preventDefault()
-              if (downloadsBlocked) return
-              search.mutate({
-                session_id: session.id,
-                brief_id: brief.id,
-                keywords,
-                location: location || null,
-                network: network.length ? network : null,
-                current_company: companyId || null,
-              })
-            }}
-          >
-            <div className="section-heading">
-              <div>
-                <p className="eyebrow">Search parameters</p>
-                <h2>Search LinkedIn</h2>
-              </div>
-              <span className="saved-brief-chip">Brief v{brief.version}</span>
-            </div>
-            {(search.isError || company.isError) && (
-              <div className="form-error" ref={errorRef} role="alert" tabIndex={-1}>
-                <strong>The queued action was not created.</strong>
-                <span>{search.error?.message ?? company.error?.message}</span>
-              </div>
-            )}
-            <label className="field field-wide">
-              <span>Keywords</span>
-              <input
-                onChange={(event) => setKeywords(event.target.value)}
-                required
-                value={keywords}
-              />
-            </label>
-            <label className="field">
-              <span>Location preference</span>
-              <input
-                onChange={(event) => setLocation(event.target.value)}
-                value={location}
-              />
-              <small className="field-help">Passed to LinkedIn; results may include other locations. Verify location in the downloaded profile.</small>
-            </label>
-            <details className="advanced-search">
-              <summary>Network & company filters</summary>
-            <label className="field">
-              <span>Company ID (optional)</span>
-              <input
-                inputMode="numeric"
-                onChange={(event) => setCompanyId(event.target.value)}
-                pattern="[0-9]*"
-                placeholder="For example 1115"
-                value={companyId}
-              />
-            </label>
-            <fieldset className="network-fieldset">
-              <legend>Network distance from your account</legend>
-              {NETWORKS.map((option) => (
-                <label key={option.value}>
-                  <input
-                    checked={network.includes(option.value)}
-                    onChange={(event) =>
-                      setNetwork((current) =>
-                        event.target.checked
-                          ? [...current, option.value]
-                          : current.filter((item) => item !== option.value),
-                      )
-                    }
-                    type="checkbox"
-                  />
-                  <span>
-                    {option.label}
-                  </span>
-                </label>
-              ))}
-              <p className="field-help">
-                Search your connections or expand your reach. Network distance never affects match scores.
-              </p>
-            </fieldset>
-            </details>
-            <button className="primary-action" disabled={search.isPending || downloadsBlocked} type="submit">
-              {search.isPending ? 'Queueing…' : 'Run search'}
-            </button>
-            {!retrievalReady ? <p className="field-help download-help">Downloads are paused or offline. Check the connector and resume paused downloads above. Saved candidates remain available.</p> : null}
-            {search.data ? (
-              <p aria-live="polite" className="queued-confirmation">
-                Search queued. Results will appear automatically in your candidate list.
-              </p>
-            ) : null}
-          </form>
-
-          <details className="company-disclosure panel">
-          <summary>Filter by a company</summary>
-          <form
-            className="lookup-card"
-            onSubmit={(event) => {
-              event.preventDefault()
-              if (downloadsBlocked) return
-              company.mutate()
-            }}
-          >
-            <p className="eyebrow">Optional company lookup</p>
-            <h2>Find a company ID</h2>
-            <p>
-              Enter the company name from its LinkedIn URL, then use the returned ID in your search.
-            </p>
-            <label className="field">
-              <span>Company URL name</span>
-              <input
-                onChange={(event) => setCompanySlug(event.target.value)}
-                placeholder="microsoft"
-                required
-                value={companySlug}
-              />
-            </label>
-            <button disabled={company.isPending || downloadsBlocked} type="submit">
-              {company.isPending ? 'Queueing…' : 'Look up numeric ID'}
-            </button>
-            {lookup.data ? (
-              <div aria-live="polite" className="lookup-result">
-                {lookup.data.candidates.length ? (
-                  lookup.data.candidates.map((item) => (
-                    <button
-                      key={item.urn_id}
-                      onClick={() => setCompanyId(item.urn_id)}
-                      type="button"
-                    >
-                      Use {item.urn_id} · {item.text}
-                    </button>
-                  ))
-                ) : (
-                  <p>{lookup.data.note ?? `Lookup ${lookup.data.status}.`}</p>
-                )}
-              </div>
-            ) : lookupId ? (
-              <p aria-live="polite">Company lookup queued. Results will appear automatically.</p>
-            ) : null}
-          </form>
-          </details>
+        <div className="search-launch">
+          <p>{keywords ? 'Ready to search with your saved criteria.' : 'Add a role title or key filter to your brief before searching.'}</p>
+          <button className="primary-action" disabled={search.isPending || downloadsBlocked || !keywords} type="button" onClick={() => {
+            if (downloadsBlocked || !keywords) return
+            search.mutate({ session_id: session.id, brief_id: brief.id, keywords, location: brief.location || null, network: settings.network.length ? settings.network : null, current_company: settings.companyId || null })
+          }}>{search.isPending ? 'Queueing…' : 'Run search'}<CompassIcon name="search" size={16} /></button>
         </div>
       )}
+      {search.isError ? <div className="form-error" ref={errorRef} role="alert" tabIndex={-1}><strong>Search was not queued.</strong><span>{search.error.message}</span></div> : null}
+      {!retrievalReady ? <p className="field-help download-help">Downloads are paused or offline. Check the connector and resume paused downloads above. Saved candidates remain available.</p> : null}
+      {search.data ? <p aria-live="polite" className="queued-confirmation">Search queued. Results will appear automatically in your candidate list.</p> : null}
 
       <section aria-labelledby="pool-title" className="discovery-section candidate-pool">
         <div className="section-heading">

@@ -42,7 +42,7 @@ test.after(async () => {
   cleanup()
   dom.window.close()
 })
-test.afterEach(() => cleanup())
+test.afterEach(() => { cleanup(); window.localStorage.clear() })
 
 const session = { id: 'session' }
 
@@ -97,9 +97,13 @@ test('create adds skills and credentials together and saves minimum experience i
   // Changing type must not prematurely add the pending credential as a skill.
   await user.selectOptions(within(filters).getByLabelText('Filter type'), 'credential')
   await user.click(within(filters).getByRole('button', { name: 'Add filter' }))
+  await user.type(screen.getByLabelText('Search keywords — optional'), '"Platform engineer" Go')
+  await user.type(screen.getByLabelText('Company ID — optional'), '123')
+  await user.click(screen.getByRole('checkbox', { name: '3rd-degree and beyond' }))
   await user.click(screen.getByRole('button', { name: 'Save brief' }))
 
   await waitFor(() => assert.notEqual(request, null))
+  assert.deepEqual(JSON.parse(window.localStorage.getItem('compass:search-settings:brief-1')), { keywords: '"Platform engineer" Go', network: ['F', 'S', 'O'], companyId: '123' })
   assert.equal(request.method, 'POST')
   assert.equal(request.body.required_experience_months, 24)
   assert.deepEqual(request.body.required_skills, [{ term: 'Go', aliases: [] }])

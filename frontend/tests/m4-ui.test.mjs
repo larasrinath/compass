@@ -14,6 +14,8 @@ const evidence = read('components/EvidencePanel.tsx')
 const copy = read('components/scoringCopy.ts')
 const weights = read('components/WeightsEditor.tsx')
 const detail = read('pages/CandidateDetailPage.tsx')
+const settings = read('components/SearchSettingsEditor.tsx')
+const settingsStorage = read('searchSettings.ts')
 const routing = read('routing.ts')
 const plan = readFileSync(`${projectRoot}/PROJECT_PLAN.md`, 'utf8')
 
@@ -70,9 +72,9 @@ test('Gate A structurally separates candidate pool from ranking', () => {
 })
 
 test('M4 keeps context outside scoring and sending outside the UI', () => {
-  assert.match(search, /\['F', 'S'\]/)
-  assert.match(search, /Network distance never affects match scores/)
-  assert.match(search, /never affects match scores/)
+  assert.match(settingsStorage, /\['F', 'S'\]/)
+  assert.match(settings, /Network distance never affects match scores/)
+  assert.match(settings, /never affects match scores/)
   assert.match(weights, /Search only — not a scoring criterion\./)
   assert.doesNotMatch(weights, /'S-7':\s*[1-9]/)
   assert.doesNotMatch(`${candidates}${evidence}${weights}`, /send now|draft message/i)

@@ -9,6 +9,8 @@ import type {
 import { ApiError, saveBrief } from '../api/client'
 import { CompassIcon } from '../components/CompassIcon'
 import { TermEditor } from '../components/TermEditor'
+import { defaultSearchKeywords, readSearchSettings, saveSearchSettings } from '../searchSettings'
+import { SearchSettingsEditor } from '../components/SearchSettingsEditor'
 import { KeyFilters } from '../components/KeyFilters'
 import { focusBriefError } from './briefErrorFocus'
 
@@ -57,11 +59,17 @@ export function BriefPage({
   session,
   current,
   onSaved,
+  retrievalReady = true,
+  queueRevision = 0,
 }: {
   session: SessionRecord
   current: BriefRecord | null | undefined
   onSaved?: () => void
+  retrievalReady?: boolean
+  queueRevision?: number
 }) {
+  const [searchSettings, setSearchSettings] = useState(() => readSearchSettings(current?.id))
+  const [settingsError, setSettingsError] = useState('')
   const queryClient = useQueryClient()
   const alertRef = useRef<HTMLDivElement>(null)
   const initial = useMemo(
@@ -106,7 +114,10 @@ export function BriefPage({
 
   const mutation = useMutation({
     mutationFn: (payload: BriefInput) => saveBrief(payload, Boolean(current)),
-    onSuccess: async () => {
+    onSuccess: async (saved) => {
+      try { saveSearchSettings(saved.id, searchSettings) }
+      catch { setSettingsError('Your brief was saved, but search options could not be stored. Enable browser storage and save again.'); return }
+      setSettingsError('')
       setDirty(false)
       await queryClient.invalidateQueries({ queryKey: ['brief', session.id] })
       onSaved?.()
@@ -165,6 +176,7 @@ export function BriefPage({
         <h1 id="brief-title" tabIndex={-1}>Here’s what I’ll look for</h1>
         <blockquote>{description}</blockquote>
       </header>
+      {settingsError ? <p className="form-error" role="alert">{settingsError}</p> : null}
       {mutation.isError ? <div className="form-error" ref={alertRef} role="alert" tabIndex={-1}><strong>Brief was not saved.</strong><span>{mutation.error.message}</span></div> : null}
       {conflicts.length > 0 ? <div className="form-error" role="alert"><strong>Some keywords appear in both lists.</strong><span>Remove {conflicts.map(term => `“${term}”`).join(', ')} from either Positive keywords or Exclusions before saving.</span></div> : null}
       <form className="compass-criteria-form" onChange={markDirty} onSubmit={event => {
@@ -196,6 +208,7 @@ export function BriefPage({
               <TermEditor errors={fieldErrors.optional_skills} field="optional_skills" label="Nice-to-have skills" placeholder="Add a skill" onChange={editTerms(setOptional)} values={optional} />
               <label className="field" data-field-prefix="positive_keywords"><span>Positive keywords</span><textarea value={positive} onChange={event => setPositive(event.target.value)} rows={2} placeholder="One per line, or separated by commas" />{fieldErrors.positive_keywords?.map(error => <span className="field-error" key={error} role="alert">{error}</span>)}</label>
               <label className="field" data-field-prefix="negative_keywords"><span>Exclusions / negative keywords</span><textarea value={negative} onChange={event => setNegative(event.target.value)} rows={2} placeholder="One per line, or separated by commas" />{fieldErrors.negative_keywords?.map(error => <span className="field-error" key={error} role="alert">{error}</span>)}</label>
+              <SearchSettingsEditor sessionId={session.id} value={searchSettings} onChange={value => { setSearchSettings(value); markDirty() }} suggestedKeywords={defaultSearchKeywords({ target_titles: titles, required_skills: required, required_credentials: credentials, positive_keywords: parseKeywords(positive) })} retrievalReady={retrievalReady} queueRevision={queueRevision} />
             </div>
           </section>
         </div>

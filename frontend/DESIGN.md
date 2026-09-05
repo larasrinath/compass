@@ -12,6 +12,10 @@ not just its colors.
   below a divider. Skills and credentials share one key-filter section. Minimum
   experience uses a year stepper; alternate names are preserved without exposing
   separate editing controls.
+- Search setup belongs to the role brief. Find candidates has one explicit Run
+  search action above the results, without another keywords/location form. Optional
+  keyword overrides, network, and company filters are stored per brief version in
+  this browser; the role brief remains the source of the search location.
 - Results use two columns of equal-width cards, a role summary above them, and
   Review/Compare actions at the bottom of each card. Cards become one column on phones.
 - Candidate review opens in a 576px right-side modal drawer, preserving the

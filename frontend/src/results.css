@@ -85,3 +85,8 @@
   .search-workspace .candidate-card > button { width: auto; }
 }
 .results-toolbar .comparison-instructions > .quiet-action { width: auto; min-height: 36px; font-size: 12px; padding: 7px 12px; color: var(--accent); }
+
+.search-launch { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 0 0 24px; border-bottom: 1px solid var(--line); }
+.search-launch > p { margin: 0; color: var(--ink-faint); font: 400 14px/1.6 var(--font-body); }
+.search-launch > .primary-action { display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; }
+@media (max-width: 600px) { .search-launch { flex-wrap: wrap; } }
