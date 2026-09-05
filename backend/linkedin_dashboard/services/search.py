@@ -41,9 +41,6 @@ from linkedin_dashboard.services.enrichment import profile_urn_routing_allowed
 if TYPE_CHECKING:
     from linkedin_dashboard.services.scoring_service import ScoringService
 
-MAX_SEARCHES_PER_SESSION = 200
-MAX_CANDIDATES_PER_SESSION = 1000
-
 
 def current_company_error(value: str) -> str:
     """Mirror the server's actionable filter error without calling it."""
@@ -283,16 +280,7 @@ class DiscoveryResultProcessor:
                         ref_rows[id(item)] = row
                     position += 1
 
-            candidate_count = int(
-                session.scalar(
-                    select(func.count(Candidate.id)).where(
-                        Candidate.session_id == run.session_id
-                    )
-                )
-                or 0
-            )
             invalid_errors: list[tuple[int, str]] = []
-            candidate_limit_skipped = False
             for ref_position, item in enumerate(search_references):
                 if not isinstance(item, dict) or item.get("kind") != "person":
                     continue
@@ -312,9 +300,6 @@ class DiscoveryResultProcessor:
                     )
                 )
                 if candidate is None:
-                    if candidate_count >= MAX_CANDIDATES_PER_SESSION:
-                        candidate_limit_skipped = True
-                        continue
                     candidate = Candidate(
                         id=str(uuid4()),
                         session_id=run.session_id,
@@ -332,7 +317,6 @@ class DiscoveryResultProcessor:
                     )
                     session.add(candidate)
                     session.flush()
-                    candidate_count += 1
                 affected_candidates.add(candidate.id)
                 reference_row = ref_rows.get(id(item))
                 if reference_row is None:
@@ -383,22 +367,6 @@ class DiscoveryResultProcessor:
                         section_name="search_results",
                         error_type="invalid_reference",
                         error_message=f"Reference {ref_position + 1}: {message}",
-                        extra={},
-                    )
-                )
-            if candidate_limit_skipped:
-                session.add(
-                    SectionError(
-                        id=str(uuid4()),
-                        candidate_id=None,
-                        search_run_id=run.id,
-                        fetch_id=None,
-                        section_name="search_results",
-                        error_type="candidate_limit",
-                        error_message=(
-                            "Session candidate limit "
-                            f"({MAX_CANDIDATES_PER_SESSION}) reached"
-                        ),
                         extra={},
                     )
                 )
@@ -505,36 +473,6 @@ class SearchService:
             brief = session.get(RoleBrief, brief_id)
             if brief is None or brief.session_id != session_id or brief.superseded_at:
                 raise LookupError("a current saved role brief is required")
-            run_count = int(
-                session.scalar(
-                    select(func.count(SearchRun.id)).where(
-                        SearchRun.session_id == session_id,
-                        ~select(SearchPage.run_id)
-                        .where(
-                            SearchPage.run_id == SearchRun.id,
-                            SearchPage.page_number > 1,
-                        )
-                        .exists(),
-                    )
-                )
-                or 0
-            )
-            if run_count >= MAX_SEARCHES_PER_SESSION:
-                raise ValueError(
-                    f"session search limit ({MAX_SEARCHES_PER_SESSION}) reached"
-                )
-            candidate_count = int(
-                session.scalar(
-                    select(func.count(Candidate.id)).where(
-                        Candidate.session_id == session_id
-                    )
-                )
-                or 0
-            )
-            if candidate_count >= MAX_CANDIDATES_PER_SESSION:
-                raise ValueError(
-                    f"session candidate limit ({MAX_CANDIDATES_PER_SESSION}) reached"
-                )
 
         run_id = str(uuid4())
 
@@ -593,6 +531,7 @@ class SearchService:
                 **({"page": 1} if paginate else {}),
             },
             related_factory=add_run,
+            authorize_search_page=paginate,
         )
         append_audit_event(
             self.database,
@@ -798,6 +737,11 @@ class SearchService:
                         page.processed_at is not None for page in page_runs
                     ),
                     "people_found": len(source_ids),
+                    "downloads_queued": session.scalar(
+                        select(
+                            func.coalesce(func.sum(SearchDownload.queued_count), 0)
+                        ).where(SearchDownload.search_run_id.in_(page_ids))
+                    ),
                     "profile_limit": pagination.profile_limit,
                     "stop_reason": pagination.stop_reason,
                 }

@@ -2,8 +2,8 @@
 
 Running a search authorizes one initial profile-and-experience download for each
 newly discovered person in that search, up to 1,000. It does not authorize extra
-sections or repeat retrievals of already requested profiles. The original first-page
-connector limitation still applies to discovery.
+sections or repeat retrievals of already requested profiles. The bundled connector patch follows additional result pages. The 1,000-request
+allowance is shared by all pages of one search batch, not by the entire workspace.
 
 ## Durable flow
 

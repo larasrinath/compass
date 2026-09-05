@@ -4,7 +4,13 @@ import time
 
 import pytest
 from fastapi.testclient import TestClient
-from linkedin_dashboard.db.models import Candidate, Job, QueueControl, SearchPagination
+from linkedin_dashboard.db.models import (
+    Candidate,
+    DashboardSession,
+    Job,
+    QueueControl,
+    SearchPagination,
+)
 from linkedin_dashboard.main import create_app
 from linkedin_dashboard.queue.jobs import SearchPeoplePayload
 from sqlalchemy import select
@@ -120,7 +126,7 @@ def test_stop_before_first_page_prevents_all_navigation(tmp_path):
         assert executor.calls == []
 
 
-def test_discovery_passes_first_page_and_honors_1000_cap(tmp_path):
+def test_existing_thousand_candidates_do_not_block_new_searches(tmp_path):
     executor = PagedExecutor(
         {
             1: [f"person-{i}" for i in range(15)],
@@ -142,16 +148,31 @@ def test_discovery_passes_first_page_and_honors_1000_cap(tmp_path):
                         stage="discovered",
                         retrieval_status="pending",
                     )
-                    for i in range(980)
+                    for i in range(1000)
                 ]
             )
         root = client.post("/api/searches", json={**payload, "paginate": True}).json()[
             "search_run_id"
         ]
-        assert completed(app, root) == "profile_limit"
-        assert [p.page for p in executor.calls] == [1, 2]
+        assert completed(app, root) == "exhausted"
+        assert [p.page for p in executor.calls] == [1, 2, 3]
         with app.state.database.sessions() as db:
-            assert len(list(db.scalars(select(Candidate.id)))) == 1000
+            assert len(list(db.scalars(select(Candidate.id)))) == 1025
+        executor.pages = {1: ["another-new-person"]}
+        with app.state.database.sessions.begin() as db:
+            workspace = db.get(DashboardSession, payload["session_id"])
+            workspace.nav_budget = workspace.nav_used
+        again = client.post(
+            "/api/searches",
+            json={**payload, "paginate": True, "automatic_downloads": True},
+        ).json()["search_run_id"]
+        assert completed(app, again) == "exhausted"
+        with app.state.database.sessions() as db:
+            assert len(list(db.scalars(select(Candidate.id)))) == 1026
+            saved = db.scalar(
+                select(Candidate).where(Candidate.username == "another-new-person")
+            )
+            assert saved.stage == "stage1"
 
 
 def test_restart_continues_next_page_without_replaying_first(tmp_path):
@@ -227,3 +248,75 @@ def test_failed_later_page_keeps_earlier_people_and_stops(tmp_path, failure):
             "/api/candidate-pool", params={"session_id": payload["session_id"]}
         ).json()
         assert [p["username"] for p in pool] == ["ada"]
+
+
+def test_batch_counts_new_downloads_across_pages_and_reuses_saved_profiles(tmp_path):
+    from linkedin_dashboard.db.models import SearchDownload, SearchPage
+    from test_automatic_downloads import settled
+
+    executor = PagedExecutor({None: ["known"]})
+    app = create_app(settings(tmp_path / "per-batch.db"), queue_executor=executor)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        payload = setup(client)
+        old = client.post(
+            "/api/searches", json={**payload, "automatic_downloads": True}
+        ).json()["search_run_id"]
+        settled(app, old, 1)
+        executor.pages = {
+            1: ["known", "one", "two"],
+            2: ["two", "three", "four"],
+            3: ["five"],
+        }
+        with app.state.database.sessions.begin() as db:
+            control = db.get(QueueControl, 1)
+            control.state = "paused"
+            control.pause_reason = "operator"
+            control.operator_resume_required = True
+        root = client.post(
+            "/api/searches",
+            json={**payload, "paginate": True, "automatic_downloads": True},
+        ).json()["search_run_id"]
+        with app.state.database.sessions.begin() as db:
+            group = db.get(SearchPagination, root)
+            assert group.profile_limit == 1000
+            # Exercise a page crossing the batch boundary with a small fixture.
+            group.profile_limit = 3
+        client.post("/api/queue/resume")
+        assert completed(app, root) == "download_limit"
+        with app.state.database.sessions() as db:
+            counts = list(
+                db.scalars(
+                    select(SearchDownload.queued_count)
+                    .join(SearchPage, SearchPage.run_id == SearchDownload.search_run_id)
+                    .where(SearchPage.root_run_id == root)
+                    .order_by(SearchPage.page_number)
+                )
+            )
+            assert counts == [2, 1]
+        calls = [p for p in executor.calls if not isinstance(p, SearchPeoplePayload)]
+        assert len(calls) == 4  # one old request plus three new requests
+        assert sum(p.linkedin_username == "known" for p in calls) == 1
+        detail = client.get("/api/searches/" + root).json()
+        assert detail["pagination"]["downloads_queued"] == 3
+        assert detail["pagination"]["people_found"] == 5
+        # A fresh batch gets a fresh allowance, finding the leftover and later pages.
+        again = client.post(
+            "/api/searches",
+            json={**payload, "paginate": True, "automatic_downloads": True},
+        ).json()["search_run_id"]
+        assert completed(app, again) == "exhausted"
+        calls = [p for p in executor.calls if not isinstance(p, SearchPeoplePayload)]
+        assert sorted(p.linkedin_username for p in calls) == [
+            "five",
+            "four",
+            "known",
+            "one",
+            "three",
+            "two",
+        ]
+        assert (
+            client.get("/api/searches/" + again).json()["pagination"][
+                "downloads_queued"
+            ]
+            == 2
+        )

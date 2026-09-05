@@ -8,7 +8,6 @@ from sqlalchemy import func, select
 
 from linkedin_dashboard.db.models import (
     AuditLog,
-    Candidate,
     CandidateSource,
     Job,
     SearchDownload,
@@ -19,7 +18,7 @@ from linkedin_dashboard.db.models import (
 from linkedin_dashboard.db.session import Database
 from linkedin_dashboard.queue.jobs import JobKind
 from linkedin_dashboard.queue.worker import DurableJobQueue
-from linkedin_dashboard.services.search import MAX_CANDIDATES_PER_SESSION
+from linkedin_dashboard.services.downloads import remaining_batch_downloads
 
 
 class PaginationChanged(RuntimeError):
@@ -95,21 +94,12 @@ class SearchPaginationService:
                     )
                 )
             )
-            found = {candidate for candidate, _ in memberships}
             previous = {
                 candidate for candidate, source in memberships if source != last.run_id
             }
             current = {
                 candidate for candidate, source in memberships if source == last.run_id
             }
-            pool_count = (
-                db.scalar(
-                    select(func.count(Candidate.id)).where(
-                        Candidate.session_id == root.session_id
-                    )
-                )
-                or 0
-            )
             reason = None
             if job.state in {"cancelled", "interrupted"}:
                 reason = "stopped"
@@ -117,11 +107,8 @@ class SearchPaginationService:
                 reason = "rate_limited"
             elif run.status not in {"ok", "partial"}:
                 reason = "failed"
-            elif (
-                len(found) >= group.profile_limit
-                or pool_count >= MAX_CANDIDATES_PER_SESSION
-            ):
-                reason = "profile_limit"
+            elif remaining_batch_downloads(db, root_id, group.profile_limit) == 0:
+                reason = "download_limit"
             elif not current:
                 reason = "exhausted"
             elif not current.difference(previous):

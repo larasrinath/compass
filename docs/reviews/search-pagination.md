@@ -10,15 +10,18 @@ bundled under `integrations/linkedin-mcp-server` and required for pagination.
 - One people-search page is one durable job and one reserved navigation.
 - Newly discovered profiles queue overview and experience downloads. Those jobs
   run before the next page; each completed profile is scored with saved evidence.
-- At most 1,000 candidate identities are retained per session. Repeated identities
-  reuse existing profile requests; failed requests are not retried automatically.
+- Each logical search authorizes up to 1,000 new profile-download requests across
+  all its result pages. Saved candidates and search history have no lifetime count
+  cap. Existing requests are reused and do not consume the new batch allowance;
+  failed requests are not retried automatically.
 - Discovery ends on an empty page, repeated identities with no new people, an
-  incomplete/failed/rate-limited result, 1,000 candidates, or 1,000 page requests.
+  incomplete/failed/rate-limited result, 1,000 new download requests, or 1,000 page requests.
   LinkedIn can return fewer results or pages than requested.
 - **Stop discovery** records a durable stop and cancels queued search pages.
   An in-flight page and already queued profile downloads can finish.
 - Existing delay, single-worker execution and rate-limit cooldowns remain active.
-  Page admission expands the navigation budget only for the next explicit read.
+  Page admission, including the first page of a new batch, expands the navigation
+  budget only for the next explicit read.
   This is a batch ceiling, not 1,000 concurrent requests.
 
 Migration 0031 stores a logical root and page memberships. Admission of the next
@@ -33,7 +36,10 @@ all pages of a selected search. Old searches are never paginated on upgrade.
 - Mocked multi-page search → download → scoring passes for F, S, O and unrestricted
   searches, preserving company/location filters and deduplicating repeated people.
 - Empty and repeated-page termination, operator stop, restart without replay,
-  all-page catch-up and the exact 1,000-candidate boundary are covered.
+  all-page catch-up and a library growing from 1,000 to 1,026 candidates are covered.
+- A multi-page batch test verifies that saved profiles do not consume the allowance,
+  a boundary page queues only its remaining allowance, and a later batch can download
+  the leftovers. Admission rechecks the shared allowance inside its transaction.
 - The existing 1,000-profile batch test verifies 1,000 durable jobs and exactly
   2,000 reserved profile reads, with no concurrent execution.
 - Connector: 28 focused tests, including FastMCP dispatch and strict page validation.
@@ -48,3 +54,10 @@ all pages of a selected search. Old searches are never paginated on upgrade.
 To discover outside existing connections, choose 3rd-degree and beyond (O), or
 an unrestricted network search. Only profiles LinkedIn exposes to the signed-in
 account can be discovered. Network distance is a discovery filter, not a score.
+
+## Existing workspaces
+
+No candidate or search record is removed by this change. Old searches that already
+stopped remain stopped; run a new search to discover and download more people.
+The previous workspace-wide limits of 1,000 candidates and 200 searches are removed.
+The 30-profile display pagination remains unchanged.
