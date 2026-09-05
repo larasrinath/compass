@@ -56,3 +56,7 @@ otherwise silently override the intended face, weight, or color.
 
 User preference: controls must not gain focus rings, glow, or a colored chip
 border on focus. Preserve the caret and focus behavior without adding a halo.
+
+Expandable sections use the base Compass down/up chevron, muted regular text,
+and an 8px icon-to-label gap. Hide native triangle markers; preserve native
+details/summary interaction and the always-visible optional brief preferences.
