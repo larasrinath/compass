@@ -152,3 +152,8 @@
   .pool-score::before, .pool-confidence::before { content: attr(data-label); display: block; margin-bottom: 5px; color: var(--ink-faint); font-size: 11px; }
   .pool-row-action { grid-column: 2 / -1; }
 }
+
+.candidate-pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.candidate-pagination > span { color: var(--ink-faint); font-size: 13px; white-space: nowrap; }
+.candidate-pagination .quiet-action { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 40px; padding: 8px 12px; font-size: 13px; }
+.candidate-pagination button:disabled { opacity: .4; cursor: default; }

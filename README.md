@@ -58,7 +58,8 @@ See [download behavior and verification](docs/reviews/automatic-downloads.md) fo
    one person at a time, and scoring updates after each download. Repeated results
    reuse saved profiles. Keep the current **Cards** view, or switch to
    **Ranked list** after reviewing the list to see rank, score, and confidence.
-   Ranked results use highest-score-first order, with unscored profiles last.
+   Both views show at most 30 profiles per page. Filtering searches the full pool;
+   ranked results keep highest-score-first order across pages, with unscored profiles last.
 3. **Check the candidate list** — inspect names, LinkedIn links, and repeated
    source searches. Add a note under **What did you check?** and choose
    **Confirm list & show ranking**. You stay in Find candidates, now in Ranked list.

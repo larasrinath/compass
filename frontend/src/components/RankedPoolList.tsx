@@ -15,7 +15,9 @@ function rankPool(candidates: CandidateRecord[], scores: RankedCandidateRecord[]
   return rows
 }
 
-export function RankedPoolList({ candidates, scores, nameFilter, onOpen, onSave, downloadsBlocked, savingId }: {
+export function RankedPoolList({ candidates, scores, nameFilter, onOpen, onSave, downloadsBlocked, savingId, offset = 0, limit = 30 }: {
+  offset?: number
+  limit?: number
   candidates: CandidateRecord[]
   scores: RankedCandidateRecord[]
   nameFilter: string
@@ -26,7 +28,7 @@ export function RankedPoolList({ candidates, scores, nameFilter, onOpen, onSave,
 }) {
   const rows = rankPool(candidates, scores).filter(({ candidate }) =>
     `${candidate.display_name ?? ''} ${candidate.username}`.toLowerCase().includes(nameFilter.toLowerCase()),
-  )
+  ).slice(offset, offset + limit)
   return <div className="ranked-pool-list">
     <table aria-label="Candidates ranked by score">
       <thead><tr><th scope="col">Rank</th><th scope="col">Candidate</th><th scope="col">Score</th><th scope="col">Confidence</th><th scope="col"><span className="sr-only">Action</span></th></tr></thead>
