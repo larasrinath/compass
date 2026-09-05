@@ -26,7 +26,6 @@ export function SearchSettingsEditor({ sessionId, value, onChange, retrievalRead
         <input type="checkbox" checked={value.network.includes(option.value)} onChange={event => onChange({ ...value, network: event.target.checked ? [...value.network, option.value] : value.network.filter(item => item !== option.value) })} />
         <span>{option.label}</span>
       </label>)}</div>
-      <p className="criteria-hint">Leave all unchecked to search any network. Network distance never affects match scores.</p>
     </fieldset>
     <div className="brief-company-fields">
     <label className="field"><span>Company ID</span><input inputMode="numeric" pattern="[0-9]*" placeholder="Any company" value={value.companyId} onChange={event => onChange({ ...value, companyId: event.target.value })} /></label>

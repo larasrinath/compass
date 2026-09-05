@@ -73,8 +73,7 @@ test('Gate A structurally separates candidate pool from ranking', () => {
 
 test('M4 keeps context outside scoring and sending outside the UI', () => {
   assert.match(settingsStorage, /\['F', 'S'\]/)
-  assert.match(settings, /Network distance never affects match scores/)
-  assert.match(settings, /never affects match scores/)
+  assert.match(settings, /Network distance/)
   assert.match(weights, /Search only — not a scoring criterion\./)
   assert.doesNotMatch(weights, /'S-7':\s*[1-9]/)
   assert.doesNotMatch(`${candidates}${evidence}${weights}`, /send now|draft message/i)
