@@ -204,9 +204,9 @@ export function BriefPage({
           <section className="criteria-optional" aria-labelledby="optional-title">
             <h2 id="optional-title">Optional preferences</h2>
             <div className="criteria-optional-fields">
+              <SearchSettingsEditor sessionId={session.id} value={searchSettings} onChange={value => { setSearchSettings(value); markDirty() }} retrievalReady={retrievalReady} queueRevision={queueRevision} />
               <label className="field" data-field-prefix="positive_keywords"><span>Positive keywords</span><textarea value={positive} onChange={event => setPositive(event.target.value)} rows={2} placeholder="One per line, or separated by commas" />{fieldErrors.positive_keywords?.map(error => <span className="field-error" key={error} role="alert">{error}</span>)}</label>
               <label className="field" data-field-prefix="negative_keywords"><span>Exclusions / negative keywords</span><textarea value={negative} onChange={event => setNegative(event.target.value)} rows={2} placeholder="One per line, or separated by commas" />{fieldErrors.negative_keywords?.map(error => <span className="field-error" key={error} role="alert">{error}</span>)}</label>
-              <SearchSettingsEditor sessionId={session.id} value={searchSettings} onChange={value => { setSearchSettings(value); markDirty() }} retrievalReady={retrievalReady} queueRevision={queueRevision} />
             </div>
           </section>
         </div>
