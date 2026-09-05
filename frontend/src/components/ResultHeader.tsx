@@ -14,7 +14,8 @@ export function ResultHeader({ brief, titleId, fallback, subtitle, onEdit, compa
 }) {
   const title = brief?.target_titles?.map(item => item.term).join(' · ') || brief?.required_credentials?.map(item => item.term).join(' · ') || fallback
   const criteria = brief ? [...(brief.target_titles ?? []).map(item => item.term), ...(brief.required_skills ?? []).map(item => item.term),
-    ...(brief.required_experience_months == null ? [] : [`${brief.required_experience_months} months minimum`]),
+    ...(brief.optional_skills ?? []).map(item => `${item.term} · nice-to-have`),
+    ...(brief.required_experience_months == null ? [] : [`${Number((brief.required_experience_months / 12).toFixed(2))}+ years`]),
     ...splitLocations(brief.location), ...(brief.industries ?? []).map(item => item.term), ...(brief.required_credentials ?? []).map(item => item.term)] : []
   return <header className={`results-header${compact ? ' results-header-compact' : ''}`}>
     {onEdit && !compact ? <button type="button" className="compass-back" onClick={onEdit}><CompassIcon name="back" size={16} /> Role brief</button> : null}

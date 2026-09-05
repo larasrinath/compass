@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   createSession,
@@ -28,6 +28,8 @@ import './results.css'
 import './saved-searches.css'
 import './candidate-profile.css'
 import './controls.css'
+
+const LearnPage = lazy(() => import('./learn/LearnPage'))
 
 function StatusDot({ healthy }: { healthy: boolean }) {
   return (
@@ -133,7 +135,7 @@ function App() {
 
   useEffect(() => {
     document.title =
-      view === 'brief'
+      view === 'learn' ? 'How it works · Compass' : view === 'brief'
         ? 'Role brief · Compass'
         : view === 'candidate'
           ? 'Candidate detail · Compass'
@@ -201,10 +203,13 @@ function App() {
         >
           <span className="nav-icon" aria-hidden="true"><CompassIcon name="compare" /></span><span className="nav-label">Compare matches</span>
         </button>
+        <button aria-current={view === 'learn' ? 'page' : undefined} onClick={() => navigate({ view: 'learn', candidateId: null, chapter: null })} type="button">
+          <span className="nav-icon" aria-hidden="true"><CompassIcon name="brief" /></span><span className="nav-label">How it works</span>
+        </button>
       </nav>
 
       <main id="main-content">
-        {!mcp.data?.reachable ? <div className="connection-strip" role="status">
+        {view !== 'learn' && !mcp.data?.reachable ? <div className="connection-strip" role="status">
           <div>
             <strong>{mcp.isFetching ? 'Checking the LinkedIn connector…' : mcp.data?.reachable ? 'LinkedIn connector connected' : 'LinkedIn downloads are offline'}</strong>
             <span>{mcp.data?.reachable ? 'Search and download profiles on demand. Your work is saved locally.' : 'Saved candidates, evidence, and local scoring remain available. Start the LinkedIn connector, then check again.'}</span>
@@ -213,12 +218,16 @@ function App() {
             {mcp.isFetching ? 'Checking…' : 'Check connection'}
           </button>
         </div> : null}
-        {health.isError ? (
+        {view !== 'learn' && health.isError ? (
           <div className="blocking-banner" role="alert">
             Dashboard API unavailable. Your entered work stays in this browser.
           </div>
         ) : null}
-        {session.isError ? (
+        {route.view === 'learn' ? (
+          <Suspense fallback={<p role="status">Opening the guide…</p>}>
+            <LearnPage chapter={route.chapter} onNavigate={(next) => navigate(next.name === 'home' ? { view: 'brief', candidateId: null } : { view: 'learn', candidateId: null, chapter: next.chapter ?? null })} />
+          </Suspense>
+        ) : session.isError ? (
           <div className="form-error" role="alert">Your saved workspace could not be loaded. <button className="quiet-action" onClick={() => void session.refetch()} type="button">Try again</button></div>
         ) : !session.isPending && !session.data ? (
           <section className="first-run" aria-labelledby="first-run-title">

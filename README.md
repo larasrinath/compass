@@ -1,247 +1,207 @@
-# LinkedIn Dashboard
+# Compass · LinkedIn Dashboard
 
-A local, single-operator sourcing workspace that consumes
-[`linkedin-mcp-server`](https://github.com/stickerdaniel/linkedin-mcp-server)
-over loopback streamable HTTP. The MCP server remains an unchanged sibling
-service; this project never imports it, reads its browser profile, or manages
-its process.
+A local workspace for finding candidates, saving profile evidence, and comparing
+people against a role brief. Compass uses a separately running
+[linkedin-mcp-server](https://github.com/stickerdaniel/linkedin-mcp-server) for
+on-demand retrieval. Saved profiles, evidence review, and rescoring remain usable
+when the connector is offline.
 
-## Compass design base
+![Compass candidate results, showing evidence summaries and review actions](docs/screenshots/candidate-results.png)
 
-The live dashboard now adopts the supplied Compass prototype's warm palette,
-light sidebar and rounded controls. It uses the existing local API and saved
-profiles; no demo candidate data or simulated searches are included.
+*Screenshots show the actual app with fictional documentation data. They do not
+contain real candidate records or represent live search results.*
 
-- **Saved searches** opens a persisted run and filters the candidate pool by its
-  source links. The Results from selector can switch back to all saved searches.
-- **Compare matches** lets you select up to three candidates for a side-by-side
-  criteria table. Opening a profile and returning preserves the selection during
-  the current page session. Reloading the browser clears that temporary selection.
-- Comparison cells show the existing exact-text/alias matcher results, original
-  snippets when available, and explicit unknown states. They do not establish
-  credential validity, expiry or independent verification.
+## Working with Compass
 
-The original prototype remains a separate demo preview on port 5177. The connected
-application remains on port 5173. Frontend verification: 55 tests, lint and build
-passed; saved-run filtering, the three-profile limit, profile-return navigation,
-and narrow-screen overflow were checked in the browser.
+1. **Role brief** — describe the role, then enter skills and keywords, credentials,
+   nice-to-haves, locations, and minimum experience. Target titles, industries,
+   network, and company preferences are in the optional section. The description
+   is not automatically parsed; review the criteria before continuing.
+2. **Find candidates** — run a search from the saved brief. Each location queues
+   a separate search. Finding a person adds a reference; **Save profile** retrieves
+   their profile text for review. Keep the current **Cards** view, or switch to
+   **Ranked list** after reviewing the list to see rank, score, and confidence.
+   Ranked results use highest-score-first order, with unscored profiles last.
+3. **Review the list** — inspect names and duplicates, add a review note, and
+   confirm **Review list to compare** to unlock ranking.
+4. **Compare matches** — inspect evidence summaries, select two or three people,
+   then choose **View comparison**. **Review** opens the candidate drawer with the
+   score and signal breakdown first, followed by profile information and sources.
+5. **Saved searches** — return to a previous run. Each card previews up to three
+   saved profiles; **Open results** opens its full candidate pool.
+6. **How it works** — explore interactive examples and guided tours. Exercises
+   use fictional data and never modify saved work or send connector requests.
 
-## Daily use
+Matching is based on retrieved text and supported aliases. A match is not
+independent verification, and missing evidence is not proof that someone lacks a
+qualification. **Review score evidence** opens the source checks; opening a source
+alone does not mark it verified. Network and company search context do not affect
+match scores.
 
-Open **http://127.0.0.1:5173/search** while the local services are running.
-Start the independent LinkedIn connector in its own terminal:
+### Role brief
+
+Repeated locations, consistent pills, and always-visible optional preferences.
+
+![Role brief with skills, multiple locations, minimum experience, and optional preferences](docs/screenshots/role-brief.png)
+
+### Ranked list
+
+An additional view in Find candidates, with the same saved-search and name filters.
+Ranks stay stable while filtering by name and are scoped to the selected search.
+
+![Find candidates in ranked list view, showing rank, score, confidence, and review actions](docs/screenshots/ranked-list.png)
+
+### Candidate review
+
+The score, uncertainty range, confidence, and individual signal results appear
+at the top of the review drawer. Detailed verification is available below.
+
+![Candidate review drawer with score and signal breakdown](docs/screenshots/candidate-review.png)
+
+<details>
+<summary>Saved searches and the interactive guide</summary>
+
+### Saved searches
+
+![Saved search with a three-person preview and Open results action](docs/screenshots/saved-searches.png)
+
+### How it works
+
+![Interactive guide organized into basics, working with results, and guided tours](docs/screenshots/how-it-works.png)
+
+</details>
+
+## Run locally
+
+Requires Python **3.12.4–3.14**, [uv](https://docs.astral.sh/uv/), npm, and a Node.js
+version supported by Vite: **20.19+ on the 20.x line, or 22.12+**. Browser checks
+and screenshot capture use installed Google Chrome.
+
+Install dashboard dependencies once from this repository:
 
 ```bash
-cd linkedin-mcp-server
+uv sync --group dev
+cd frontend
+npm ci
+```
+
+Run the three services in separate terminals. The connector is a separate checkout
+with its own installation and authentication; Compass does not start it or access
+its browser profile.
+
+**1. Connector — from the `linkedin-mcp-server` checkout**
+
+```bash
 uv run -m linkedin_mcp_server --transport streamable-http --host 127.0.0.1 --port 8000 --no-auto-import
 ```
 
-From this dashboard directory, start the API in a second terminal:
+**2. Dashboard API — from this repository root**
 
 ```bash
 MCP_URL=http://127.0.0.1:8000/mcp uv run -m linkedin_dashboard
 ```
 
-Start the interface in a third terminal:
+**3. Frontend — from this repository root**
 
 ```bash
 cd frontend
 npm run dev
 ```
 
-Use **Role brief → Find candidates → Review list to compare → Compare matches**.
-Download profile evidence before comparing. Confirm the candidate-list review
-with your own note; opening a profile does not confirm a review. Saved profiles,
-role edits, and scoring work offline. New searches and downloads require the
-connector; the connection strip provides an explicit reconnect check.
+Open [Compass](http://127.0.0.1:5173/brief). The API defaults to
+`http://127.0.0.1:8787`; the frontend proxies `/api` to it. Start the API through
+`uv run -m linkedin_dashboard` so its loopback checks remain in effect.
 
-Location is a search preference passed to LinkedIn, not a guaranteed geographic
-filter. Verify the location in the downloaded profile. Keep required skills and
-experience specific in your role brief to make comparison useful.
+The connector is needed for new searches and profile retrieval. To review already
+saved work offline, keep the dashboard API and frontend running; use **Check
+connection** when reconnecting. Downloads of already saved text are local.
 
-The September 2026 refresh adds a compact responsive layout, saved-candidate
-filtering, clearer queue recovery, conflicting-keyword validation, duplicate
-search-result handling, and corrected profile-header/grouped-employment parsing.
-Raw source text and previous scores remain stored for review.
+### Configuration and local data
 
-The implementation follows [PROJECT_PLAN.md](PROJECT_PLAN.md). M0 establishes
-the loopback-only application shell, protected SQLite schema, append-only audit
-log, and response privacy boundary. The M1 client boundary uses a fresh
-FastMCP 3.4.4 streamable-HTTP session for each explicit operation, preserves
-the full protocol response, and exposes typed wrappers for people search,
-person/company profile retrieval, and the future manual-send transport. No API
-or service invokes that send wrapper in M1, and `SEND_ENABLED` remains false.
-The dashboard never starts, stops, imports, or authenticates to the sibling
-server. M1's durable queue admits only the three read tools and `tools/list`,
-claims at most one job across the database, writes each received envelope before
-domain parsing, and marks orphaned work `interrupted` rather than replaying it.
-The active worker holds an owner-only `flock` sidecar beside the database for
-its full lifetime and fences every write with its durable claim token, so a
-standby process cannot reclaim a live call as crash residue.
-Timeout and browser-busy read jobs may make one explicit second attempt; no
-message operation is admitted to this queue. Rate-limited profile work is held
-until operator resume and continues only from the first missing section.
-Decoded MCP envelopes are rejected above 16 MiB; this post-decode guard does
-not cap the FastMCP SDK's transient transport-parsing memory for that one call.
+Copy [.env.example](.env.example) to `.env` only to override defaults. `HOST`,
+`FRONTEND_HOST`, and the host in `MCP_URL` must be numeric loopback literals, such as
+`127.0.0.1` or `::1`; `localhost` and non-loopback addresses are rejected.
+Vite derives its listener and API proxy from the same validated settings.
 
-M2 adds a versioned role brief and an unscored discovery workspace. Skills,
-titles, and industries retain per-term aliases; protected sourcing criteria are
-rejected before a new brief version is written. Each explicit search becomes
-one durable `search_people` job, stores its complete MCP envelope before
-parsing, and appends only `kind="person"` references to the session candidate
-pool. Usernames are normalized and case-insensitively deduplicated while every
-producing search remains linked as provenance. The UI shows the shared
-15-reference cap, raw search text, reference-kind counts, sanitized partial
-errors, and the serialized queue through SSE. Company URN lookup is also a
-queued read. Discovery does not retrieve profiles, rank candidates, or expose
-shortlist, drafting, or message controls.
+The database defaults to `~/.linkedin-dashboard/session.db` with owner-only file
+permissions (`0600`) inside an owner-only directory (`0700`). A custom `DB_PATH`
+parent must already have safe ownership and permissions. Saved source sections and
+score history retain provenance; evidence spans use Unicode code-point offsets.
 
-M3 adds operator-triggered, staged profile enrichment. Stage 1 retrieves the
-implicit main profile and experience; Stage 2 accepts at most three additional
-sections in the MCP server's canonical order. Every call remains a durable,
-read-only queue job. Its complete committed tool response is stored before any
-section, reference, error, or parsed field is projected. A rate-limited result
-is never replayed: the operator may explicitly resume only the missing suffix,
-with the parent and continuation fetches linked in immutable history. Unknown
-sections fail loudly and are not retried.
-Admission reserves each job's complete navigation cost in the same transaction
-as the job and fetch history; batch admission is all-or-nothing. Claiming moves
-that reservation into `nav_used`. An interrupted delay refunds it only when the
-durable attempt phase proves the executor was never entered; once entered, the
-charge is retained conservatively even if no response arrives.
-
-The six local parsers cover main profile, experience, skills, education,
-projects, and certifications. Parsed values are exact substrings of an
-immutable raw section and carry zero-based, half-open Unicode code-point spans
-plus the exact section-history identifier. `NullProvider` is the only LLM
-provider through M5; proposed spans from any future provider must pass exact
-substring verification before becoming evidence. The candidate detail view
-shows parsed fields beside the source sections and highlights verified spans.
-For provenance responses, sensitive diagnostic runs are replaced by one BMP
-mask character per original code point so preceding offsets remain stable. If
-redaction overlaps evidence, the API withholds the value and offsets and the UI
-shows a neutral “Provenance withheld” state. The frontend slices spans with
-`Array.from`, preserving astral-character alignment, and renders source text
-only as React text nodes.
-
-Profile URNs are write-once routing hints, never scoring inputs. An exact,
-fetch-bound immutable observation must be committed before the compare-and-set
-that accepts the first non-null URN. Routing requires that accepted observation
-and no divergent observation; the column alone never authorizes routing. A
-later conflict or independently verified returned-profile URL
-mismatch permanently quarantines routing while preserving an immutable
-observation and audit record. Database attestations bind every projected
-section, error, reference, and parsed span to the exact committed MCP envelope.
-The eight-profile parser corpus under `tests/fixtures/profile_parsing` is
-explicitly synthetic representative data. It provides a 16-field regression
-denominator, not real-profile acceptance evidence. The operator's 2026-09-03
-decision to reduce the live minimum from eight to two profiles while retaining
-a ≥90% manually annotated threshold is preserved as history but is superseded.
-For this one-time local activity, the final M3 gate now requires all three
-authorized real profiles and passes only when strictly >85% of manually
-annotated experience blocks have both title and company correct. Exactly 85%
-does not pass. The eight-profile synthetic corpus is unchanged.
-
-Sanitized live QA on build
-`e3240dc42f0158b6f5a7dfb9cbe0cb2eaf42eaf3` passed 2/2 Stage-1 queue jobs,
-stored 4/4 required sections verbatim, passed URN-if-present handling 2/2, and
-recorded zero forbidden send, search, or draft operations. The evidence
-artifact SHA-256 is
-`284ee3635b3c2c28a67fe77350ab9c3e6dc9ed92f6ee76f7d0db925e5add5b61`;
-profile names and raw data are intentionally omitted. The manually annotated
-both-correct results of 70.5882% on exact build
-`e3240dc42f0158b6f5a7dfb9cbe0cb2eaf42eaf3` and 88.2353% on build `944cd55`
-were historical failures under the then-current ≥90% threshold. The separately
-reported 89.81% was parser-output completeness, not manually annotated
-accuracy.
-
-**M3 was accepted by the operator on 2026-09-03.** Sanitized live acceptance on
-exact tested build `28c2b8af922a74ffd53eccc6336a999103dfaa6a` covered all three
-authorized real profiles. Manual annotation found 19/21 experience blocks
-both-correct for title and company (90.4762%), passing the strictly >85% gate.
-Exactly one Stage-1 queue job ran per profile (3/3), verbatim `main_profile`
-plus `experience` storage passed 3/3, and raw-before-parse ordering,
-provenance, URN-if-present handling, and exact-span checks passed. Forbidden
-operation counts were: search=0, connection=0, Stage 2=0, draft=0, dry-run=0,
-message=0, and send=0. The raw acceptance database
-and artifacts were purged after recording the sanitized result and evidence
-digest. The evidence artifact SHA-256 is
-`12c0a5f0ed92fa7e8ad71c7ce21aa25b15b095336f00f15a46a6a1c084b9e6ce`;
-profile identities and raw data remain omitted.
-
-The two non-both-correct blocks in that historical sample were grouped-parent
-layouts. M4 comparison and evidence review are now implemented. The September
-2026 refresh adds regression coverage and fixes for grouped employers with
-employment-type headers; it does not claim a new accuracy rate for the historical
-21-block sample. See the current delivery verification in PROJECT_PLAN.md.
-
-## Prerequisites
-
-- Python 3.12.4–3.14 and [uv](https://docs.astral.sh/uv/)
-- Node.js and npm
-- A separately running `linkedin-mcp-server` when MCP-backed milestones begin
-
-## Development
-
-```bash
-uv sync --group dev
-uv run -m linkedin_dashboard
-```
-
-In a second terminal:
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-The API listens on `http://127.0.0.1:8787`; Vite listens on
-`http://127.0.0.1:5173`. Vite derives its listener from the validated
-`FRONTEND_HOST` and `FRONTEND_PORT` settings and its `/api` proxy from the
-validated backend `HOST` and `PORT` settings. IPv6 authorities are bracketed.
-Both processes reject non-loopback host configuration. Start the API only
-through `uv run -m linkedin_dashboard`; there is intentionally no importable
-module-level or zero-argument ASGI application that can be bound with an unsafe
-Uvicorn CLI override. The API also verifies its real listening socket against
-the configured host and port before initializing its database. Queue state is
-available at `/api/jobs` and `/api/queue/status`; the frontend can consume
-sanitized job/progress events from `/api/events`. A probe at `/api/mcp/status`
-is itself serialized through the queue and returns only tool names and a safe
-error class, never the configured MCP URL.
-All three network settings (`HOST`, `FRONTEND_HOST`, and the host in `MCP_URL`)
-must use numeric loopback literals. Hostnames such as `localhost` are rejected
-so startup and runtime checks never depend on DNS; equivalent IPv6 loopback
-spellings are canonicalized to `::1`. Scoped and IPv4-mapped IPv6 addresses are
-rejected consistently by the API and Vite processes.
+Current delivery covers discovery, retrieval, local analysis, and comparison.
+Shortlisting, drafting, and sending are outside this delivery. `SEND_ENABLED`
+remains false and `LLM_PROVIDER` is `null`; matching uses the local implementation.
 
 ## Verification
+
+From the repository root:
 
 ```bash
 uv run ruff check .
 uv run ruff format --check .
 uv run ty check
 uv run pytest
-cd frontend && npm test && npm run lint && npm run build
 ```
 
-Copy `.env.example` to `.env` only when overriding defaults. The application
-database is created with mode `0600` at `~/.linkedin-dashboard/session.db`.
-Its parent directory is created with mode `0700`. A custom existing `DB_PATH`
-parent must already be owned by the current user and grant no group or world
-permissions; startup rejects an unsafe parent instead of changing its mode.
-Initialization holds and verifies the database inode before SQLite performs a
-write-capable operation, and schema migrations plus their version records are
-committed atomically. Database and SQLite sidecar files with more than one hard
-link are rejected before permission or SQLite operations and are revalidated,
-along with the configured path and held inode, on every pooled connection
-checkout. Recursive SQLite triggers are enforced so replacement statements
-cannot bypass append-only audit and send-history guards. Send-attempt history
-can be removed only as part of a full-session purge. The database also enforces
-that `SENDING` is the only unfinished state and every outcome state is finished,
-that confirmations and attempts agree with their referenced draft, and that a
-referenced draft can be changed only by creating a new version. The final API
-privacy boundary redacts filesystem diagnostics, credential-bearing URLs,
-sensitive query parameters and labeled credentials from bodies, streams and
-response headers.
-Through M5, `LLM_PROVIDER` is locked to the literal value `null`.
+From `frontend/`:
+
+```bash
+npm test
+npm run lint
+npm run build
+npm run test:e2e
+```
+
+Browser tests run on isolated port **5194** with mocked APIs. Frontend tests also
+bind temporary loopback listeners, so a restrictive sandbox may need to permit
+those local test processes.
+
+The [4 September review](docs/reviews/2026-09-04-project-review.md) recorded
+**1,403 backend tests passed, 3 skipped; 85 frontend tests passed; 15 browser tests
+passed**, plus build, lint, and type checks. It distinguishes the full backend
+baseline from the affected checks rerun after fixes.
+
+### Known limitations
+
+- Navigating away from the brief discards unsaved edits. Save with **Continue to
+  search** before leaving.
+- A first credential-only brief requires a positive credential weight. Its setup
+  currently involves saving another criterion first and configuring scoring.
+- LinkedIn location is a search preference, not a guaranteed geographic filter.
+  Check the location in the downloaded profile.
+- Comparison selection is temporary: it survives opening and closing a profile,
+  but resets on browser reload.
+
+## Documentation
+
+| Document | Purpose |
+| --- | --- |
+| [Frontend guide](frontend/README.md) | Routes, components, API contracts, local guide, and browser checks |
+| [Design system](frontend/DESIGN.md) | Compass layout, typography, controls, and interaction rules |
+| [Project review](docs/reviews/2026-09-04-project-review.md) | Findings, fixes, verification, and remaining issues |
+| [Implementation history](docs/implementation-history.md) | Queue, parsing, privacy, persistence, and dated acceptance records |
+| [Delivery plan](PROJECT_PLAN.md) | Current scope and retained historical roadmap |
+| [Screenshot guide](docs/screenshots/README.md) | Reproduce the fictional documentation screenshots |
+
+Refresh the README screenshots from `frontend/` with `npm run docs:screenshots`.
+The script renders the working UI on isolated port **5195**, intercepts all API
+requests, blocks external requests, and shuts down its temporary browser and server.
+
+## Acknowledgments
+
+Thank you to [Daniel Sticker (@stickerdaniel)](https://github.com/stickerdaniel),
+the original author of
+[linkedin-mcp-server](https://github.com/stickerdaniel/linkedin-mcp-server), and
+its contributors for building the open-source LinkedIn connector that makes
+Compass possible. Compass connects to that separately running MCP server for
+search and profile retrieval.
+
+## License
+
+Compass is licensed under the [MIT License](LICENSE).
+
+The upstream LinkedIn MCP server retains its own
+[Apache-2.0 license](https://github.com/stickerdaniel/linkedin-mcp-server/blob/main/LICENSE).
+Bundled fonts retain their SIL Open Font Licenses:
+[Figtree](frontend/public/fonts/figtree-OFL.txt) and
+[Plus Jakarta Sans](frontend/public/fonts/plusjakartasans-OFL.txt).

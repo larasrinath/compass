@@ -5,7 +5,7 @@ body { background: var(--canvas); }
 .app-shell { --sidebar-width: 236px; grid-template-columns: var(--sidebar-width) minmax(0,1fr); grid-template-rows: 98px 1fr auto; min-height: 100vh; }
 .topbar { grid-column: 1; grid-row: 1; padding: 28px 22px; background: #fff; border-right: 1px solid var(--line); border-bottom: 0; gap: 10px; }
 .brand-mark { background: transparent; color: var(--accent); box-shadow: none; width: 28px; height: 30px; font-size: 30px; }
-.brand-title { color: var(--ink); font-size: 18px; font-weight: 800; letter-spacing: -.025em; margin: 0; }
+.brand-title { color: var(--ink); font-size: 26px; line-height: 1.2; font-weight: 800; letter-spacing: -.025em; margin: 0; }
 .topbar .eyebrow { display: none; }
 .topbar-status { position: fixed; bottom: 22px; left: 16px; width: 203px; display: flex; flex-wrap: wrap; gap: 12px; margin: 0; padding: 16px; background: #fff; border: 1px solid var(--line); border-radius: 18px; z-index: 5; font-size: 12px; }
 .topbar-status .local-badge { display: none; }

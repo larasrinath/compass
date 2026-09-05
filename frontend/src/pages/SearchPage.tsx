@@ -5,6 +5,7 @@ import {
   enrichCandidate,
   getSearch,
   listCandidatePool,
+  listCandidates,
   listSearches,
 } from '../api/client'
 import type {
@@ -18,6 +19,7 @@ import { defaultSearchKeywords, readSearchSettings } from '../searchSettings'
 import { ResultHeader } from '../components/ResultHeader'
 import { CompassIcon } from '../components/CompassIcon'
 import { QueueStatus } from '../components/QueueStatus'
+import { RankedPoolList } from '../components/RankedPoolList'
 import type { ReturnTypeOfJobEvents } from '../hooks/useJobEvents'
 
 const GATE_A_ELIGIBLE_STATUSES = new Set<SearchRunStatus>([
@@ -77,6 +79,8 @@ export function SearchPage({
   const enrichmentErrorRef = useRef<HTMLDivElement>(null)
   const [poolRun, setPoolRun] = useState<string | null>(initialRunId)
   const [nameFilter, setNameFilter] = useState('')
+  const [poolView, setPoolView] = useState<'cards' | 'ranked'>('cards')
+  const rankingUnlocked = Boolean(session.phase_gates?.A)
   const settings = readSearchSettings(brief?.id)
   const keywords = defaultSearchKeywords(brief)
   const [selectedRun, setSelectedRun] = useState<string | null>(initialRunId)
@@ -90,6 +94,11 @@ export function SearchPage({
     queryKey: ['candidates', session.id],
     queryFn: () => listCandidatePool(session.id),
   })
+  const ranking = useQuery({
+    queryKey: ['ranked-candidates', session.id, 'pool', brief?.id, brief?.version],
+    queryFn: () => listCandidates({ session_id: session.id, sort: 'score_desc' }),
+    enabled: rankingUnlocked && poolView === 'ranked',
+  })
   const detail = useQuery({
     queryKey: ['search', selectedRun],
     queryFn: () => getSearch(selectedRun!),
@@ -100,6 +109,7 @@ export function SearchPage({
     if (queue.revision === 0) return
     void client.invalidateQueries({ queryKey: ['searches', session.id] })
     void client.invalidateQueries({ queryKey: ['candidates', session.id] })
+    void client.invalidateQueries({ queryKey: ['ranked-candidates', session.id] })
     if (selectedRun) {
       void client.invalidateQueries({ queryKey: ['search', selectedRun] })
     }
@@ -140,7 +150,8 @@ export function SearchPage({
   const positiveSet = new Set((brief?.positive_keywords ?? []).map((term) => term.normalize('NFKC').toLowerCase()))
   const hasConflicts = (brief?.negative_keywords ?? []).some((term) => positiveSet.has(term.normalize('NFKC').toLowerCase()))
   const downloadsBlocked = !retrievalReady || hasConflicts
-  const filteredCandidates = (candidates.data ?? []).filter((candidate) => (!poolRun || candidate.sources.some(source => source.search_run_id === poolRun)) && `${candidate.display_name} ${candidate.username}`.toLowerCase().includes(nameFilter.toLowerCase()))
+  const runCandidates = (candidates.data ?? []).filter(candidate => !poolRun || candidate.sources.some(source => source.search_run_id === poolRun))
+  const filteredCandidates = runCandidates.filter(candidate => `${candidate.display_name ?? ''} ${candidate.username}`.toLowerCase().includes(nameFilter.toLowerCase()))
 
   function queuePosition(jobId: string): string | null {
     const job = queue.jobs.find((item) => item.id === jobId)
@@ -175,7 +186,14 @@ export function SearchPage({
             <p className="eyebrow">Saved candidates</p>
             <h2 id="pool-title">Candidate pool</h2>
           </div>
-          <div className="pool-heading-meta"><span>{filteredCandidates.length} shown · first-seen order</span><div className="pool-heading-actions">{session.phase_gates?.A ? <><span className="pool-review-status">List reviewed</span>{onGateAChanged ? <button className="quiet-action" type="button" onClick={onGateAChanged}>Compare candidates <CompassIcon name="compare" size={16} /></button> : null}</> : gateAEligible ? <a href="#pool-review">Review list to compare →</a> : null}</div></div>
+          <div className="pool-heading-meta"><span>{filteredCandidates.length} shown · {poolView === 'ranked' && rankingUnlocked ? 'highest score first' : 'first-seen order'}</span><div className="pool-heading-actions">{session.phase_gates?.A ? <><span className="pool-review-status">List reviewed</span>{onGateAChanged ? <button className="quiet-action" type="button" onClick={onGateAChanged}>Compare candidates <CompassIcon name="compare" size={16} /></button> : null}</> : gateAEligible ? <a href="#pool-review">Review list to compare →</a> : null}</div></div>
+        </div>
+        <div className="pool-view-toolbar">
+          <div className="pool-view-switch" role="group" aria-label="Candidate view">
+            <button type="button" aria-pressed={poolView === 'cards' || !rankingUnlocked} onClick={() => setPoolView('cards')}><CompassIcon name="grid" size={16} />Cards</button>
+            <button type="button" aria-pressed={poolView === 'ranked' && rankingUnlocked} disabled={!rankingUnlocked} aria-describedby={!rankingUnlocked ? 'ranked-view-help' : undefined} onClick={() => setPoolView('ranked')}><CompassIcon name="list" size={16} />Ranked list</button>
+          </div>
+          {!rankingUnlocked ? <span id="ranked-view-help">Review the candidate list to unlock ranking.</span> : poolView === 'ranked' ? <span>Ranks are within {poolRun ? 'this search' : 'all saved searches'}.</span> : null}
         </div>
         <div className="pool-filter-row"><label className="field pool-filter"><span>Results from</span><select value={poolRun ?? ''} onChange={event => { setPoolRun(event.target.value || null); setSelectedRun(event.target.value || null) }}><option value="">All saved searches</option>{runs.data?.map(run => <option key={run.id} value={run.id}>{run.keywords} · {new Date(run.created_at).toLocaleDateString()}</option>)}</select></label>
         <label className="field pool-filter"><span>Find a saved candidate</span><input placeholder="Search by name" value={nameFilter} onChange={(event) => setNameFilter(event.target.value)} /></label></div>
@@ -342,7 +360,12 @@ export function SearchPage({
           </div>
         ) : null}
         {candidates.isPending ? <p role="status">Loading saved candidates…</p> : filteredCandidates.length ? (
-          <div className="candidate-grid">
+          poolView === 'ranked' && rankingUnlocked ? (
+            ranking.isPending ? <p role="status">Loading scores…</p> : ranking.isError ? <div className="form-error" role="alert">Scores could not be loaded. <button className="quiet-action" type="button" onClick={() => void ranking.refetch()}>Try again</button></div> : <>
+              {ranking.isFetching ? <p role="status" className="field-help">Updating scores…</p> : null}
+              <RankedPoolList candidates={runCandidates} scores={ranking.data} nameFilter={nameFilter} onOpen={onCandidateOpen} onSave={id => enrich.mutate(id)} downloadsBlocked={downloadsBlocked} savingId={enrich.isPending ? enrich.variables : undefined} />
+            </>
+          ) : <div className="candidate-grid">
             {filteredCandidates.map((candidate) => (
               <article className="candidate-card" key={candidate.id}>
                 <div className="discovery-person-heading"><span className="result-initials" aria-hidden="true">{(candidate.display_name || candidate.username).split(/\s+/).slice(0, 2).map(part => part[0]).join('')}</span><div>

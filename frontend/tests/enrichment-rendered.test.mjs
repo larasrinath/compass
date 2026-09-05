@@ -560,3 +560,88 @@ test('a partial location enqueue failure reports the unqueued locations without 
   assert.equal(result.queued.length, 1)
   assert.deepEqual(result.failed, ['Berlin', 'London'])
 })
+
+test('nice-to-have-only brief can search and the results summary uses years', async () => {
+  let submitted
+  globalThis.fetch = (input, init) => {
+    const path=String(input)
+    if (path.startsWith('/api/searches?') || path.startsWith('/api/candidate-pool?')) return json([])
+    if (path === '/api/searches') { submitted=JSON.parse(init.body); return json({search_run_id:'optional-run',job_id:'optional-job'}) }
+    if (path === '/api/searches/optional-run') return json(null)
+    throw new Error(`Unexpected request: ${path}`)
+  }
+  render(wrapper(React.createElement(SearchPage, {
+    session:{id:'session',phase_gates:{}}, queue, onCandidateOpen(){},
+    brief:{id:'optional-brief',location:'',target_titles:[],required_skills:[],optional_skills:[{term:'Go',aliases:[]}],required_credentials:[],positive_keywords:[],negative_keywords:[],required_experience_months:60},
+  })))
+  assert.ok(screen.getByText('Go · nice-to-have'))
+  assert.ok(screen.getByText('5+ years'))
+  assert.equal(screen.queryByText('60 months minimum'),null)
+  assert.equal(screen.getByRole('button',{name:'Run search'}).disabled,false)
+  assert.equal(submitted,undefined)
+  await userEvent.setup({document:dom.window.document}).click(screen.getByRole('button',{name:'Run search'}))
+  await waitFor(()=>assert.equal(submitted?.keywords,'Go'))
+})
+
+function rankingPool() {
+  return ['Unscored','Zoe','Ada'].map((name,index)=>({id:name,username:name.toLowerCase(),display_name:name,profile_url:'/in/example',stage:index===0?'discovered':'stage1',retrieval_status:'ok',active_job_id:null,source_count:1,sources:[{search_run_id:'run',keywords:'Go',network_filter:[],reference_position:index}]}))
+}
+
+test('Find candidates does not request rankings before candidate-list review', async () => {
+  const calls=[]
+  globalThis.fetch=input=>{const path=String(input);calls.push(path);if(path.startsWith('/api/searches?')) return json([]);if(path.startsWith('/api/candidate-pool?')) return json(rankingPool());throw new Error(`Unexpected request ${path}`)}
+  render(wrapper(React.createElement(SearchPage,{session:{id:'session',phase_gates:{}},brief:null,queue,onCandidateOpen(){}})))
+  await screen.findByRole('heading',{name:'Ada'})
+  assert.equal(screen.getByRole('button',{name:'Ranked list'}).disabled,true)
+  assert.equal(screen.queryByRole('table',{name:'Candidates ranked by score'}),null)
+  assert.equal(calls.some(path=>path.startsWith('/api/candidates?')),false)
+})
+
+test('ranked pool preserves API ties, keeps unscored last, filters without renumbering, and returns to cards', async () => {
+  const calls=[];let opened
+  const scopedPool=rankingPool();scopedPool[1].sources=[{...scopedPool[1].sources[0],search_run_id:'other'}]
+  const scores=['Zoe','Ada'].map(id=>({id,score:80,confidence:0.7,confidence_band:'medium',calculation_status:'scored',headline:'Backend engineer'}))
+  globalThis.fetch=input=>{const path=String(input);calls.push(path);if(path.startsWith('/api/searches?'))return json([{id:'run',keywords:'Go',created_at:'2026-09-04',status:'ok',network:[]}]);if(path==='/api/searches/run')return json(null);if(path.startsWith('/api/candidate-pool?'))return json(scopedPool);if(path.startsWith('/api/candidates?')){assert.equal(new URL(path,'http://local').searchParams.get('sort'),'score_desc');return json(scores)}throw new Error(path)}
+  render(wrapper(React.createElement(SearchPage,{session:{id:'session',phase_gates:{A:true}},brief:null,queue,retrievalReady:false,onCandidateOpen(id){opened=id}})))
+  const user=userEvent.setup({document:dom.window.document})
+  await screen.findByRole('heading',{name:'Ada'})
+  assert.equal(calls.some(path=>path.startsWith('/api/candidates?')),false)
+  await user.click(screen.getByRole('button',{name:'Ranked list'}))
+  const table=await screen.findByRole('table',{name:'Candidates ranked by score'})
+  const rows=within(table).getAllByRole('row').slice(1)
+  assert.deepEqual(rows.map(row=>row.querySelector('.pool-person p').textContent),['Zoe','Ada','Unscored'])
+  assert.deepEqual(rows.map(row=>row.querySelector('.pool-rank').textContent),['1','2','—'])
+  assert.equal(within(rows[2]).queryByText('0.0'),null)
+  assert.ok(within(rows[2]).getByText('Not scored'))
+  assert.equal(screen.getByRole('button',{name:'Save profile for Unscored'}).disabled,true)
+  await user.type(screen.getByLabelText('Find a saved candidate'),'ada')
+  assert.equal(within(table).getAllByRole('row').length,2)
+  assert.equal(within(table).getAllByRole('row')[1].querySelector('.pool-rank').textContent,'2')
+  await user.click(screen.getByRole('button',{name:'Review Ada'}))
+  assert.equal(opened,'Ada')
+  await user.selectOptions(screen.getByLabelText('Results from'),'run')
+  await waitFor(()=>assert.equal(within(table).getAllByRole('row')[1].querySelector('.pool-rank').textContent,'1'))
+  await user.selectOptions(screen.getByLabelText('Results from'),'')
+  assert.equal(within(table).getAllByRole('row')[1].querySelector('.pool-rank').textContent,'2')
+  await user.click(screen.getByRole('button',{name:'Cards',exact:true}))
+  assert.ok(screen.getByRole('heading',{name:'Ada'}))
+  assert.equal(screen.queryByRole('heading',{name:'Zoe'}),null)
+})
+
+test('ranked pool shows a recoverable error and refreshes after queue updates', async () => {
+  let scoreCalls=0
+  globalThis.fetch=input=>{const path=String(input);if(path.startsWith('/api/searches?'))return json([]);if(path.startsWith('/api/candidate-pool?'))return json(rankingPool());if(path.startsWith('/api/candidates?')){scoreCalls++;return scoreCalls===1?json({detail:'Unavailable'},503):json([{id:'Ada',score:scoreCalls===2?60:90,confidence:1,confidence_band:'high',calculation_status:'scored'}])}throw new Error(path)}
+  const props={session:{id:'session',phase_gates:{A:true}},brief:null,queue,onCandidateOpen(){}}
+  const client=new QueryClient({defaultOptions:{queries:{retry:false}}})
+  const node=p=>React.createElement(QueryClientProvider,{client},React.createElement(SearchPage,p))
+  const view=render(node(props));const user=userEvent.setup({document:dom.window.document})
+  await screen.findByRole('heading',{name:'Ada'})
+  await user.click(screen.getByRole('button',{name:'Ranked list'}))
+  await screen.findByText('Scores could not be loaded.')
+  assert.equal(screen.queryByRole('table'),null)
+  await user.click(screen.getByRole('button',{name:'Try again'}))
+  await screen.findByText('60.0')
+  view.rerender(node({...props,queue:{...queue,revision:1}}))
+  await screen.findByText('90.0')
+  assert.equal(screen.queryByText('60.0'),null)
+})

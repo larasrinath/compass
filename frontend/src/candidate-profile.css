@@ -1,10 +1,12 @@
 /* CandidatePanel in the supplied Compass prototype: a quiet, person-first drawer. */
-.candidate-drawer { position: fixed; inset: 0 0 0 auto; width: min(100%, 760px); max-width: 100%; height: 100dvh; max-height: 100dvh; margin: 0; padding: 0; border: 0; background: var(--canvas); color: var(--ink-soft); overflow-y: auto; overscroll-behavior: contain; box-shadow: -12px 0 40px #26251f18; }
+.candidate-drawer { position: fixed; inset: 0 0 0 auto; width: min(100%, 760px); max-width: 100%; height: 100dvh; max-height: 100dvh; margin: 0; padding: 0; border: 0; background: var(--canvas); color: var(--ink-soft); overflow-wrap: anywhere; overflow-y: auto; overscroll-behavior: contain; box-shadow: -12px 0 40px #26251f18; }
 .candidate-drawer::backdrop { background: #26251f40; backdrop-filter: blur(2px); }
 .profile-close { position: fixed; top: 20px; right: 16px; z-index: 2; display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 50%; background: var(--surface); color: var(--ink-faint); }
 .profile-close:hover { background: var(--subtle); color: var(--ink-soft); }
-.profile-heading { position: sticky; top: 0; z-index: 1; display: flex; align-items: flex-start; gap: 16px; padding: 20px 62px 20px 24px; border-bottom: 1px solid var(--line); background: var(--surface); }
+/* A long headline must scroll away so it cannot cover the review actions. */
+.profile-heading { position: relative; z-index: 1; display: flex; align-items: flex-start; gap: 16px; padding: 20px 62px 20px 24px; border-bottom: 1px solid var(--line); background: var(--surface); }
 .profile-initials { display: grid; place-items: center; flex-shrink: 0; width: 48px; height: 48px; font: 700 16px/1 var(--font-display); color: var(--accent); }
+.profile-heading > div { min-width: 0; }
 .profile-heading h1 { margin: 0; font: 700 18px/1.4 var(--font-display); letter-spacing: -.02em; color: var(--ink); }
 .profile-heading p { margin: 3px 0 0; font: 400 14px/1.5 var(--font-body); overflow-wrap: anywhere; }
 .profile-heading small { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; margin-top: 6px; font: 400 12px/1.5 var(--font-body); color: var(--ink-faint); }
@@ -74,6 +76,7 @@
 .profile-score-overview .signal-table { min-width: 480px; font: 400 12px/1.5 var(--font-body); }
 .profile-score-overview .signal-table th, .profile-score-overview .signal-table td { padding: 10px 8px; }
 .profile-score-overview .signal-table th { font-weight: 500; }
+.candidate-drawer .signal-table thead th { overflow-wrap: normal; word-break: normal; }
 .profile-score-overview .signal-table caption { padding: 0 0 8px; font-size: 12px; color: var(--ink-faint); }
 .profile-score-evidence { scroll-margin-top: 180px; }
 @media (max-width: 440px) {

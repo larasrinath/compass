@@ -32,7 +32,7 @@ export function CandidateRow({ candidate, onOpen, selected = false, comparisonDi
       </div>
       <div className="result-evidence">
         <h4>Evidence found</h4>
-        {found.length ? <ul>{found.map(signal => <li key={signal.signal_id}><span className="evidence-dot" aria-hidden="true" />{matchLabel(signal)}{signal.rollup === 'mixed' ? ' · partial match' : ''}</li>)}</ul> : <p>{candidate.all_inert_attested ? 'Add role criteria to check this profile.' : 'No matching evidence available yet.'}</p>}
+        {found.length ? <ul>{found.map(signal => <li key={signal.signal_id}><span className="evidence-dot" aria-hidden="true" /><span className="result-signal-label">{matchLabel(signal)}{signal.rollup === 'mixed' ? ' · partial match' : ''}</span></li>)}</ul> : <p>{candidate.all_inert_attested ? 'Add role criteria to check this profile.' : 'No matching evidence available yet.'}</p>}
       </div>
       <div className="result-checks">
         <h4>Worth checking</h4>

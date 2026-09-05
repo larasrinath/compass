@@ -240,20 +240,20 @@ test('pre-Gate direct detail route cannot reveal poisoned ranking fields', async
   await mockApi(page, false)
   await page.goto('/candidates/candidate-1')
   await expect(page).toHaveURL(/\/candidates\/candidate-1$/)
-  await expect(page.getByRole('heading', { name: 'Ada Lovelace' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Ada Lovelace', level: 1 })).toBeVisible()
   await expect(page.locator('.score-badge')).toHaveCount(0)
   await expect(page.getByRole('heading', { name: 'Why this score changed' })).toHaveCount(0)
   await expect(page.getByRole('heading', { name: 'Current and previous scores' })).toHaveCount(0)
   await expect(page.getByRole('checkbox', { name: /^I verified this exact source span for/ })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: '← Back to search' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Close candidate profile' })).toBeVisible()
 })
 
 test('Search to detail Back returns to search before Gate A', async ({ page }) => {
   await mockApi(page, false)
   await page.goto('/search')
-  await page.getByRole('button', { name: 'Review retrieved details' }).click()
+  await page.getByRole('button', { name: 'Review', exact: true }).click()
   await expect(page).toHaveURL(/\/candidates\/candidate-1$/)
-  await page.getByRole('button', { name: '← Back to search' }).click()
+  await page.getByRole('button', { name: 'Close candidate profile' }).click()
   await expect(page).toHaveURL(/\/search$/)
 })
 
@@ -263,10 +263,10 @@ test('detail routes survive reload and participate in browser history', async ({
   await page.getByRole('button', { name: 'Open evidence for Ada Lovelace' }).click()
   await expect(page).toHaveURL(/\/candidates\/candidate-1$/)
   await page.reload()
-  await expect(page.getByRole('heading', { name: 'Ada Lovelace' })).toBeVisible()
-  await page.getByRole('button', { name: '← Back to candidates' }).click()
+  await expect(page.getByRole('heading', { name: 'Ada Lovelace', level: 1 })).toBeVisible()
+  await page.getByRole('button', { name: 'Close candidate profile' }).click()
   await expect(page).toHaveURL(/\/candidates$/)
-  await page.goBack()
+  await page.goForward()
   await expect(page).toHaveURL(/\/candidates\/candidate-1$/)
 })
 
@@ -295,16 +295,17 @@ for (const [sort, expectedIds] of Object.entries(canonicalRanking.orders)) {
     })
     await page.goto('/candidates')
     await expect(page.getByLabel('Ranked candidates')).toBeVisible()
+    await page.getByText('Filter, sort & scoring settings', { exact: true }).click()
     await page.getByLabel('Sort order').selectOption(sort)
     await expect.poll(() => requestedSort).toBe(sort)
-    await expect(page.locator('.ranked-candidate h3')).toHaveText(expectedIds.map((id) => {
+    await expect(page.locator('.result-person h3')).toHaveText(expectedIds.map((id) => {
       const row = records.find((candidate) => candidate.id === id)!
       return row.display_name ?? row.username
     }))
   })
 }
 
-test('Chrome renders unknown claim and signal verdicts in exact lowercase', async ({ page, browser }, testInfo) => {
+test('Chrome distinguishes unchecked and unmatched evidence with text and neutral borders', async ({ page, browser }, testInfo) => {
   await mockApi(page, true, false, {
     ...detail,
     signals: [signals[0], {
@@ -314,19 +315,20 @@ test('Chrome renders unknown claim and signal verdicts in exact lowercase', asyn
     }],
   })
   await page.goto('/candidates/candidate-1')
-  const unknown = page.locator('.verdict-symbol.unknown')
+  await page.getByRole('button', { name: 'Review score evidence' }).click()
+  const unknown = page.locator('.verdict-badge.unknown')
   await expect(unknown).toHaveCount(3)
   for (const verdict of await unknown.all()) {
     await expect(verdict).toBeVisible()
     await expect(verdict).toHaveCSS('text-transform', 'none')
     // innerText reflects Chrome's CSS text transformation; textContent does not.
-    expect(await verdict.innerText()).toBe('? not found in the retrieved data')
+    expect(await verdict.innerText()).toBe('Not checked')
   }
   const unknownClaim = page.locator('.claim-card.unknown').first()
   const absentClaim = page.locator('.claim-card.not_matched')
-  await expect(unknownClaim).toHaveCSS('border-left-style', 'dashed')
+  await expect(unknownClaim).toHaveCSS('border-left-style', 'solid')
   await expect(absentClaim).toHaveCSS('border-left-style', 'solid')
-  await expect(absentClaim.locator('.verdict-symbol')).toContainText('○ not matched')
+  await expect(absentClaim.locator('.verdict-badge')).toContainText('No exact match')
   const rendering = await unknown.evaluateAll((elements) => elements.map((element) => ({
     context: element.closest('table') ? 'signal' : 'claim',
     textContent: element.textContent,
@@ -345,6 +347,7 @@ test('Chrome renders unknown claim and signal verdicts in exact lowercase', asyn
 test('keyboard evidence flow scrolls the actual far-down astral mark and keeps focus', async ({ page }) => {
   await mockApi(page, true)
   await page.goto('/candidates/candidate-1')
+  await page.getByRole('button', { name: 'Review score evidence' }).click()
   const link = page.getByRole('button', { name: /🚀 Alpha/ })
   await link.focus()
   await page.keyboard.press('Enter')
@@ -380,6 +383,7 @@ test('ten Gate B evidence controls expose unique names and keyboard toggles', as
   }
   await mockApi(page, true, false, manyDetail)
   await page.goto('/candidates/candidate-1')
+  await page.getByRole('button', { name: 'Review score evidence' }).click()
   const checkboxes = page.getByRole('checkbox', {
     name: /^I verified this exact source span for/,
   })
@@ -409,15 +413,17 @@ test('ranked and detail layouts stay readable at narrow width with non-color cue
   await page.setViewportSize({ width: 390, height: 844 })
   await mockApi(page, true)
   await page.goto('/candidates')
-  await expect(page.locator('.stage-badge')).toContainText('◐ Provisional')
+  await page.getByText('Scoring details', { exact: true }).click()
+  await expect(page.getByText('Provisional · partial retrieval', { exact: true })).toBeVisible()
   await expect(page.getByText('Scored · config v1', { exact: false })).toBeVisible()
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy()
   await page.getByRole('button', { name: 'Open evidence for Ada Lovelace' }).click()
-  await expect(page.getByText('? not found in the retrieved data')).toBeVisible()
+  await page.getByRole('button', { name: 'Review score evidence' }).click()
+  await expect(page.locator('.verdict-badge.unknown')).toBeVisible()
   const unparseable = page.locator('.claim-card').filter({ hasText: 'Rust' })
   await expect(unparseable).toContainText('skills · retrieved, but could not be parsed reliably')
   await expect(unparseable).not.toContainText('Searched every required retrieved section')
-  await expect(page.getByText('○ not matched')).toBeVisible()
+  await expect(page.locator('.verdict-badge.not_matched')).toBeVisible()
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy()
 })
 
@@ -432,16 +438,17 @@ test('mobile signal table keeps normal words intact and supports keyboard scroll
   expect(await scrollRegion.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true)
   await scrollRegion.focus()
   await expect(scrollRegion).toBeFocused()
-  await expect(scrollRegion).toHaveCSS('outline-style', 'solid')
+  await expect(scrollRegion).toHaveCSS('outline-style', 'none')
   await page.keyboard.press('ArrowRight')
   await expect.poll(() => scrollRegion.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0)
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
 })
 
-test('mobile claim headings keep Go and Rust intact beside lowercase unknown copy', async ({ page }, testInfo) => {
+test('mobile claim headings keep Go and Rust intact beside status labels', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 844 })
   await mockApi(page, true, false, mobileEvidenceDetail)
   await page.goto('/candidates/candidate-1')
+  await page.getByRole('button', { name: 'Review score evidence' }).click()
   const claims = page.locator('.signal-claims')
   await expect(claims).toBeVisible()
   for (const heading of await claims.locator('.claim-heading').all()) {
@@ -450,10 +457,10 @@ test('mobile claim headings keep Go and Rust intact beside lowercase unknown cop
   for (const term of ['Go', 'Rust']) {
     const claim = claims.locator('.claim-card').filter({ has: page.getByText(term, { exact: true }) })
     await expect(claim.locator('strong')).toHaveText(term)
-    const verdict = claim.locator('.verdict-symbol')
+    const verdict = claim.locator('.verdict-badge')
     await expect(verdict).toHaveCSS('text-transform', 'none')
-    expect(await verdict.innerText()).toBe('? not found in the retrieved data')
-    await expect(claim).toHaveCSS('border-left-style', 'dashed')
+    expect(await verdict.innerText()).toBe('Not checked')
+    await expect(claim).toHaveCSS('border-left-style', 'solid')
   }
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
   await page.screenshot({ path: testInfo.outputPath('evidence-mobile-readable.png'), fullPage: true })
@@ -468,13 +475,16 @@ test('hostile unbroken API strings never widen the 390px candidate views', async
   await page.setViewportSize({ width: 390, height: 844 })
   await mockApi(page, true, true)
   await page.goto('/candidates')
-  await expect(page.locator('.candidate-headline')).toBeVisible()
+  await expect(page.locator('.result-person-identity > p')).toBeVisible()
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy()
 
   await page.getByRole('button', { name: 'Open evidence for Ada Lovelace' }).click()
-  await expect(page.getByRole('heading', { name: 'Why this score changed' })).toBeVisible()
+  await page.getByRole('button', { name: 'Review score evidence' }).click()
+  await expect(page.getByRole('heading', { name: 'Evidence by criterion' })).toBeVisible()
   await expect(page.locator('.evidence-link')).toBeVisible()
+  await page.getByText('Search details', { exact: true }).click()
   await expect(page.locator('.context-panel')).toBeVisible()
+  expect(await page.locator('.candidate-drawer').evaluate(el => el.scrollWidth <= el.clientWidth)).toBeTruthy()
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy()
 })
 
@@ -536,6 +546,8 @@ test('brief preserves experience and credential aliases through create and edit'
         body = currentBrief
         status = request.method() === 'POST' ? 201 : 200
       }
+    } else if (path === '/api/searches' || path === '/api/candidate-pool') {
+      body = []
     } else {
       throw new Error(`Unhandled API route ${request.method()} ${path}`)
     }
@@ -548,62 +560,80 @@ test('brief preserves experience and credential aliases through create and edit'
 
   await page.goto('/brief')
   await page.getByLabel('Job description').fill('Platform engineer')
-  const experience = page.getByLabel('Required experience in months')
-  await expect(experience).toHaveValue('')
-  await experience.fill('0')
-  let credentials = page.getByRole('group', { name: 'Required credentials' })
-  await credentials.getByLabel('New required credentials term').fill('AWS Architect')
-  await credentials.getByRole('button', { name: 'Add term' }).click()
-  await credentials.getByLabel('Aliases for AWS Architect').fill(
-    `SAA, ${hostileAlias}`,
-  )
+  await page.getByRole('button', { name: 'Set up search', exact: true }).click()
+  const increase = page.getByRole('button', { name: 'Increase minimum experience by one year' })
+  await increase.click()
+  await page.getByLabel('Filter type').selectOption('credential')
+  await page.getByLabel('New key filter').fill('AWS Architect')
+  await page.getByRole('button', { name: 'Add filter', exact: true }).click()
+  await page.getByRole('button', { name: 'Continue to search' }).click()
+  await expect(page).toHaveURL(/\/search$/)
+  expect(writes[0].required_experience_months).toBe(12)
+  expect(writes[0].required_credentials).toEqual([{term:'AWS Architect',aliases:[]}])
+
+  // Older saved aliases survive editing even though there is no alias editor.
+  currentBrief = {...currentBrief!, required_credentials:[{term:'AWS Architect', aliases:['SAA',hostileAlias]}]}
+  await page.goto('/brief')
+  await expect(page.getByLabel('Credential filter 1')).toHaveValue('AWS Architect')
+  await expect(page.getByLabel('Aliases for AWS Architect')).toHaveCount(0)
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy()
-  expect(await credentials.getByLabel('Aliases for AWS Architect').evaluate(
-    (element) => element.getBoundingClientRect().width <= window.innerWidth,
-  )).toBeTruthy()
-  await page.getByRole('button', { name: 'Save brief' }).click()
-  await expect(page.getByRole('button', { name: 'Save new version' })).toBeVisible()
-  expect(writes[0].required_experience_months).toBe(0)
-  expect(writes[0].required_credentials).toEqual([{
-    term: 'AWS Architect',
-    aliases: ['SAA', hostileAlias],
-  }])
+  await increase.click()
+  await page.getByRole('button', {name:'Continue to search'}).click()
+  await expect(page).toHaveURL(/\/search$/)
+  expect(writes[1].required_experience_months).toBe(24)
+  expect(writes[1].required_credentials).toEqual([{term:'AWS Architect',aliases:['SAA',hostileAlias]}])
 
-  await page.reload()
-  await expect(experience).toHaveValue('0')
-  credentials = page.getByRole('group', { name: 'Required credentials' })
-  await expect(credentials.getByLabel('Required credentials term 1')).toHaveValue('AWS Architect')
-  await expect(credentials.getByLabel('Aliases for AWS Architect')).toHaveValue(
-    `SAA, ${hostileAlias}`,
-  )
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy()
-  expect(await credentials.getByLabel('Aliases for AWS Architect').evaluate(
-    (element) => element.getBoundingClientRect().width <= window.innerWidth,
-  )).toBeTruthy()
+  await page.goto('/brief')
+  const decrease=page.getByRole('button',{name:'Decrease minimum experience by one year'})
+  await decrease.click()
+  await decrease.click()
+  await expect(decrease).toBeDisabled()
+  await page.getByRole('button',{name:'Remove AWS Architect',exact:true}).click()
+  await page.getByLabel('New key filter').fill('Go')
+  await page.getByRole('button',{name:'Add filter',exact:true}).click()
+  await page.getByRole('button',{name:'Continue to search'}).click()
+  await expect(page).toHaveURL(/\/search$/)
+  expect(writes[2].required_experience_months).toBeNull()
+  expect(writes[2].required_credentials).toEqual([])
 
-  await experience.fill('-1')
-  expect(await experience.evaluate((element: HTMLInputElement) => element.validity.rangeUnderflow)).toBe(true)
-  await page.getByRole('button', { name: 'Save new version' }).click()
-  expect(writes).toHaveLength(1)
-  await experience.fill('1.5')
-  expect(await experience.evaluate((element: HTMLInputElement) => element.validity.stepMismatch)).toBe(true)
-  await page.getByRole('button', { name: 'Save new version' }).click()
-  expect(writes).toHaveLength(1)
-
-  await experience.fill('')
-  await credentials.getByRole('button', { name: 'Remove AWS Architect' }).click()
-  await page.getByRole('button', { name: 'Save new version' }).click()
-  await expect.poll(() => writes.length).toBe(2)
-  expect(writes[1].required_experience_months).toBeNull()
-  expect(writes[1].required_credentials).toEqual([])
-  await expect(page.getByText('Saved version 2')).toBeVisible()
-
-  credentials = page.getByRole('group', { name: 'Required credentials' })
-  await credentials.getByLabel('New required credentials term').fill('Safe credential')
-  await credentials.getByRole('button', { name: 'Add term' }).click()
-  await credentials.getByLabel('Aliases for Safe credential').fill('gender')
+  await page.goto('/brief')
+  await page.getByLabel('Filter type').selectOption('credential')
+  await page.getByLabel('New key filter').fill('Safe credential')
+  await page.getByRole('button',{name:'Add filter',exact:true}).click()
   rejectProtected = true
-  await page.getByRole('button', { name: 'Save new version' }).click()
+  await page.getByRole('button',{name:'Continue to search'}).click()
   await expect(page.getByText('Remove protected criterion “gender”.')).toBeVisible()
-  await expect(credentials.getByLabel('Required credentials term 1')).toBeFocused()
+  await expect(page.getByLabel('Credential filter 1')).toBeFocused()
+})
+
+test('Find candidates ranked list retains filters and drawer navigation on desktop and mobile', async ({ page }) => {
+  await mockApi(page, true)
+  const pool = [poolCandidate, {...poolCandidate,id:'candidate-2',username:'grace',display_name:'Grace Hopper'}, {...poolCandidate,id:'candidate-3',username:'no-profile',display_name:'No Profile',stage:'discovered'}]
+  const ranked = [{...score,id:'candidate-2',display_name:'Grace Hopper',score:95},score]
+  await page.route('**/api/candidate-pool?**',route=>route.fulfill({json:pool}))
+  await page.route('**/api/candidates?**',route=>{
+    expect(new URL(route.request().url()).searchParams.get('sort')).toBe('score_desc')
+    return route.fulfill({json:ranked})
+  })
+  await page.goto('/search')
+  await expect(page.getByRole('heading',{name:'Ada Lovelace',exact:true})).toBeVisible()
+  await page.getByRole('button',{name:'Ranked list',exact:true}).click()
+  const table=page.getByRole('table',{name:'Candidates ranked by score'})
+  await expect(table).toBeVisible()
+  await expect(table.locator('.pool-person > p')).toHaveText(['Grace Hopper','Ada Lovelace','No Profile'])
+  await expect(table.locator('.pool-rank')).toHaveText(['1','2','—'])
+  await page.getByLabel('Find a saved candidate').fill('Ada')
+  await expect(table.locator('.pool-rank')).toHaveText(['2'])
+  await page.getByRole('button',{name:'Review Ada Lovelace'}).click()
+  await expect(page.getByRole('dialog',{name:'Candidate review'})).toBeVisible()
+  await page.getByRole('button',{name:'Close candidate profile'}).click()
+  await expect(table.locator('.pool-rank')).toHaveText(['2'])
+  await page.getByLabel('Find a saved candidate').fill('')
+  await page.setViewportSize({width:390,height:844})
+  await expect(table).toBeVisible()
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true)
+  await expect(table.getByRole('button',{name:'Review Ada Lovelace'})).toBeVisible()
+  await page.getByRole('button',{name:'Cards',exact:true}).click()
+  await expect(table).toHaveCount(0)
+  await expect(page.getByRole('heading',{name:'Ada Lovelace',exact:true})).toBeVisible()
 })

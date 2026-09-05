@@ -15,7 +15,22 @@ export function defaultSearchKeywords(brief: Partial<BriefInput> | null | undefi
   if (!brief) return ''
   const titles = brief.target_titles?.map(item => item.term) ?? []
   const filters = [...(brief.required_credentials ?? []), ...(brief.required_skills ?? [])].map(item => item.term)
-  return [...new Set([...titles, ...filters, ...(brief.positive_keywords ?? [])].map(term => term.trim()).filter(Boolean))].slice(0, 4).join(' ')
+  const primary = [...titles, ...filters, ...(brief.positive_keywords ?? [])].map(term => term.trim()).filter(Boolean)
+  // Nice-to-haves support discovery when they are the only supplied criteria.
+  // Do not add them to an already focused query as extra requirements.
+  const terms = primary.length ? primary : (brief.optional_skills ?? []).map(item => item.term.trim()).filter(Boolean)
+  const selected: string[] = []
+  const seen = new Set<string>()
+  for (const term of terms) {
+    const normalized = term.normalize('NFKC').toLowerCase()
+    if (seen.has(normalized)) continue
+    seen.add(normalized)
+    // Keep whole terms and stay within the search API's 500-character limit.
+    if ([...selected, term].join(' ').length > 500) break
+    selected.push(term)
+    if (selected.length === 4) break
+  }
+  return selected.join(' ')
 }
 
 const key = (briefId: string) => `compass:search-settings:${briefId}`

@@ -231,6 +231,12 @@ class ScoringService:
         ):
             raise ScoringValidationError("S-8 requires a current credential")
         if active and not any(normalized[item.value] > 0 for item in active):
+            if active == (SignalId.CREDENTIAL,):
+                raise ScoringValidationError(
+                    "Credential-only briefs need a positive credential weight. "
+                    "Add a skill or target title first, then set Required credentials "
+                    "in Scoring weights before removing the other criteria."
+                )
             raise ScoringValidationError(
                 "at least one active scoring signal must have positive weight"
             )

@@ -30,7 +30,7 @@ function contrast(first, second) {
 test('workflow updates are announced and decorations are hidden', () => {
   assert.match(`${app}${brief}${search}`, /aria-live="polite"/)
   assert.match(app, /className="skip-link"/)
-  assert.equal(app.match(/aria-hidden="true"/g)?.length, 6)
+  assert.equal(app.match(/aria-hidden="true"/g)?.length, 7)
 })
 
 test('footer text meets WCAG AA contrast', () => {

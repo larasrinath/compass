@@ -44,7 +44,25 @@ Acceptance scenarios (now covered by `tests/integration/test_offline_dashboard.p
    exact profile-span evidence ids; reject coverage, missing metadata and search context.
    Exercise these checks locally; no live Gate A/B acceptance is claimed or required this run.
 
-### Dashboard refresh verification — 2026-09-04
+### Current UI, guide, and review — 2026-09-04
+
+The Compass interface now uses a fixed desktop sidebar, a dedicated role-brief
+setup, compact discovery controls, ranked cards, a score-first candidate drawer,
+and saved-search previews capped at three profiles. The local **How it works**
+guide follows these flows with isolated fictional exercises. Documentation
+screenshots also use fictional fixtures rendered through the actual UI.
+
+The [current README](README.md) documents setup and daily use. The
+[project review](docs/reviews/2026-09-04-project-review.md) records fixes, remaining
+draft/credential-setup issues, and verification: a 1,403-pass backend baseline
+(3 skipped), 59 affected API checks after changes, 85 frontend tests, and 15 Chrome
+tests. The baseline and affected backend counts overlap. These checks do not
+claim a new live connector acceptance run.
+
+The earlier refresh record below is retained as history; its sidebar layout,
+test counts, and live-workspace state describe that earlier run.
+
+### Earlier dashboard refresh verification — 2026-09-04
 
 The refresh was also checked with the existing live connector: one queued people search
 completed with 15 unique profile references; one profile's main and experience sections were

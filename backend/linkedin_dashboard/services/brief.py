@@ -177,6 +177,7 @@ def normalize_brief(value: BriefValue) -> BriefValue:
         raise ValueError("required_experience_months must be a nonnegative integer")
     if not (
         normalized.required_skills
+        or normalized.required_credentials
         or normalized.optional_skills
         or normalized.target_titles
         or normalized.positive_keywords

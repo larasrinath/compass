@@ -1,0 +1,50 @@
+/* Only the guide is reset and styled. No Tailwind preflight in the dashboard. */
+#compass-learn { color: var(--ink); line-height: 1.5; font-family: var(--font-body); }
+#compass-learn :where(*, *::before, *::after) {
+  border-width: 0; border-style: solid; border-color: var(--line);
+  --tw-border-spacing-x: 0; --tw-border-spacing-y: 0;
+  --tw-translate-x: 0; --tw-translate-y: 0; --tw-rotate: 0; --tw-skew-x: 0; --tw-skew-y: 0; --tw-scale-x: 1; --tw-scale-y: 1;
+  --tw-ring-offset-width: 0px; --tw-ring-offset-color: #fff; --tw-ring-color: transparent;
+  --tw-ring-offset-shadow: 0 0 #0000; --tw-ring-shadow: 0 0 #0000; --tw-shadow: 0 0 #0000; --tw-shadow-colored: 0 0 #0000;
+}
+#compass-learn :where(h1,h2,h3,p,figure,ol,ul) { margin: 0; }
+#compass-learn :where(ol,ul) { list-style: none; padding: 0; }
+#compass-learn :where(button,input,select,textarea) {
+  font: inherit; color: inherit; margin: 0; padding: 0; min-height: 0;
+  background: transparent; border-radius: 0; text-transform: none; letter-spacing: inherit;
+}
+#compass-learn :where(input,select,textarea) { width: auto; }
+#compass-learn :where(button) { cursor: pointer; }
+#compass-learn :where(button:disabled) { cursor: not-allowed; }
+#compass-learn :where(svg) { display: block; vertical-align: middle; flex-shrink: 0; }
+#compass-learn :where(h1,h2,h3) { font-size: inherit; font-weight: inherit; letter-spacing: inherit; }
+#compass-learn .chip { display: inline-flex; align-items: center; gap: .375rem; border: 1px solid var(--line); border-radius: 999px; padding: .375rem .75rem; }
+#compass-learn .learn-page { overflow-wrap: anywhere; }
+#compass-learn :where(button,input,select,textarea):focus-visible { outline: none; box-shadow: none; }
+#compass-learn .fictional-tag { white-space: nowrap; flex-shrink: 0; vertical-align: middle; }
+#compass-learn p:has(> .fictional-tag) { display: flex; flex-wrap: wrap; align-items: baseline; gap: .4rem; }
+#compass-learn :where(.grid > *, .flex > *) { min-width: 0; }
+@media (max-width: 639px) {
+  #compass-learn .flex.items-center.justify-between { flex-wrap: wrap; gap: .75rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #compass-learn *, #compass-learn *::before, #compass-learn *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
+/* A single vertical reading order on desktop and mobile. Arrows connect stages only. */
+#compass-learn .learn-flow { display: flex; flex-direction: column; margin: 0; padding: 0; }
+#compass-learn .learn-flow-card { display: grid; grid-template-columns: 28px minmax(0, 1fr); align-items: start; gap: 14px; width: 100%; padding: 20px; border: 1px solid var(--line); border-radius: 14px; background: var(--canvas); text-align: left; }
+#compass-learn .learn-flow-number { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: var(--subtle); color: var(--ink-faint); font-size: 12px; font-weight: 500; }
+#compass-learn .learn-flow-content h3, #compass-learn .learn-flow-title { display: block; font: 600 16px/1.5 var(--font-body); color: var(--ink); }
+#compass-learn .learn-flow-content > p, #compass-learn .learn-flow-description { display: block; margin-top: 8px; font: 400 14px/1.65 var(--font-body); color: var(--ink-soft); }
+#compass-learn .learn-flow-content .learn-flow-location { margin: 0 0 3px; font-size: 12px; color: var(--ink-faint); }
+#compass-learn .learn-flow-content .learn-flow-outcome { color: var(--accent); font-size: 13px; }
+#compass-learn .learn-flow-connector { display: flex; align-items: center; justify-content: center; gap: 10px; height: 38px; color: var(--ink-faint); }
+#compass-learn .learn-flow-connector span { font-size: 12px; }
+#compass-learn button.learn-flow-card:hover { border-color: var(--line-strong); }
+#compass-learn .learn-flow-card[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); }
+#compass-learn .learn-flow-card[aria-pressed="true"] .learn-flow-number { background: var(--accent); color: var(--surface); }
+#compass-learn .learn-flow-network { display: flex; align-items: flex-start; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); font: 400 13px/1.6 var(--font-body); color: var(--accent); }
+@media (max-width: 480px) {
+  #compass-learn .learn-flow-card { padding: 14px; gap: 10px; }
+}
+@tailwind utilities;
