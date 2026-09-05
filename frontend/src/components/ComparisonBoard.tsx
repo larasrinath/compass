@@ -48,7 +48,7 @@ export function ComparisonBoard({ candidates, onRemove, onOpen }: {
         })}</tr>)}</tbody>
       </table>
     </div>
-    {!rows.size ? <p role="status">{profiles.some(profile => profile.isPending) ? 'Loading profile evidence…' : 'No comparable claims available. Download profiles and add criteria to your role brief.'}</p> : null}
+    {!rows.size ? <p role="status">{profiles.some(profile => profile.isPending) ? 'Loading profile evidence…' : 'No comparable claims available. Download profiles and add criteria to your search criteria.'}</p> : null}
     <p className="comparison-note">Matches use exact text and configured aliases. “No exact match” does not mean unqualified. Saved profile evidence does not independently verify a credential or its current validity.</p>
   </section>
 }

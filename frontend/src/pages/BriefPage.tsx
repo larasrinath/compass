@@ -109,7 +109,6 @@ export function BriefPage({
   const [negative, setNegative] = useState(initial.negative_keywords.join('\n'))
   const tone = initial.message_tone
   const [dirty, setDirty] = useState(false)
-  const [step, setStep] = useState<'describe' | 'review'>(current ? 'review' : 'describe')
   const positiveSet = new Set(parseKeywords(positive).map((term) => term.normalize('NFKC').toLowerCase()))
   const conflicts = parseKeywords(negative).filter((term) => positiveSet.has(term.normalize('NFKC').toLowerCase()))
 
@@ -154,40 +153,27 @@ export function BriefPage({
   const experienceLabel = requiredExperienceMonths === null ? 'Any'
     : `${Number((requiredExperienceMonths / 12).toFixed(2))}+ years`
 
-  if (step === 'describe') return (
-    <section className="compass-start" aria-labelledby="brief-title">
-      <p className="compass-kicker">Candidate Compass</p>
-      <h1 id="brief-title">Who are you looking for?</h1>
-      <p className="compass-start-copy">Start with the role you have in mind. You’ll review everything before searching.</p>
-      <form className="prompt-composer" onSubmit={event => { event.preventDefault(); if (description.trim()) { setStep('review'); requestAnimationFrame(() => document.getElementById('brief-title')?.focus()) } }}>
-        <label className="sr-only" htmlFor="job-description">Job description</label>
-        <textarea id="job-description" placeholder="e.g. A backend engineer with payments experience, Go and PostgreSQL, based in Berlin…" required rows={5} value={description} onChange={event => { setDescription(event.target.value); markDirty() }} />
-        <div className="prompt-composer-footer"><span>Nothing searched yet — confirm your criteria first.</span><button className="primary-action" disabled={!description.trim()} type="submit">Set up search <CompassIcon name="arrow" size={16} /></button></div>
-      </form>
-      <p className="prompt-guidance">A role title, key skills, and location are a good place to start.</p>
-      {current ? <button type="button" className="compass-back" onClick={() => setStep('review')}>Return to your criteria <CompassIcon name="arrow" size={16} /></button> : null}
-    </section>
-  )
-
   return (
     <section aria-labelledby="brief-title" className="compass-setup">
-      <button className="compass-back" type="button" onClick={() => setStep('describe')}><CompassIcon name="back" size={18} /> Back to role description</button>
       <header className="compass-setup-heading">
-        <h1 id="brief-title" tabIndex={-1}>Here’s what I’ll look for</h1>
-        <blockquote>{description}</blockquote>
+        <h1 id="brief-title" tabIndex={-1}>Search criteria</h1>
       </header>
       {settingsError ? <p className="form-error" role="alert">{settingsError}</p> : null}
       {mutation.isError ? <div className="form-error" ref={alertRef} role="alert" tabIndex={-1}><strong>Brief was not saved.</strong><span>{mutation.error.message}</span></div> : null}
       {conflicts.length > 0 ? <div className="form-error" role="alert"><strong>Some keywords appear in both lists.</strong><span>Remove {conflicts.map(term => `“${term}”`).join(', ')} from either Positive keywords or Exclusions before saving.</span></div> : null}
       <form className="compass-criteria-form" onChange={markDirty} onSubmit={event => {
         event.preventDefault()
-        if (conflicts.length) return
+        if (conflicts.length || !description.trim()) return
         mutation.mutate({ session_id: session.id, job_description: description, required_skills: required, optional_skills: optional,
           required_experience_months: requiredExperienceMonths, target_titles: titles, location, industries, required_credentials: credentials,
           positive_keywords: parseKeywords(positive), negative_keywords: parseKeywords(negative), message_tone: tone })
       }}>
         <div className="criteria-sheet">
-          {!current ? <p className="criteria-hint">Add the criteria from your description that you want to check against profiles.</p> : null}
+          <label className="field" data-field-prefix="job_description">
+            <span>Role description</span>
+            <textarea id="job-description" required rows={8} placeholder="Describe the role you’re hiring for…" value={description} onChange={event => { setDescription(event.target.value); markDirty() }} />
+            {fieldErrors.job_description?.map(error => <span className="field-error" key={error} role="alert">{error}</span>)}
+          </label>
           <KeyFilters skills={required} credentials={credentials} optionalSkills={optional} optionalSkillErrors={fieldErrors.optional_skills} onOptionalSkillsChange={editTerms(setOptional)} skillErrors={fieldErrors.required_skills} credentialErrors={fieldErrors.required_credentials} onSkillsChange={editTerms(setRequired)} onCredentialsChange={editTerms(setCredentials)} />
           <TermEditor errors={fieldErrors.location} field="location" label="Locations" placeholder="Add a location" values={splitLocations(location).map(term => ({ term, aliases: [] }))} onChange={values => { setLocation(values.map(value => value.term).join('; ')); markDirty() }} />
           <div data-field-prefix="required_experience_months">
@@ -210,8 +196,8 @@ export function BriefPage({
           </section>
         </div>
         <div className="criteria-footer">
-          <span aria-live="polite">{mutation.isSuccess && !dirty ? `Version ${mutation.data.version} saved. No search was started.` : dirty ? 'Unsaved changes' : current ? `Saved criteria · version ${current.version}` : 'Next: confirm your LinkedIn search'}</span>
-          <button className="primary-action" disabled={mutation.isPending || conflicts.length > 0} type="submit">{mutation.isPending ? 'Saving…' : onSaved ? 'Continue to search' : current ? 'Save new version' : 'Save brief'}<CompassIcon name="arrow" size={16} /></button>
+          <span aria-live="polite">{mutation.isSuccess && !dirty ? `Version ${mutation.data.version} saved. No search was started.` : dirty ? 'Unsaved changes' : current ? `Saved criteria · version ${current.version}` : 'Save your criteria to continue'}</span>
+          <button className="primary-action" disabled={mutation.isPending || conflicts.length > 0 || !description.trim()} type="submit">{mutation.isPending ? 'Saving…' : onSaved ? 'Continue to search' : current ? 'Save new version' : 'Save brief'}<CompassIcon name="arrow" size={16} /></button>
         </div>
       </form>
     </section>

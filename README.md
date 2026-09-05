@@ -13,7 +13,7 @@ Download or clone this repository, open its folder in a terminal, and run:
 ```
 
 Compass installs what it needs, opens the app, and opens a LinkedIn sign-in window
-on first use. Sign in, create your role brief, then choose **Run search**.
+on first use. Sign in, complete **Search criteria**, then choose **Run search**.
 Later launches reuse your installation and login.
 
 **Requirements:** macOS or desktop Linux, Git, curl, and internet access for setup.
@@ -26,11 +26,12 @@ minutes. Keep the terminal open; **Ctrl+C** stops Compass without deleting saved
 
 *Screenshots use fictional candidates in the working app.*
 
-## From role brief to comparison
+## From search criteria to comparison
 
-1. **Define the role.** Enter skills, credentials, locations, and minimum
-   experience. Add optional preferences where useful. The role description is
-   not automatically converted into criteria.
+1. **Set your search criteria.** Edit the role description, skills, credentials,
+   locations, and minimum experience on one page. Add optional preferences where
+   useful, then choose **Continue to search**. The description is not automatically
+   converted into criteria.
 2. **Find candidates.** Run a search. New profiles download and receive scores
    automatically with the default settings; existing downloads are reused.
 3. **Review the list.** Check names and duplicate sources, add a review note,
@@ -53,7 +54,7 @@ walks through the same workflow with interactive examples.
 - **Speed:** one or two profiles download at a time, depending on Settings and
   connector support. A larger batch does not increase simultaneous downloads.
 - **Reach:** choose first-degree, second-degree, or third-degree and beyond in
-  Role brief. Leave all unchecked to search across networks. Connection distance
+  Search criteria. Leave all unchecked to search across networks. Connection distance
   does not affect scores.
 - **Profile visits:** retrieval opens LinkedIn pages in your signed-in session.
   Hidden browser tabs do not make visits anonymous.
@@ -67,11 +68,11 @@ walks through the same workflow with interactive examples.
 ## Screenshots
 
 <details>
-<summary>Role brief, ranked results, candidate review, and settings</summary>
+<summary>Search criteria, ranked results, candidate review, and settings</summary>
 
-### Role brief
+### Search criteria
 
-![Role brief with skills, multiple locations, and minimum experience](docs/screenshots/role-brief.png)
+![Search criteria with an editable role description, skills, locations, and minimum experience](docs/screenshots/role-brief.png)
 
 ### Ranked results
 

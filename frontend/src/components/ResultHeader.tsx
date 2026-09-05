@@ -18,7 +18,7 @@ export function ResultHeader({ brief, titleId, fallback, subtitle, onEdit, compa
     ...(brief.required_experience_months == null ? [] : [`${Number((brief.required_experience_months / 12).toFixed(2))}+ years`]),
     ...splitLocations(brief.location), ...(brief.industries ?? []).map(item => item.term), ...(brief.required_credentials ?? []).map(item => item.term)] : []
   return <header className={`results-header${compact ? ' results-header-compact' : ''}`}>
-    {onEdit && !compact ? <button type="button" className="compass-back" onClick={onEdit}><CompassIcon name="back" size={16} /> Role brief</button> : null}
+    {onEdit && !compact ? <button type="button" className="compass-back" onClick={onEdit}><CompassIcon name="back" size={16} /> Search criteria</button> : null}
     <div className="results-title-row">
       <div className="results-title"><h1 id={titleId} title={title}>{title}</h1><p>{subtitle}</p></div>
       <div className="results-header-actions">

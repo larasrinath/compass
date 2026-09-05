@@ -20,7 +20,7 @@ export function LauncherStatus({ phase }: { phase: string }) {
   return <div className="connection-strip" role="status">
     <div>
       <strong>{failed ? 'LinkedIn needs your attention' : phase === 'signing_in' ? 'Sign in to LinkedIn' : 'Connecting to LinkedIn…'}</strong>
-      <span>{failed ? 'Sign-in did not finish or the connection stopped. Try again; startup details are in .compass/connector.log.' : phase === 'signing_in' ? 'Finish signing in in the LinkedIn window that opens. You can set up your role brief while you wait.' : 'Compass is starting the connection for you.'}</span>
+      <span>{failed ? 'Sign-in did not finish or the connection stopped. Try again; startup details are in .compass/connector.log.' : phase === 'signing_in' ? 'Finish signing in in the LinkedIn window that opens. You can set up your search criteria while you wait.' : 'Compass is starting the connection for you.'}</span>
       {login.isError && <span role="alert">{login.error.message}</span>}
     </div>
     {failed && <button type="button" className="quiet-action" disabled={login.isPending} onClick={() => login.mutate()}>{login.isPending ? 'Opening…' : 'Sign in to LinkedIn'}</button>}

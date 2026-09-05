@@ -1,7 +1,7 @@
 # Settings
 
 Settings stores operational preferences in the local database. Role criteria,
-locations, titles, industries, company, and network filters stay in **Role brief**.
+locations, titles, industries, company, and network filters stay in **Search criteria**.
 Settings appears immediately before **How it works** in the sidebar.
 
 ## Downloads and search batches
@@ -42,7 +42,7 @@ cooldowns. Saving Settings neither starts the connector nor resumes a paused que
 
 The **Scoring weights** sheet has its own **Save scoring weights** action. It
 recalculates saved evidence locally without another LinkedIn read. Changes to the
-role brief also trigger local rescoring. Source-check selections for superseded
+search criteria also trigger local rescoring. Source-check selections for superseded
 scores are cleared.
 
 Inputs cover required skills, optional skills, experience, titles, industries,

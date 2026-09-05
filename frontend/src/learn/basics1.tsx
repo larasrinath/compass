@@ -7,7 +7,7 @@ import { FICTION } from './content';
 
 const STAGES = [
   {
-    label: 'Define the role', where: 'Role brief',
+    label: 'Define the role', where: 'Search criteria',
     detail: 'Start with a description, then enter the criteria yourself. Add skills, credentials and nice-to-haves, choose one or more locations, and set minimum experience in years. Target titles, industries, network and company preferences stay in the optional section.',
     outcome: 'Continue to search saves the brief. Every search uses those saved criteria.',
   },
@@ -39,10 +39,10 @@ export function Ch1() {
       chapterId="what-compass-does"
       kicker="The basics · 1 of 9"
       title="What Compass does"
-      intro="Start Compass with ./compass from the repository folder. The app and first-time LinkedIn sign-in window open for you. Finish signing in, then create your role brief and choose Run search. Compass is your local candidate research workspace. Describe a role, search LinkedIn, automatically download profiles, and compare the evidence against your criteria. You choose what matters and inspect the sources behind the results."
+      intro="Start Compass with ./compass from the repository folder. The app and first-time LinkedIn sign-in window open for you. Finish signing in, then create your search criteria and choose Run search. Compass is your local candidate research workspace. Describe a role, search LinkedIn, automatically download profiles, and compare the evidence against your criteria. You choose what matters and inspect the sources behind the results."
     >
       <section>
-        <h2 className="font-display text-lg font-bold text-ink">From role brief to your decision</h2>
+        <h2 className="font-display text-lg font-bold text-ink">From search criteria to your decision</h2>
         <p className="mt-2 text-sm leading-relaxed text-faint">Follow the work from top to bottom. Each stage explains what you do, what Compass does, and what you can review next.</p>
         <div className="mt-5">
           <Figure caption="New searches and profile requests use the separate LinkedIn connector. Saved evidence, local scoring and comparison remain available while the connector is offline.">
@@ -106,7 +106,7 @@ function ChipInput({ values, onChange, placeholder }: { values: string[]; onChan
 }
 
 export function Ch2() {
-  const [step, setStep] = useState<'describe' | 'criteria'>('describe');
+  const [description, setDescription] = useState(`${FICTION.role.charAt(0).toUpperCase() + FICTION.role.slice(1)}, ideally with payments experience. Berlin or remote in Europe.`);
   const [required, setRequired] = useState<string[]>(['Go', 'PostgreSQL']);
   const [optional, setOptional] = useState<string[]>(['Kubernetes']);
   const [include, setInclude] = useState<string[]>(['payments']);
@@ -125,31 +125,18 @@ export function Ch2() {
       chapterId="set-up-role"
       kicker="The basics · 2 of 9"
       title="Set up your role"
-      intro="Start by describing the role in plain words, then select “Set up search” to enter the criteria screen. You complete the structured criteria yourself — Compass never reads your description and fills the form in for you. Save the brief before searching: searches always use the latest saved version."
+      intro="The Search criteria page keeps your description and search criteria on one page. Enter the description, add the criteria you want to check, then select “Continue to search”. The description does not automatically fill in the criteria. Searches use your latest saved brief."
     >
-      <Figure caption="The description screen hands off to the criteria form — you confirm or correct every field. This example starts with manually entered criteria. Skills and nice-to-haves appear together; locations support multiple entries. Target titles and industries are in Optional preferences. Existing aliases are retained in saved data but are not edited on this screen. Try adding “payments” to Exclusions to see the conflict check.">
-        {step === 'describe' ? (
-          <div className="fade-enter">
-            <p className="text-xs font-semibold uppercase tracking-wide text-faint">Step 1 · Describe the role</p>
-            <div className="mt-3 rounded-xl border border-line bg-canvas p-4">
-              <p className="text-sm leading-relaxed text-body">“{FICTION.role.charAt(0).toUpperCase() + FICTION.role.slice(1)}, ideally with payments experience. Berlin or remote in Europe.”</p>
-              <p className="mt-2 text-xs text-faint">A description is a starting note — not instructions Compass acts on by itself.</p>
-            </div>
-            <div className="mt-4 flex justify-end">
-              <button
-                onClick={() => setStep('criteria')}
-                className="inline-flex items-center gap-2 rounded-full bg-ink px-5 py-2.5 text-sm font-semibold text-canvas hover:bg-accent-strong"
-              >
-                Set up search
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="fade-enter space-y-5">
+      <Figure caption="Edit the description and criteria together, then save once. This example starts with manually entered criteria. Skills and nice-to-haves appear together; locations support multiple entries. Target titles and industries are in Optional preferences. Existing aliases are retained in saved data but are not edited on this screen. Try adding “payments” to Exclusions to see the conflict check.">
+        <div className="fade-enter space-y-5">
             <div className="flex items-center justify-between">
-              <p className="text-xs font-semibold uppercase tracking-wide text-faint">Step 2 · You complete the criteria</p>
+              <p className="text-sm font-semibold text-ink">Search criteria</p>
               <FictionalTag />
             </div>
+            <label className="block text-sm font-semibold text-ink">
+              Role description
+              <textarea className="mt-2 w-full rounded-xl border border-line bg-canvas p-3 font-normal" rows={8} value={description} onChange={event => { setDescription(event.target.value); setSaved(false); }} />
+            </label>
             <div>
               <p className="text-sm font-semibold text-ink">Skills & keywords</p>
               <div className="mt-2"><ChipInput values={required} onChange={(v) => { setRequired(v); setSaved(false); }} placeholder="Add required skill" /></div>
@@ -194,14 +181,13 @@ export function Ch2() {
               <p className="text-xs text-faint">Credentials are added in Skills & keywords using the filter type.</p>
               <button
                 onClick={() => setSaved(true)}
-                disabled={conflicts.length > 0}
+                disabled={conflicts.length > 0 || !description.trim()}
                 className="inline-flex shrink-0 items-center gap-2 rounded-full bg-ink px-5 py-2.5 text-sm font-semibold text-canvas hover:bg-accent-strong disabled:cursor-not-allowed disabled:opacity-40"
               >
                 Continue to search
               </button>
             </div>
           </div>
-        )}
       </Figure>
 
       <Callout tone="warn">
