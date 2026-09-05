@@ -19,6 +19,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
+import psutil
 import uvicorn
 from fastapi import HTTPException
 from fastapi.responses import FileResponse
@@ -181,6 +182,95 @@ def require_free_port(port: int) -> None:
         ) from error
 
 
+def find_launcher_owner(lock_path: Path, root: Path) -> psutil.Process | None:
+    """Identify a launcher by its module, repository and open lock file."""
+    owners = []
+    for process in psutil.process_iter(["pid", "cmdline", "cwd"]):
+        try:
+            if process.pid == os.getpid():
+                continue
+            arguments = process.info["cmdline"] or []
+            if not any(
+                arguments[index : index + 2] == ["-m", "linkedin_dashboard.launcher"]
+                for index in range(len(arguments) - 1)
+            ):
+                continue
+            if (
+                not process.info["cwd"]
+                or Path(process.info["cwd"]).resolve() != root.resolve()
+            ):
+                continue
+            if any(
+                Path(item.path).resolve() == lock_path.resolve()
+                for item in process.open_files()
+            ):
+                owners.append(process)
+        except (psutil.Error, OSError):
+            continue
+    return owners[0] if len(owners) == 1 else None
+
+
+@contextlib.contextmanager
+def launcher_lock(cache: Path, root: Path, *, setup_only: bool = False):
+    # Serialize takeover so simultaneous launches cannot stop the same instance.
+    with (cache / "launcher-restart.lock").open("a+") as takeover:
+        try:
+            fcntl.flock(takeover, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RuntimeError(
+                "Another Compass launch is restarting. Wait for it to finish."
+            ) from None
+        lock_path = cache / "launcher.lock"
+        lock = lock_path.open("a+")
+        try:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                if setup_only:
+                    raise RuntimeError(
+                        "Compass is running. Stop it before setup-only maintenance."
+                    ) from None
+                lock.seek(0)
+                if lock.read().strip() == "preparing":
+                    raise RuntimeError(
+                        "Compass is still preparing its installation. "
+                        "Wait for the existing launch to finish."
+                    ) from None
+                owner = find_launcher_owner(lock_path, root)
+                if owner is None:
+                    raise RuntimeError(
+                        "Cannot verify the previous Compass process. "
+                        "No process was stopped."
+                    ) from None
+                print("Restarting the previous Compass instance…", flush=True)
+                try:
+                    owner.terminate()
+                    owner.wait(timeout=25)
+                except psutil.NoSuchProcess:
+                    pass
+                except psutil.TimeoutExpired:
+                    raise RuntimeError(
+                        "The previous Compass instance is still shutting down. "
+                        "Try again shortly."
+                    ) from None
+                except psutil.Error as error:
+                    raise RuntimeError(
+                        "Could not stop the previous Compass process."
+                    ) from error
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lock.seek(0)
+            lock.truncate()
+            lock.write("preparing")
+            lock.flush()
+        except BaseException:
+            lock.close()
+            raise
+    try:
+        yield lock
+    finally:
+        lock.close()
+
+
 class ManagedConnector:
     def __init__(self, uv: str, checkout: Path, profile: Path, port: int, log: Path):
         self.command = [
@@ -264,7 +354,7 @@ class ManagedConnector:
                 raise RuntimeError("Connector startup timed out")
             self.phase = "ready"
             print(
-                "Compass is ready. Choose Run search when your role brief is ready.",
+                "Compass is ready. Choose Run search when your criteria are ready.",
                 flush=True,
             )
             await self.process.wait()
@@ -411,20 +501,13 @@ def main():
     if not uv:
         parser.error("Start Compass with ./compass")
     try:
-        with (cache / "launcher.lock").open("w") as lock:
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                raise RuntimeError(
-                    "Compass is already running from this repository."
-                ) from None
+        if not args.setup_only and (
+            args.port == args.connector_port
+            or not all(1 <= p <= 65535 for p in (args.port, args.connector_port))
+        ):
+            raise RuntimeError("Choose two different ports between 1 and 65535.")
+        with launcher_lock(cache, PROJECT_ROOT, setup_only=args.setup_only) as lock:
             if not args.setup_only:
-                if args.port == args.connector_port or not all(
-                    1 <= p <= 65535 for p in (args.port, args.connector_port)
-                ):
-                    raise RuntimeError(
-                        "Choose two different ports between 1 and 65535."
-                    )
                 require_free_port(args.port)
                 require_free_port(args.connector_port)
             checkout = ensure_connector(PROJECT_ROOT, cache, uv)
@@ -443,6 +526,10 @@ def main():
                 frontend_port=args.port,
                 mcp_url=f"http://127.0.0.1:{args.connector_port}/mcp",
             )
+            lock.seek(0)
+            lock.truncate()
+            lock.write("running")
+            lock.flush()
             asyncio.run(
                 serve(
                     managed_app(settings, manager, dist, login=args.login),
