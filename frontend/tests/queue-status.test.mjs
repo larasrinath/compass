@@ -71,5 +71,5 @@ test('queue UI exposes position, pause deadline, and explicit resume', () => {
   assert.match(queueComponent, /Position \$\{job\.position/)
   assert.match(queueComponent, /queue\.resume_at/)
   assert.match(queueComponent, /Resume downloads/)
-  assert.match(queueComponent, /Live updates connected/)
+  assert.match(queueComponent, /Reconnecting/)
 })

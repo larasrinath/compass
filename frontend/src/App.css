@@ -1313,3 +1313,25 @@ details.context-panel:not([open]), details.promotion-panel:not([open]) { padding
 @media (max-width: 820px) { .extra-criteria { grid-template-columns: 1fr; } .simple-options > summary > span { display: block; margin: 5px 0 0 16px; } }
 
 .connection-recheck { border: 0; background: transparent; color: var(--accent); cursor: pointer; padding: 4px; font-size: 12px; }
+
+/* Activity stays compact even when a search queues hundreds of profiles. */
+.queue-overview { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.queue-summary { min-width: 0; }
+.queue-compact h2 { color: var(--ink-faint); font-size: 12px; font-weight: 400; }
+.queue-current { margin: 5px 0 0; font-size: 15px; color: var(--ink); }
+.queue-current span, .queue-breakdown { color: var(--ink-faint); }
+.queue-breakdown { margin: 4px 0 0; font-size: 12px; }
+.queue-toggle, .queue-cancel, .queue-pages button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 6px 8px; border: 0; background: transparent; color: var(--accent); font-size: 13px; font-weight: 400; cursor: pointer; }
+.queue-toggle { flex-shrink: 0; }
+.queue-toggle svg { transform: rotate(90deg); }
+.queue-toggle[aria-expanded="true"] svg { transform: rotate(-90deg); }
+.queue-details .queue-job { flex-direction: row; align-items: center; gap: 12px; padding: 8px 0; }
+.queue-details .queue-job div { flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+.queue-details .queue-task-name { font-size: 13px; color: var(--ink-soft); }
+.queue-pages { display: flex; align-items: center; justify-content: flex-end; gap: 8px; border-top: 1px solid var(--line); padding-top: 8px; font-size: 12px; color: var(--ink-faint); }
+.queue-pages span { margin-right: auto; }
+.queue-pages button:disabled, .queue-cancel:disabled { opacity: .4; cursor: default; }
+@media (max-width: 480px) {
+  .queue-overview { align-items: flex-start; gap: 8px; }
+  .queue-current span { display: block; }
+}

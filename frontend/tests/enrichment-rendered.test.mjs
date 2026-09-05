@@ -745,3 +745,31 @@ test('Find candidates pages cards and global rankings in groups of 30', async ()
   assert.equal(rows().length, 30)
   assert.equal(rows()[0].querySelector('.pool-rank').textContent, '1')
 })
+
+test('large activity queues stay collapsed, page tasks, and cancel only the selected job', async () => {
+  const cancelled = []
+  globalThis.fetch = (input, init) => {
+    assert.equal(init.method, 'POST')
+    cancelled.push(String(input))
+    return json({})
+  }
+  const user = userEvent.setup({ document: dom.window.document })
+  const jobs = Array.from({ length: 1001 }, (_, index) => ({
+    id: `job-${index}`, kind: index === 0 ? 'search_people' : 'get_person_profile',
+    state: index === 0 ? 'running' : 'queued', position: index || null, depth: 1001,
+    percent: index === 0 ? 100 : null,
+  }))
+  const view = render(wrapper(React.createElement(QueueStatus, { queue: { ...queue, jobs } })))
+  assert.ok(screen.getByText('Finding candidates'))
+  assert.ok(screen.getByText(/1,000 waiting/))
+  assert.equal(screen.queryByText(/100%/), null)
+  assert.equal(view.container.querySelectorAll('.queue-job').length, 0)
+  await user.click(screen.getByRole('button', { name: 'View tasks' }))
+  assert.equal(view.container.querySelectorAll('.queue-job').length, 10)
+  await user.click(screen.getByRole('button', { name: 'Next tasks' }))
+  assert.ok(screen.getByText('11–20 of 1,001 tasks'))
+  await user.click(screen.getByRole('button', { name: 'Cancel Profile download at position 10' }))
+  assert.deepEqual(cancelled, ['/api/jobs/job-10/cancel'])
+  await user.click(screen.getByRole('button', { name: 'Hide tasks' }))
+  assert.equal(view.container.querySelectorAll('.queue-job').length, 0)
+})

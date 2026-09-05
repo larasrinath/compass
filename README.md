@@ -61,7 +61,9 @@ See [download behavior and verification](docs/reviews/automatic-downloads.md) fo
 2. **Find candidates** — run a search from the saved brief. Each location queues
    a separate search. Newly found profiles and experience download automatically,
    one person at a time, and scoring updates after each download. Repeated results
-   reuse saved profiles. Keep the current **Cards** view, or switch to
+   reuse saved profiles. The activity summary shows the current task and waiting counts;
+   **View tasks** opens ten tasks at a time with individual cancellation controls.
+   Keep the current **Cards** view, or switch to
    **Ranked list** after reviewing the list to see rank, score, and confidence.
    Both views show at most 30 profiles per page. Filtering searches the full pool;
    ranked results keep highest-score-first order across pages, with unscored profiles last.
