@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import type { BriefTerm } from '../api/client'
 import { CompassIcon } from './CompassIcon'
 
@@ -13,6 +13,7 @@ export function KeyFilters({ skills, credentials, optionalSkills, skillErrors = 
   onCredentialsChange: (values: BriefTerm[]) => void
   onOptionalSkillsChange: (values: BriefTerm[]) => void
 }) {
+  const inputRef = useRef<HTMLInputElement>(null)
   const [nextTerm, setNextTerm] = useState('')
   const [kind, setKind] = useState('skill')
   const groups = [
@@ -33,9 +34,23 @@ export function KeyFilters({ skills, credentials, optionalSkills, skillErrors = 
 
   return (
     <div className="criteria-terms" role="group" aria-labelledby="key-filters-label">
-      <span className="criteria-label" id="key-filters-label">Skills & keywords</span>
+      <div className="criteria-heading-row">
+        <span className="criteria-label" id="key-filters-label">Skills & keywords</span>
+        <div className="criteria-chip criteria-chip-add criteria-filter-add" onBlur={event => {
+          if (!event.currentTarget.contains(event.relatedTarget)) addFilter()
+        }}>
+          <input ref={inputRef} aria-label="New key filter" placeholder="Add a filter" value={nextTerm} onChange={event => setNextTerm(event.target.value)}
+            onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); addFilter() } }} />
+          <select aria-label="Filter type" value={kind} onChange={event => setKind(event.target.value)}>
+            <option value="skill">Skill</option>
+            <option value="credential">Credential</option>
+            <option value="optional">Nice-to-have</option>
+          </select>
+          <button type="button" aria-label="Add filter" onClick={() => { addFilter(); inputRef.current?.focus() }}><CompassIcon name="plus" size={18} /></button>
+        </div>
+      </div>
       <p className="criteria-hint">Skills, credentials and nice-to-haves to look for in each profile.</p>
-      <div className="criteria-chips">
+      <div className="criteria-chips criteria-values">
         {groups.flatMap(group => group.values.map((value, index) => (
           <div className="criteria-chip" data-field-prefix={group.field} key={`${group.field}-${index}`}>
             <input aria-label={`${group.label} filter ${index + 1}`} value={value.term}
@@ -46,18 +61,7 @@ export function KeyFilters({ skills, credentials, optionalSkills, skillErrors = 
             <button type="button" aria-label={`Remove ${value.term || `${group.label} filter ${index + 1}`}`} onClick={() => group.onChange(group.values.filter((_, row) => row !== index))}><CompassIcon name="close" size={14} /></button>
           </div>
         )))}
-        <div className="criteria-chip criteria-chip-add criteria-filter-add" onBlur={event => {
-          if (!event.currentTarget.contains(event.relatedTarget)) addFilter()
-        }}>
-          <input aria-label="New key filter" placeholder="Add a filter" value={nextTerm} onChange={event => setNextTerm(event.target.value)}
-            onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); addFilter() } }} />
-          <select aria-label="Filter type" value={kind} onChange={event => setKind(event.target.value)}>
-            <option value="skill">Skill</option>
-            <option value="credential">Credential</option>
-            <option value="optional">Nice-to-have</option>
-          </select>
-          <button type="button" aria-label="Add filter" onClick={addFilter}><CompassIcon name="plus" size={18} /></button>
-        </div>
+
       </div>
       {groups.filter(group => group.errors.length).map(group => (
         <div data-field-prefix={group.field} key={group.field}>

@@ -198,7 +198,7 @@ export function BriefPage({
             </div>
           </div>
           <div className="criteria-columns">
-            <label className="field"><span>Location</span><input placeholder="Any location" value={location} onChange={event => setLocation(event.target.value)} /></label>
+            <label className="field criteria-location"><span>Location</span><input placeholder="Any location" value={location} onChange={event => setLocation(event.target.value)} /></label>
             <TermEditor errors={fieldErrors.industries} field="industries" label="Industries" placeholder="Any industry" onChange={editTerms(setIndustries)} values={industries} />
           </div>
           <section className="criteria-optional" aria-labelledby="optional-title">

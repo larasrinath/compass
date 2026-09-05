@@ -91,12 +91,21 @@ test('create adds skills and credentials together and saves minimum experience i
   await user.click(screen.getByRole('button', { name: /Increase minimum experience/ }))
   assert.equal(screen.getByRole('status').textContent, '2+ years')
 
+  const titles = screen.getByRole('group', { name: 'Target titles' })
+  const titleInput = within(titles).getByLabelText('New target titles term')
+  await user.type(titleInput, 'Engineer')
+  await user.click(within(titles).getByRole('button', { name: 'Add term' }))
+  assert.equal(document.activeElement, titleInput)
+  await user.keyboard('Architect{Enter}')
+  assert.equal(within(titles).getByLabelText('Target titles term 2').value, 'Architect')
+
   const filters = screen.getByRole('group', { name: 'Skills & keywords' })
   await user.type(within(filters).getByLabelText('New key filter'), 'Go{Enter}')
   await user.type(within(filters).getByLabelText('New key filter'), 'AWS Architect')
   // Changing type must not prematurely add the pending credential as a skill.
   await user.selectOptions(within(filters).getByLabelText('Filter type'), 'credential')
   await user.click(within(filters).getByRole('button', { name: 'Add filter' }))
+  assert.equal(document.activeElement, within(filters).getByLabelText('New key filter'))
   await user.selectOptions(within(filters).getByLabelText('Filter type'), 'optional')
   await user.type(within(filters).getByLabelText('New key filter'), 'Terraform{Enter}')
   assert.equal(screen.queryByLabelText('Search keywords — optional'), null)

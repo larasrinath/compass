@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import type { BriefTerm } from '../api/client'
 import { CompassIcon } from './CompassIcon'
 
@@ -11,6 +11,7 @@ export function TermEditor({ field, label, values, errors = [], onChange, hint, 
   hint?: string
   placeholder?: string
 }) {
+  const inputRef = useRef<HTMLInputElement>(null)
   const [nextTerm, setNextTerm] = useState('')
   function addTerm() {
     const term = nextTerm.trim()
@@ -22,9 +23,16 @@ export function TermEditor({ field, label, values, errors = [], onChange, hint, 
   }
   return (
     <div aria-labelledby={`${field}-label`} className="criteria-terms" data-field-prefix={field} role="group">
-      <label className="criteria-label" id={`${field}-label`}>{label}</label>
+      <div className="criteria-heading-row">
+        <span className="criteria-label" id={`${field}-label`}>{label}</span>
+        <div className="criteria-chip criteria-chip-add" onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) addTerm() }}>
+          <input ref={inputRef} aria-label={`New ${label.toLocaleLowerCase()} term`} placeholder={placeholder} value={nextTerm} onChange={event => setNextTerm(event.target.value)}
+            onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); addTerm() } }} />
+          <button aria-label="Add term" onClick={() => { addTerm(); inputRef.current?.focus() }} type="button"><CompassIcon name="plus" size={18} /></button>
+        </div>
+      </div>
       {hint ? <p className="criteria-hint">{hint}</p> : null}
-      <div className="criteria-chips">
+      <div className="criteria-chips criteria-values">
         {values.map((value, index) => (
           <div className="criteria-chip" key={`term-${index}`}>
             <input aria-label={`${label} term ${index + 1}`} style={{ width: `${Math.max(4, Math.min(32, value.term.length + 1))}ch` }} value={value.term}
@@ -33,12 +41,7 @@ export function TermEditor({ field, label, values, errors = [], onChange, hint, 
             <button aria-label={`Remove ${value.term || `${label} term ${index + 1}`}`} onClick={() => onChange(values.filter((_, row) => row !== index))} type="button"><CompassIcon name="close" size={14} /></button>
           </div>
         ))}
-        <div className="criteria-chip criteria-chip-add">
-          <input aria-label={`New ${label.toLocaleLowerCase()} term`} placeholder={placeholder} value={nextTerm} onChange={event => setNextTerm(event.target.value)}
-            onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); addTerm() } }}
-            onBlur={addTerm} />
-          <button aria-label="Add term" onClick={addTerm} type="button"><CompassIcon name="plus" size={18} /></button>
-        </div>
+
       </div>
       {errors.length ? <ul className="field-errors" role="alert">{errors.map(error => <li key={error}>{error}</li>)}</ul> : null}
     </div>

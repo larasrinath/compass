@@ -24,6 +24,13 @@ h1, h2, h3, .brand-title { font-family: var(--font-display); }
 .criteria-sheet > * { min-width: 0; }
 .criteria-label, .criteria-sheet .field > span { display: block; font-size: 14px; line-height: 1.5; color: var(--ink); font-weight: 600; }
 .criteria-label { margin-bottom: 8px; }
+.criteria-heading-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; margin-bottom: 12px; }
+.criteria-heading-row > .criteria-chip-add { margin-left: auto; }
+.criteria-heading-row > .criteria-label { margin: 0; }
+.criteria-values:empty { display: none; }
+.criteria-sheet .criteria-location { display: flex; flex-direction: row; align-items: center; gap: 16px; }
+.criteria-sheet .criteria-location > span { flex-shrink: 0; }
+.criteria-sheet .criteria-location > input { flex: 1; min-width: 0; }
 .criteria-hint { margin: -2px 0 12px; color: var(--ink-faint); font-size: 12px; line-height: 1.6; }
 .criteria-sheet .field { gap: 10px; }
 .criteria-sheet .field > input, .criteria-sheet .field > textarea { background: var(--canvas); border: 1px solid var(--line); border-radius: 12px; font-size: 14px; line-height: 1.5; padding: 10px 16px; width: 100%; min-width: 0; }
