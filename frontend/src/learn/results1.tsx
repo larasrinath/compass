@@ -47,7 +47,7 @@ export function Ch6() {
     >
       <div className="grid gap-3 sm:grid-cols-3">
         <Callout><strong>Is this the right person?</strong><p>In Find candidates, check names, LinkedIn links, and repeated source searches. Add a note under Check candidate list and choose Confirm list &amp; show ranking. You stay on Find candidates.</p></Callout>
-        <Callout><strong>What makes them relevant?</strong><p>Save profile, then open Review. Read the score with confidence, check the key criteria, and use career history to understand what they actually did.</p></Callout>
+        <Callout><strong>What makes them relevant?</strong><p>Wait for the profile download, then open Review. Read the score with confidence, check the key criteria, and use career history to understand what they actually did.</p></Callout>
         <Callout><strong>Does the source support it?</strong><p>Open a passage under Review against your criteria. Read the highlighted text in context before checking it. This records your source check without changing the score.</p></Callout>
       </div>
       <Figure caption="The gate is deliberate: inspect the saved candidate list and add a note to unlock comparison. There is no per-person review checkbox in the connected dashboard. Try confirming with the note empty — it stays locked. The “reload page” button demonstrates that the comparison selection is temporary to the session.">

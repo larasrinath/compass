@@ -64,7 +64,7 @@ export function Ch4() {
       chapterId="download-evidence"
       kicker="The basics · 4 of 9"
       title="Download and inspect evidence"
-      intro="The first profile request retrieves the main profile and experience. From the candidate detail you can request up to three more sections at a time. Every extracted detail stays connected to the original source text — select an example evidence link to highlight its source. These links illustrate provenance, not every field the parser can extract. A missing section always tells you why."
+      intro="After a search, Compass automatically retrieves the main profile and experience for each new person. From the candidate detail you can request up to three more sections at a time. Every extracted detail stays connected to the original source text — select an example evidence link to highlight its source. These links illustrate provenance, not every field the parser can extract. A missing section always tells you why."
     >
       <Figure caption="One fictional profile, three connected views: the saved source text (left), the illustrative evidence links (right), and the highlighted passage linking them. Select any extracted field to jump to its source. Below, each section shows an explicit state — including why something is missing.">
         <div className="grid gap-4 lg:grid-cols-2">
@@ -154,7 +154,7 @@ export function Ch4() {
 /* ================= Chapter 5 — What happens after a request ================= */
 
 const FLOW_STEPS = [
-  { label: 'Your click', detail: 'You select Save profile or request more sections for a saved candidate. The interface submits that explicit request; opening a candidate by itself does not download more information.' },
+  { label: 'Your click', detail: 'You run a search, which also queues its new profiles for download. For an older search, select Download remaining profiles. You can separately request more sections for a saved candidate; opening Review does not request extra sections.' },
   { label: 'Waiting in queue', detail: 'The local service records the task and processes one operation at a time. If another request is running, yours waits. A paused queue needs your attention before retrieval continues.' },
   { label: 'Local LinkedIn connector', detail: 'The worker sends the request to the separately running connector. It uses its existing LinkedIn session to retrieve the requested information. The dashboard does not manage that browser or sign in for you.' },
   { label: 'Response saved', detail: 'The complete response is committed to local storage before profile information is extracted. Previously saved sections are retained if a later request fails or is rate limited.' },
@@ -195,7 +195,7 @@ export function Ch5() {
       title="What happens after a request"
       intro="Every search or download becomes a queued task. A worker handles one operation at a time through the separate LinkedIn connector, the response is saved before it becomes candidate information, and matching runs locally against saved profiles and your current criteria."
     >
-      <Figure caption="A profile download, traced end to end. The connector runs locally; its retrieval request crosses the network boundary to LinkedIn. Search results populate the pool without downloading or scoring a full profile. Press play to watch a request move through the queue.">
+      <Figure caption="A profile download, traced end to end. The connector runs locally; its retrieval request crosses the network boundary to LinkedIn. Search results populate the pool first; automatic profile downloads follow, and each saved response updates the score. Press play to watch a request move through the queue.">
         <div className="flex justify-center">
           <button
             onClick={play}

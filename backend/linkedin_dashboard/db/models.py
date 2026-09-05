@@ -225,6 +225,22 @@ class SearchRun(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False)
 
 
+class SearchDownload(Base):
+    """Durable, explicit permission to download one search's returned people."""
+
+    __tablename__ = "search_download"
+    __table_args__ = (
+        CheckConstraint("profile_limit BETWEEN 1 AND 1000", name="ck_download_limit"),
+    )
+    search_run_id: Mapped[str] = mapped_column(
+        ForeignKey("search_run.id", ondelete="CASCADE"), primary_key=True
+    )
+    profile_limit: Mapped[int] = mapped_column(Integer, nullable=False)
+    requested_at: Mapped[str] = mapped_column(String(32), nullable=False)
+    dispatched_at: Mapped[str | None] = mapped_column(String(32))
+    queued_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
 class CandidateReference(Base):
     __tablename__ = "candidate_ref"
 

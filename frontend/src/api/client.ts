@@ -149,6 +149,7 @@ export interface BriefRecord extends BriefInput {
 }
 
 export interface SearchInput {
+  automatic_downloads?: boolean
   session_id: string
   brief_id: string
   keywords: string
@@ -168,6 +169,9 @@ export type SearchRunStatus =
   | 'cancelled'
 
 export interface SearchRun {
+  automatic_downloads?: boolean
+  downloads_dispatched?: boolean
+  download_limit?: number
   id: string
   job_id: string
   brief_id: string
@@ -478,6 +482,9 @@ export const listSearches = (sessionId: string) =>
 
 export const getSearch = (runId: string) =>
   requestJson<SearchDetail>(`/api/searches/${encodeURIComponent(runId)}`)
+
+export const downloadSearchResults = (runId: string) =>
+  requestJson<{ search_run_id: string }>(`/api/searches/${encodeURIComponent(runId)}/downloads`, { method: 'POST' })
 
 export const runSearch = (input: SearchInput) =>
   requestJson<{ job_id: string; search_run_id: string }>('/api/searches', {

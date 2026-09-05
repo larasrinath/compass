@@ -11,6 +11,37 @@ when the connector is offline.
 *Screenshots show the actual app with fictional documentation data. They do not
 contain real candidate records or represent live search results.*
 
+## Automatic profile downloads
+
+**Run search** also authorizes downloading the people returned by that search,
+up to **1,000 profiles per batch**. The network filter is forwarded to LinkedIn:
+1st-degree (`F`), 2nd-degree (`S`), or 3rd-degree and beyond (`O`). Select all three,
+or leave them all unchecked, to search across networks. Network distance does not
+contribute to a match score. Broad skills-based searches can surface people an
+exact-title search misses; no search guarantees complete LinkedIn coverage.
+
+The current connector only retrieves the first people-search page; the 1,000 cap
+is **not a promise of 1,000 results**. Pagination remains an
+[upstream limitation](https://github.com/stickerdaniel/linkedin-mcp-server/issues/526).
+Compass retains up to 1,000 candidates and 200 searches per session.
+
+Downloads use the existing durable, single-worker queue with its configured pause
+between calls, rate-limit cooldowns and operator pause/resume controls. A batch
+reserves two page reads per newly requested profile (overview and experience).
+Its explicit authorization expands the session read budget only as needed for
+those initial reads; extra sections and retries remain subject to the budget.
+Already requested profiles are skipped, including failed/cancelled requests;
+retry those individually after inspecting the failure. Restarting the app does
+not turn old searches into new download requests. Select an older search under
+**Results from**, then use **Download remaining profiles** to catch up.
+
+The API keeps discovery-only compatibility: `POST /api/searches` accepts
+`automatic_downloads: true` (the app always sends it). The optional flag defaults
+to false for older clients. `POST /api/searches/{id}/downloads` requests an
+idempotent catch-up batch for that search.
+
+See [download behavior and verification](docs/reviews/automatic-downloads.md) for implementation details.
+
 ## Working with Compass
 
 1. **Role brief** — describe the role, then enter skills and keywords, credentials,
@@ -18,8 +49,9 @@ contain real candidate records or represent live search results.*
    network, and company preferences are in the optional section. The description
    is not automatically parsed; review the criteria before continuing.
 2. **Find candidates** — run a search from the saved brief. Each location queues
-   a separate search. Finding a person adds a reference; **Save profile** retrieves
-   their profile text for review. Keep the current **Cards** view, or switch to
+   a separate search. Newly found profiles and experience download automatically,
+   one person at a time, and scoring updates after each download. Repeated results
+   reuse saved profiles. Keep the current **Cards** view, or switch to
    **Ranked list** after reviewing the list to see rank, score, and confidence.
    Ranked results use highest-score-first order, with unscored profiles last.
 3. **Check the candidate list** — inspect names, LinkedIn links, and repeated

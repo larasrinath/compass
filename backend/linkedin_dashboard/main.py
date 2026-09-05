@@ -33,6 +33,7 @@ from linkedin_dashboard.security import (
     RuntimeBoundaryMiddleware,
 )
 from linkedin_dashboard.services.brief import BriefService
+from linkedin_dashboard.services.downloads import SearchDownloadService
 from linkedin_dashboard.services.enrichment import (
     CompositeResultProcessor,
     EnrichmentResultProcessor,
@@ -138,6 +139,9 @@ def create_app(
     brief_service = BriefService(database, scoring_service)
     search_service = SearchService(database, job_queue, discovery_processor)
     enrichment_service = EnrichmentService(database, job_queue)
+
+    download_service = SearchDownloadService(database, enrichment_service)
+    job_queue.before_claim = download_service.dispatch_pending
     llm_provider = NullProvider()
 
     @asynccontextmanager
@@ -162,6 +166,7 @@ def create_app(
     app.state.brief_service = brief_service
     app.state.search_service = search_service
     app.state.enrichment_service = enrichment_service
+    app.state.download_service = download_service
     app.state.scoring_service = scoring_service
     app.state.llm_provider = llm_provider
 

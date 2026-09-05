@@ -11,7 +11,7 @@ export interface ChapterMeta {
 export const CHAPTERS: ChapterMeta[] = [
   { id: 'what-compass-does', group: 'The basics', title: 'What Compass does', blurb: 'The whole product in one picture: criteria, discovery, evidence, comparison.' },
   { id: 'set-up-role', group: 'The basics', title: 'Set up your role', blurb: 'Turn a plain-language description into criteria you control — with skills, locations and optional preferences.' },
-  { id: 'discover-candidates', group: 'The basics', title: 'Discover candidates before downloading', blurb: 'Finding someone and saving their profile are two different things.' },
+  { id: 'discover-candidates', group: 'The basics', title: 'Find, download and score candidates', blurb: 'A search starts the download queue; evidence drives the score.' },
   { id: 'download-evidence', group: 'The basics', title: 'Download and inspect evidence', blurb: 'Saved sections, extracted details, and the original text behind them.' },
   { id: 'after-a-request', group: 'The basics', title: 'What happens after a request', blurb: 'Follow one click through the queue, the connector, and local matching.' },
   { id: 'review-and-compare', group: 'Working with results', title: 'Review the pool and compare people', blurb: 'Check identities, assess fit, then compare the evidence.' },

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -209,6 +210,7 @@ class DurableJobQueue:
         self.rate_limit_cooldowns_seconds = rate_limit_cooldowns_seconds
         self.shutdown_grace_seconds = shutdown_grace_seconds
         self.result_processor = result_processor
+        self.before_claim: Callable[[], Awaitable[None]] | None = None
         self._wake = asyncio.Event()
         self._changed = asyncio.Condition()
         self._worker: asyncio.Task[None] | None = None
@@ -510,6 +512,9 @@ class DurableJobQueue:
                 Callable[[Any, Job], None] | None,
             ]
         ],
+        *,
+        transaction_callback: Callable[[Any], None] | None = None,
+        authorize_profile_reads: bool = False,
     ) -> list[str]:
         """Atomically reserve budget and persist a bounded batch of jobs."""
         if not self._accepting:
@@ -559,7 +564,24 @@ class DurableJobQueue:
                 )
                 or 0
             )
+            if transaction_callback is not None:
+                transaction_callback(session)
             total = sum(navigation_cost(payload) for _, payload, _ in prepared)
+            if authorize_profile_reads:
+                if len(prepared) > 1000 or any(
+                    not isinstance(payload, PersonProfilePayload)
+                    or payload.sections != ["experience"]
+                    for _, payload, _ in prepared
+                ):
+                    raise ValueError(
+                        "automatic batches allow up to 1000 initial profiles"
+                    )
+                # The explicit search/download action authorizes exactly this batch.
+                # Retry reads still use the remaining budget and existing queue guards.
+                dashboard_session.nav_budget = max(
+                    dashboard_session.nav_budget,
+                    dashboard_session.nav_used + reserved + total,
+                )
             remaining = (
                 dashboard_session.nav_budget - dashboard_session.nav_used - reserved
             )
@@ -568,9 +590,9 @@ class DurableJobQueue:
                 raise RuntimeError(
                     f"navigation budget shortfall: need {total}, have {available}"
                 )
+            session.add_all(job for job, _, _ in prepared)
+            session.flush()
             for job, payload, related_factory in prepared:
-                session.add(job)
-                session.flush()
                 cost = navigation_cost(payload)
                 if cost:
                     session.add(
@@ -586,10 +608,12 @@ class DurableJobQueue:
                         )
                     )
                 if related_factory is not None:
-                    related_factory(session, job)
-        for job, _, _ in prepared:
-            self.events.publish(self._job_event(job.id, "queued"))
-        self._publish_snapshot()
+                    with session.no_autoflush:
+                        related_factory(session, job)
+        # One canonical read for the whole batch; 1,000 jobs must not cause
+        # 1,000 extra queue-position queries (and frontend refetch bursts).
+        snapshot = self.snapshot()
+        self.events.publish(QueueEvent("snapshot", snapshot))
         self._wake.set()
         await self._notify_changed()
         return [job.id for job, _, _ in prepared]
@@ -767,7 +791,20 @@ class DurableJobQueue:
             if self._stopping:
                 return
             self._wake.clear()
+            dispatch_failed = False
+            if self.before_claim is not None:
+                try:
+                    await self.before_claim()
+                except Exception:
+                    # Keep queued work alive if local dispatch is temporarily broken.
+                    # Retry the durable intent, never the completed search request.
+                    logging.getLogger(__name__).exception(
+                        "Profile batch dispatch failed"
+                    )
+                    dispatch_failed = True
             claimed, next_delay = self._claim_next()
+            if dispatch_failed and next_delay is None:
+                next_delay = 1.0
             if claimed is None:
                 # Claiming can terminalize malformed or over-budget rows even
                 # when there is no executable job to announce. Reconcile all

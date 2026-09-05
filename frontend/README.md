@@ -13,6 +13,12 @@ Vite defaults to `http://127.0.0.1:5173` and proxies `/api` to the local dashboa
 API on port 8787. See the [root README](../README.md#run-locally) for the three-service
 setup and numeric-loopback configuration rules.
 
+Find candidates starts automatic profile-and-experience downloads with each
+search. Queue events refresh the pool and scores; historical searches have an
+explicit, run-scoped **Download remaining profiles** action. The backend owns
+batch recovery and deduplication, so this does not depend on keeping the page open.
+See [automatic downloads](../docs/reviews/automatic-downloads.md) for the contract.
+
 ## Screens and code ownership
 
 | Route | Screen | Main implementation |
