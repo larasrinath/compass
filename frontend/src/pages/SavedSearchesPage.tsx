@@ -78,7 +78,7 @@ export function SavedSearchesPage({ sessionId, onOpenRun, onSearch, onOpenCandid
                     <p className="saved-search-note" role="alert">Saved profiles could not be loaded. <button className="text-action" type="button" onClick={() => void profiles.refetch()}>Try again</button></p>
                   ) : saved.length ? (
                     <ul>
-                      {saved.map(candidate => (
+                      {saved.slice(0, 3).map(candidate => (
                         <li key={candidate.id}>
                           <div className="saved-profile-description">
                             <p className="saved-profile-name">{candidate.display_name || candidate.username}</p>
