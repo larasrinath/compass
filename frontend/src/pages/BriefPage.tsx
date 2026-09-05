@@ -11,6 +11,7 @@ import { CompassIcon } from '../components/CompassIcon'
 import { TermEditor } from '../components/TermEditor'
 import { readSearchSettings, saveSearchSettings } from '../searchSettings'
 import { SearchSettingsEditor } from '../components/SearchSettingsEditor'
+import { splitLocations } from '../locations'
 import { KeyFilters } from '../components/KeyFilters'
 import { focusBriefError } from './briefErrorFocus'
 
@@ -197,13 +198,11 @@ export function BriefPage({
               <button type="button" aria-label="Increase minimum experience by one year" onClick={() => { setRequiredExperienceMonths((Math.floor((requiredExperienceMonths ?? 0) / 12) + 1) * 12); markDirty() }}><CompassIcon name="plus" size={18} /></button>
             </div>
           </div>
-          <div className="criteria-columns">
-            <label className="field criteria-location"><span>Location</span><input placeholder="Any location" value={location} onChange={event => setLocation(event.target.value)} /></label>
-            <TermEditor errors={fieldErrors.industries} field="industries" label="Industries" placeholder="Any industry" onChange={editTerms(setIndustries)} values={industries} />
-          </div>
+          <TermEditor errors={fieldErrors.location} field="location" label="Locations" placeholder="Add a location" hint="Match any location. Each location runs a separate search." values={splitLocations(location).map(term => ({ term, aliases: [] }))} onChange={values => { setLocation(values.map(value => value.term).join('; ')); markDirty() }} />
           <section className="criteria-optional" aria-labelledby="optional-title">
             <h2 id="optional-title">Optional preferences</h2>
             <div className="criteria-optional-fields">
+              <TermEditor errors={fieldErrors.industries} field="industries" label="Industries" placeholder="Any industry" onChange={editTerms(setIndustries)} values={industries} />
               <SearchSettingsEditor sessionId={session.id} value={searchSettings} onChange={value => { setSearchSettings(value); markDirty() }} retrievalReady={retrievalReady} queueRevision={queueRevision} />
               <label className="field" data-field-prefix="positive_keywords"><span>Positive keywords</span><textarea value={positive} onChange={event => setPositive(event.target.value)} rows={2} placeholder="One per line, or separated by commas" />{fieldErrors.positive_keywords?.map(error => <span className="field-error" key={error} role="alert">{error}</span>)}</label>
               <label className="field" data-field-prefix="negative_keywords"><span>Exclusions / negative keywords</span><textarea value={negative} onChange={event => setNegative(event.target.value)} rows={2} placeholder="One per line, or separated by commas" />{fieldErrors.negative_keywords?.map(error => <span className="field-error" key={error} role="alert">{error}</span>)}</label>

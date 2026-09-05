@@ -75,8 +75,15 @@ def location_fit(
         )
 
     observed = snapshot.location
-    exact = normalize_text(observed.text) == normalize_text(brief.location)
-    metro = not exact and _same_metro(observed.text, brief.location, config)
+    targets = tuple(
+        value.strip() for value in brief.location.split(";") if value.strip()
+    )
+    exact = any(
+        normalize_text(observed.text) == normalize_text(target) for target in targets
+    )
+    metro = not exact and any(
+        _same_metro(observed.text, target, config) for target in targets
+    )
     if exact or metro:
         evidence = ProfileEvidence(
             matched_term=observed.text,

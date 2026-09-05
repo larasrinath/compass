@@ -99,6 +99,10 @@ test('create adds skills and credentials together and saves minimum experience i
   await user.keyboard('Architect{Enter}')
   assert.equal(within(titles).getByLabelText('Target titles term 2').value, 'Architect')
 
+  const locations = screen.getByRole('group', { name: 'Locations' })
+  await user.type(within(locations).getByLabelText('New locations term'), 'Austin, TX{Enter}Chicago{Enter}')
+  assert.ok(document.querySelector('.criteria-optional [data-field-prefix="industries"]'))
+
   const filters = screen.getByRole('group', { name: 'Skills & keywords' })
   await user.type(within(filters).getByLabelText('New key filter'), 'Go{Enter}')
   await user.type(within(filters).getByLabelText('New key filter'), 'AWS Architect')
@@ -117,6 +121,7 @@ test('create adds skills and credentials together and saves minimum experience i
   assert.deepEqual(JSON.parse(window.localStorage.getItem('compass:search-settings:brief-1')), { network: ['F', 'S', 'O'], companyId: '123' })
   assert.equal(request.method, 'POST')
   assert.equal(request.body.required_experience_months, 24)
+  assert.equal(request.body.location, 'Austin, TX; Chicago')
   assert.deepEqual(request.body.required_skills, [{ term: 'Go', aliases: [] }])
   assert.deepEqual(request.body.required_credentials, [{ term: 'AWS Architect', aliases: [] }])
   assert.deepEqual(request.body.optional_skills, [{ term: 'Terraform', aliases: [] }])

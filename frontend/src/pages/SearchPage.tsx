@@ -6,7 +6,6 @@ import {
   getSearch,
   listCandidatePool,
   listSearches,
-  runSearch,
 } from '../api/client'
 import type {
   BriefRecord,
@@ -14,6 +13,7 @@ import type {
   SearchRunStatus,
   SessionRecord,
 } from '../api/client'
+import { searchLocations } from '../searchLocations'
 import { defaultSearchKeywords, readSearchSettings } from '../searchSettings'
 import { ResultHeader } from '../components/ResultHeader'
 import { CompassIcon } from '../components/CompassIcon'
@@ -106,10 +106,11 @@ export function SearchPage({
   }, [client, queue.revision, selectedRun, session.id])
 
   const search = useMutation({
-    mutationFn: runSearch,
+    mutationFn: searchLocations,
     onSuccess: async (result) => {
-      setSelectedRun(result.search_run_id)
-      setPoolRun(result.search_run_id)
+      const runId = result.multiple ? null : result.queued[0].search_run_id
+      setSelectedRun(runId)
+      setPoolRun(runId)
       await client.invalidateQueries({ queryKey: ['searches', session.id] })
     },
     onError: () => requestAnimationFrame(() => errorRef.current?.focus()),
@@ -165,7 +166,8 @@ export function SearchPage({
       ) : !keywords ? <p className="field-help">Add a role title or key filter to your brief before searching.</p> : null}
       {search.isError ? <div className="form-error" ref={errorRef} role="alert" tabIndex={-1}><strong>Search was not queued.</strong><span>{search.error.message}</span></div> : null}
       {!retrievalReady ? <p className="field-help download-help">Downloads are paused or offline. Check the connector and resume paused downloads above. Saved candidates remain available.</p> : null}
-      {search.data ? <p aria-live="polite" className="queued-confirmation">Search queued. Results will appear automatically in your candidate list.</p> : null}
+      {search.data ? <p aria-live="polite" className="queued-confirmation">{search.data.queued.length === 1 ? '1 search queued.' : `${search.data.queued.length} searches queued.`} Results will appear automatically in your candidate list.</p> : null}
+      {search.data?.failed.length ? <p className="form-error" role="alert">Could not queue searches for {search.data.failed.join(', ')}. Earlier locations are already queued.</p> : null}
 
       <section aria-labelledby="pool-title" className="discovery-section candidate-pool">
         <div className="section-heading">

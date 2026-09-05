@@ -17,6 +17,10 @@ not just its colors.
   terms come from the brief's role titles, required filters, and positive keywords;
   there is no separate keyword override. Network and company filters are stored
   per brief version in this browser; location comes from the role brief.
+- Locations use repeatable chips and match any listed place. The existing location
+  field stores alternatives separated by semicolons, preserving commas in place
+  names. Queue one search per location; report any locations that could not queue.
+  Industries belongs to Optional preferences.
 - Results use two columns of equal-width cards, a role summary above them, and
   Review/Compare actions at the bottom of each card. Cards become one column on phones.
 - Candidate review opens in a 760px right-side modal drawer, preserving the

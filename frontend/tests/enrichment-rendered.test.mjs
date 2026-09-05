@@ -48,6 +48,7 @@ const { SearchPage } = await vite.ssrLoadModule('/src/pages/SearchPage.tsx')
 const { QueueStatus } = await vite.ssrLoadModule('/src/components/QueueStatus.tsx')
 const { CandidateOverview } = await vite.ssrLoadModule('/src/components/CandidateOverview.tsx')
 const { CandidateDrawer } = await vite.ssrLoadModule('/src/components/CandidateDrawer.tsx')
+const { searchLocations } = await vite.ssrLoadModule('/src/searchLocations.ts')
 await vite.close()
 
 test.after(async () => {
@@ -535,4 +536,27 @@ test('Find candidates derives keywords from the brief and ignores legacy overrid
     await user.click(screen.getByRole('button', { name: 'Adjust criteria' }))
     assert.equal(edited, true)
   } finally { window.localStorage.removeItem('compass:search-settings:launch-brief') }
+})
+
+
+test('multiple locations queue separate searches and retain comma-separated place names', async () => {
+  const submitted = []
+  globalThis.fetch = (_input, init) => {
+    submitted.push(JSON.parse(init.body))
+    return json({ search_run_id: `run-${submitted.length}`, job_id: `job-${submitted.length}` })
+  }
+  const result = await searchLocations({ session_id: 'session', brief_id: 'brief', keywords: 'Engineer', location: 'Austin, TX; Chicago' })
+  assert.deepEqual(submitted.map(item => item.location), ['Austin, TX', 'Chicago'])
+  assert.equal(result.queued.length, 2)
+  assert.equal(result.multiple, true)
+  assert.deepEqual(result.failed, [])
+})
+
+test('a partial location enqueue failure reports the unqueued locations without retrying earlier ones', async () => {
+  let calls = 0
+  globalThis.fetch = () => ++calls === 1 ? json({ search_run_id: 'first', job_id: 'job' }) : json({ detail: 'Queue unavailable' }, 503)
+  const result = await searchLocations({ session_id: 'session', brief_id: 'brief', keywords: 'Engineer', location: 'Chicago; Berlin; London' })
+  assert.equal(calls, 2)
+  assert.equal(result.queued.length, 1)
+  assert.deepEqual(result.failed, ['Berlin', 'London'])
 })

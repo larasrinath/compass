@@ -721,3 +721,26 @@ def test_alias_collisions_are_rejected_and_evidence_deduplicates() -> None:
     stem = replace(exact, matcher=Matcher.STEM)
     evidence = EvidenceSet((stem, exact, exact))
     assert evidence.entries == (exact,)
+
+
+def test_location_alternatives_match_any_target_with_exact_preferred() -> None:
+    snapshot = rich_snapshot()
+    config = ScoringConfigInput(
+        metro_equivalences=(MetroEquivalence("Chicagoland", ("Chicago", "Evanston")),)
+    )
+    for target, expected in (
+        ("Berlin; Chicago", Decimal(1)),
+        ("Evanston; Chicago", Decimal(1)),
+        ("Berlin; Evanston", Decimal("0.6")),
+        ("Berlin; London", Decimal(0)),
+        ("Chicago, IL; London", Decimal(0)),
+    ):
+        signal = location_fit(replace(full_brief(), location=target), config, snapshot)
+        assert signal.raw_subscore == expected
+        assert signal.availability == 1
+    unavailable = location_fit(
+        replace(full_brief(), location="Chicago; Berlin"),
+        config,
+        replace(snapshot, location=None),
+    )
+    assert unavailable.claims[0].verdict is Verdict.UNKNOWN
