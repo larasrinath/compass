@@ -16,6 +16,8 @@ import type {
   SearchRunStatus,
   SessionRecord,
 } from '../api/client'
+import { ResultHeader } from '../components/ResultHeader'
+import { CompassIcon } from '../components/CompassIcon'
 import { QueueStatus } from '../components/QueueStatus'
 import type { ReturnTypeOfJobEvents } from '../hooks/useJobEvents'
 
@@ -135,6 +137,7 @@ export function SearchPage({
     mutationFn: runSearch,
     onSuccess: async (result) => {
       setSelectedRun(result.search_run_id)
+      setPoolRun(result.search_run_id)
       await client.invalidateQueries({ queryKey: ['searches', session.id] })
     },
     onError: () => requestAnimationFrame(() => errorRef.current?.focus()),
@@ -180,19 +183,7 @@ export function SearchPage({
 
   return (
     <section aria-labelledby="search-title" className="workspace-page search-workspace">
-      <div className="page-intro">
-        <div>
-          <p className="eyebrow">Your candidates</p>
-          <h1 id="search-title">Find candidates</h1>
-          <p>
-            Search LinkedIn, save promising profiles, and review the evidence.
-          </p>
-        </div>
-        <div className="version-card">
-          <strong>{candidates.data?.length ?? 0} discovered</strong>
-          <span>Saved in this workspace</span>
-        </div>
-      </div>
+      <ResultHeader brief={brief} titleId="search-title" fallback="Find candidates" subtitle="Search LinkedIn, then save profiles you want to review." onEdit={onEditBrief} />
 
       <QueueStatus queue={queue} />
       {hasConflicts ? <div className="form-error brief-conflict" role="alert"><strong>Your role brief has conflicting keywords.</strong><span>A keyword is both included and excluded. Correct the brief before searching.</span>{onEditBrief ? <button className="quiet-action" onClick={onEditBrief} type="button">Edit role brief</button> : null}</div> : null}
@@ -355,8 +346,8 @@ export function SearchPage({
           </div>
           <div className="pool-heading-meta"><span>{filteredCandidates.length} shown · first-seen order</span>{gateAEligible && !session.phase_gates?.A ? <a href="#pool-review">Review list to compare →</a> : null}</div>
         </div>
-        <label className="field pool-filter"><span>Results from</span><select value={poolRun ?? ''} onChange={event => setPoolRun(event.target.value || null)}><option value="">All saved searches</option>{runs.data?.map(run => <option key={run.id} value={run.id}>{run.keywords} · {new Date(run.created_at).toLocaleDateString()}</option>)}</select></label>
-        <label className="field pool-filter"><span>Find a saved candidate</span><input placeholder="Search by name" value={nameFilter} onChange={(event) => setNameFilter(event.target.value)} /></label>
+        <div className="pool-filter-row"><label className="field pool-filter"><span>Results from</span><select value={poolRun ?? ''} onChange={event => setPoolRun(event.target.value || null)}><option value="">All saved searches</option>{runs.data?.map(run => <option key={run.id} value={run.id}>{run.keywords} · {new Date(run.created_at).toLocaleDateString()}</option>)}</select></label>
+        <label className="field pool-filter"><span>Find a saved candidate</span><input placeholder="Search by name" value={nameFilter} onChange={(event) => setNameFilter(event.target.value)} /></label></div>
         {candidates.isError ? <div className="form-error" role="alert">Saved candidates could not be loaded. <button className="quiet-action" onClick={() => void candidates.refetch()} type="button">Try again</button></div> : null}
         {enrich.isError ? (
           <div
@@ -373,7 +364,7 @@ export function SearchPage({
           <div className="candidate-grid">
             {filteredCandidates.map((candidate) => (
               <article className="candidate-card" key={candidate.id}>
-                <div>
+                <div className="discovery-person-heading"><span className="result-initials" aria-hidden="true">{(candidate.display_name || candidate.username).split(/\s+/).slice(0, 2).map(part => part[0]).join('')}</span><div>
                   <span className={`status-label ${candidate.stage}`}>
                     {candidate.stage === 'discovered' ? 'Discovered' : candidate.stage === 'stage1' ? 'Profile saved' : 'More details saved'}
                   </span>
@@ -388,7 +379,7 @@ export function SearchPage({
                       : `Profile ${candidate.retrieval_status}`}{' '}
                     · found in {candidate.source_count} {candidate.source_count === 1 ? 'search' : 'searches'}
                   </p>
-                </div>
+                </div></div>
                 {candidate.active_job_id ? (
                   <button className="primary-action" disabled type="button">
                     Retrieval queued
@@ -403,14 +394,15 @@ export function SearchPage({
                   </button>
                 ) : candidate.stage === 'discovered' ? (
                   <button
-                    className="primary-action"
+                    className="quiet-action save-profile-action"
+                    aria-label="Download profile & experience"
                     disabled={
                       downloadsBlocked || (enrich.isPending && enrich.variables === candidate.id)
                     }
                     onClick={() => enrich.mutate(candidate.id)}
                     type="button"
                   >
-                    Download profile & experience
+                    Save profile
                   </button>
                 ) : (
                   <button
@@ -418,7 +410,7 @@ export function SearchPage({
                     onClick={() => onCandidateOpen(candidate.id)}
                     type="button"
                   >
-                    Review retrieved details
+                    Review <CompassIcon name="arrow" size={16} />
                   </button>
                 )}
                 <a

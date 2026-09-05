@@ -19,6 +19,7 @@ globalThis.window = dom.window
 globalThis.document = dom.window.document
 Object.defineProperty(globalThis, 'navigator', { configurable: true, value: dom.window.navigator })
 globalThis.HTMLElement = dom.window.HTMLElement
+dom.window.HTMLElement.prototype.scrollIntoView = function () {}
 globalThis.Node = dom.window.Node
 globalThis.getComputedStyle = dom.window.getComputedStyle
 globalThis.requestAnimationFrame = (callback) => dom.window.setTimeout(() => callback(Date.now()), 0)
@@ -218,8 +219,8 @@ test('ranked list distinguishes stage and both null-score forms without color', 
   const numericCard = cards.find((card) => card.textContent.includes('Numeric'))
   const unknownCard = cards.find((card) => card.textContent.includes('Unknown'))
   const inertCard = cards.find((card) => card.textContent.includes('Inert'))
-  assert.equal(numericCard.textContent.includes('◐ Provisional'), true)
-  assert.equal(unknownCard.textContent.includes('◆ Enriched'), true)
+  assert.equal(numericCard.textContent.includes('Provisional · partial retrieval'), true)
+  assert.equal(unknownCard.textContent.includes('Enriched · extra sections retrieved'), true)
   assert.equal(unknownCard.textContent.includes('not found in the retrieved data'), true)
   assert.equal(inertCard.textContent.includes('Not scored — no active scoring criteria'), true)
   assert.equal(inertCard.textContent.includes('Low confidence (0%)'), true)
@@ -230,6 +231,7 @@ test('ranked list distinguishes stage and both null-score forms without color', 
   open.focus()
   await user.keyboard('{Enter}')
   assert.equal(opened, 'numeric')
+  await user.click(screen.getByText('Filter, sort & scoring settings'))
   await user.selectOptions(screen.getByLabelText('Sort order'), 'confidence_desc')
   await waitFor(() => assert.equal(lastUrl.includes('sort=confidence_desc'), true))
 })
@@ -269,7 +271,8 @@ for (const [sort, expectedIds] of Object.entries(canonicalRanking.orders)) {
       onScoresChanged() {}, onCandidateOpen(id) { opened.push(id) },
     })))
     await screen.findByLabelText('Ranked candidates')
-    await user.selectOptions(screen.getByLabelText('Sort order'), sort)
+    await user.click(screen.getByText('Filter, sort & scoring settings'))
+  await user.selectOptions(screen.getByLabelText('Sort order'), sort)
     await waitFor(() => {
       assert.equal(lastQuery.sort, sort)
       const cards = within(screen.getByLabelText('Ranked candidates')).getAllByRole('article')
@@ -641,4 +644,29 @@ test('saved searches open the selected persisted run without starting a download
   const user = userEvent.setup({ document: dom.window.document })
   await user.click(await screen.findByRole('button', { name: /Planning specialist/ }))
   assert.equal(opened, 'run-2')
+})
+
+test('result cards limit comparison to three and allow a replacement after removal', async () => {
+  const records = ['Ada', 'Grace', 'Lin', 'Sam'].map(name => ranked({ id: name, display_name: name }))
+  globalThis.fetch = input => {
+    const path = String(input)
+    if (path.startsWith('/api/candidates?')) return json(records)
+    if (path === '/api/weights') return json(config)
+    if (path.startsWith('/api/candidates/')) return json({ fields: [], signals: [] })
+    throw new Error(`unexpected fetch ${path}`)
+  }
+  const user = userEvent.setup({ document: dom.window.document })
+  render(wrapper(React.createElement(CandidatesPage, {
+    session, verifiedEvidence: new Map(), onEvidenceReconciled() {}, onScoresChanged() {}, onCandidateOpen() {},
+  })))
+  await screen.findByLabelText('Ranked candidates')
+  for (const name of ['Ada', 'Grace', 'Lin']) await user.click(screen.getByRole('checkbox', { name: `Compare ${name}` }))
+  assert.equal(screen.getByRole('checkbox', { name: 'Compare Sam' }).disabled, true)
+  assert.equal(screen.queryByRole('heading', { name: 'Compare the evidence' }), null)
+  await user.click(screen.getByRole('button', { name: 'View comparison (3/3)' }))
+  await user.click(screen.getByRole('button', { name: 'Remove Grace from comparison' }))
+  assert.equal(screen.getByRole('checkbox', { name: 'Compare Sam' }).disabled, false)
+  await user.click(screen.getByRole('checkbox', { name: 'Compare Sam' }))
+  assert.equal(screen.getByRole('checkbox', { name: 'Compare Grace' }).disabled, true)
+  assert.equal(screen.getAllByRole('checkbox', { checked: true }).length, 3)
 })

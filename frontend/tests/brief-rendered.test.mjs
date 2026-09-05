@@ -87,6 +87,9 @@ test('create serializes credential aliases and preserves zero experience', async
   render(wrapper(React.createElement(BriefPage, { session, current: null })))
 
   await user.type(screen.getByLabelText('Job description'), 'Platform engineer')
+  await user.click(screen.getByRole('button', { name: 'Set up search' }))
+  assert.equal(request, null, 'review must not save or search')
+  await user.click(screen.getByText('Set exact months'))
   const experience = screen.getByLabelText('Required experience in months')
   assert.equal(experience.value, '')
   await user.type(experience, '-1')
@@ -107,6 +110,7 @@ test('create serializes credential aliases and preserves zero experience', async
     'AWS Architect',
   )
   await user.click(within(credentials).getByRole('button', { name: 'Add term' }))
+  await user.click(within(credentials).getByText('Alternate names'))
   await user.type(
     within(credentials).getByLabelText('Aliases for AWS Architect'),
     'SAA, Solutions Architect Associate',
@@ -137,6 +141,7 @@ test('loaded experience and credentials survive edit until explicitly removed', 
     current: briefRecord(),
   })))
 
+  await user.click(screen.getByText('Set exact months'))
   const experience = screen.getByLabelText('Required experience in months')
   assert.equal(experience.value, '24')
   const credentials = screen.getByRole('group', { name: 'Required credentials' })
@@ -203,4 +208,35 @@ test('conflicting include and exclude keywords block saving until corrected', as
   assert.equal(screen.queryByRole('alert'), null)
   await user.click(screen.getByRole('button', { name: 'Save new version' }))
   await waitFor(() => assert.equal(writes, 1))
+})
+
+test('editing the description preserves hidden criteria and only saves on final confirmation', async () => {
+  const original = briefRecord({
+    required_experience_months: 27,
+    optional_skills: [{ term: 'Go', aliases: ['Golang'] }],
+    industries: [{ term: 'Payments', aliases: [] }],
+    positive_keywords: ['Platform'], negative_keywords: ['Intern'],
+  })
+  const writes = []
+  let continued = false
+  globalThis.fetch = (input, init) => {
+    assert.equal(String(input), '/api/briefs/current')
+    writes.push(JSON.parse(init.body))
+    return json(briefRecord({ ...writes[0], version: 2 }))
+  }
+  const user = userEvent.setup({ document: dom.window.document })
+  render(wrapper(React.createElement(BriefPage, { session, current: original, onSaved() { continued = true } })))
+  await user.click(screen.getByRole('button', { name: 'Back to role description' }))
+  await user.clear(screen.getByLabelText('Job description'))
+  await user.type(screen.getByLabelText('Job description'), 'Senior platform engineer')
+  await user.click(screen.getByRole('button', { name: 'Set up search' }))
+  assert.equal(writes.length, 0)
+  assert.equal(continued, false)
+  await user.click(screen.getByRole('button', { name: 'Continue to search' }))
+  await waitFor(() => assert.equal(continued, true))
+  assert.equal(writes.length, 1)
+  assert.equal(writes[0].job_description, 'Senior platform engineer')
+  for (const key of ['required_experience_months', 'required_credentials', 'optional_skills', 'industries', 'positive_keywords', 'negative_keywords', 'message_tone']) {
+    assert.deepEqual(writes[0][key], original[key], `${key} must survive the description step`)
+  }
 })

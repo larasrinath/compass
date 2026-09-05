@@ -371,7 +371,7 @@ test('offline discovery keeps saved profiles browseable and filters names locall
   await screen.findByRole('heading', { name: 'Ada' })
   assert.equal(screen.getByRole('button', { name: 'Run search' }).disabled, true)
   assert.equal(screen.getByRole('button', { name: 'Download profile & experience' }).disabled, true)
-  await user.click(screen.getByRole('button', { name: 'Review retrieved details' }))
+  await user.click(screen.getByRole('button', { name: 'Review', exact: true }))
   assert.equal(opened, 'Ada')
   await user.type(screen.getByLabelText('Find a saved candidate'), 'ada')
   assert.equal(screen.queryByRole('heading', { name: 'Grace' }), null)

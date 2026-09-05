@@ -4,8 +4,10 @@ import {
   acceptPhaseGateB,
   listCandidates,
   type SessionRecord,
+  type BriefRecord,
 } from '../api/client'
 import { ComparisonBoard } from '../components/ComparisonBoard'
+import { ResultHeader } from '../components/ResultHeader'
 import { CandidateRow } from '../components/CandidateRow'
 import { WeightsEditor } from '../components/WeightsEditor'
 import {
@@ -21,6 +23,8 @@ export function CandidatesPage({
   onEvidenceReconciled,
   onScoresChanged,
   selectedForComparison,
+  brief,
+  onEditBrief,
   onComparisonChange,
 }: {
   session: SessionRecord
@@ -28,6 +32,8 @@ export function CandidatesPage({
   verifiedEvidence: ReadonlyMap<string, EvidenceVerification>
   onEvidenceReconciled: (values: Map<string, EvidenceVerification>) => void
   onScoresChanged: () => void
+  brief?: BriefRecord | null
+  onEditBrief?: () => void
   selectedForComparison?: string[]
   onComparisonChange?: (ids: string[]) => void
 }) {
@@ -39,6 +45,7 @@ export function CandidatesPage({
     if (onComparisonChange) onComparisonChange(next)
     else setLocalComparisonIds(next)
   }
+  const [showComparison, setShowComparison] = useState(false)
   const [stage, setStage] = useState('')
   const [confidence, setConfidence] = useState('')
   const [minimum, setMinimum] = useState('')
@@ -112,27 +119,17 @@ export function CandidatesPage({
 
   return (
     <section className="workspace-page ranked-page" aria-labelledby="ranked-title">
-      <div className="page-intro compact-intro">
-        <div>
-          <p className="eyebrow">Your matches</p>
-          <h1 id="ranked-title">Compare matches</h1>
-          <p>
-            Scores summarize only retrieved sections against your saved role brief.
-            Missing information is shown as unknown.
-          </p>
-        </div>
-        <div className="version-card">
-          <strong>{candidates.data?.length ?? 0} ranked</strong>
-          <span>Candidate list reviewed · Evidence review {session.phase_gates?.B ? 'complete' : 'pending'}</span>
-        </div>
+      <ResultHeader brief={brief} titleId="ranked-title" fallback="Candidate results" subtitle="Saved profile evidence, checked against your role criteria." onEdit={onEditBrief} />
+      <div className="results-toolbar">
+        <p><strong>{orderedCandidates.length} people</strong> in your reviewed candidate list</p>
+        <div className="comparison-instructions"><span>Select 2–3 people to compare</span>{comparisonIds.length ? <button className="quiet-action" disabled={comparisonIds.length < 2} type="button" onClick={() => { setShowComparison(true); requestAnimationFrame(() => document.getElementById('comparison-board')?.scrollIntoView({ block: 'start', behavior: 'smooth' })) }}>View comparison ({comparisonIds.length}/3)</button> : null}</div>
       </div>
-
-      <div className="comparison-instructions"><strong>Choose up to 3 people to compare</strong><span>Select candidates below to see their evidence side by side.</span>{comparisonIds.length ? <a href="#comparison-board">View comparison ({comparisonIds.length}/3) ↓</a> : null}</div>
-      {comparisonIds.length ? <ComparisonBoard
+      {showComparison && comparisonIds.length ? <ComparisonBoard
         candidates={orderedCandidates.filter(candidate => comparisonIds.includes(candidate.id))}
-        onRemove={id => setComparisonIds(ids => ids.filter(value => value !== id))}
+        onRemove={id => { setComparisonIds(ids => ids.filter(value => value !== id)); if (comparisonIds.length <= 2) setShowComparison(false) }}
         onOpen={onCandidateOpen}
       /> : null}
+      <details className="results-options"><summary>Filter, sort & scoring settings</summary>
       <WeightsEditor onScoresChanged={onScoresChanged} />
 
       <form className="ranking-filters panel" onSubmit={(event) => event.preventDefault()}>
@@ -175,6 +172,7 @@ export function CandidatesPage({
           </select>
         </label>
       </form>
+      </details>
 
       {candidates.isPending ? (
         <p aria-live="polite">Calculating ranked evidence…</p>
@@ -185,10 +183,9 @@ export function CandidatesPage({
       ) : orderedCandidates.length ? (
         <div className="ranked-list" aria-label="Ranked candidates">
           {orderedCandidates.map((candidate) => (
-            <div className="comparison-candidate" key={candidate.id}>
-              <label className="comparison-pick"><input type="checkbox" checked={comparisonIds.includes(candidate.id)} disabled={!comparisonIds.includes(candidate.id) && comparisonIds.length >= 3} onChange={event => setComparisonIds(ids => event.target.checked ? [...ids, candidate.id] : ids.filter(id => id !== candidate.id))} />Compare {candidate.display_name || candidate.username}</label>
-              <CandidateRow candidate={candidate} onOpen={onCandidateOpen} />
-            </div>
+            <CandidateRow key={candidate.id} candidate={candidate} brief={brief} onOpen={onCandidateOpen}
+              selected={comparisonIds.includes(candidate.id)} comparisonDisabled={!comparisonIds.includes(candidate.id) && comparisonIds.length >= 3}
+              onCompare={checked => { setShowComparison(false); setComparisonIds(ids => checked ? [...ids, candidate.id] : ids.filter(id => id !== candidate.id)) }} />
           ))}
         </div>
       ) : (

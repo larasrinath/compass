@@ -18,8 +18,12 @@ import {
   useNewRevisionEffect,
   type EvidenceVerification,
 } from './scoreVerification'
+import { CompassIcon } from './components/CompassIcon'
+import './fonts.css'
 import './App.css'
 import './compass.css'
+import './search-setup.css'
+import './results.css'
 
 function StatusDot({ healthy }: { healthy: boolean }) {
   return (
@@ -127,7 +131,7 @@ function App() {
       </a>
       <header className="topbar">
         <div aria-hidden="true" className="brand-mark">
-          ◈
+          <CompassIcon name="compass" size={28} />
         </div>
         <div>
           <p className="eyebrow">Personal recruiting</p>
@@ -159,7 +163,7 @@ function App() {
           onClick={() => navigate({ view: 'brief', candidateId: null })}
           type="button"
         >
-          <span aria-hidden="true">⊕</span> Role brief
+          <span aria-hidden="true"><CompassIcon name="plus" /></span> Role brief
         </button>
         <button
           aria-current={view === 'search' || (view === 'candidate' && !rankingUnlocked) ? 'page' : undefined}
@@ -167,9 +171,9 @@ function App() {
           onClick={() => { setSourceRun(null); navigate({ view: 'search', candidateId: null }) }}
           type="button"
         >
-          <span aria-hidden="true">⌕</span> Find candidates
+          <span aria-hidden="true"><CompassIcon name="search" /></span> Find candidates
         </button>
-        <button aria-current={view === 'saved' ? 'page' : undefined} disabled={!session.data} onClick={() => navigate({ view: 'saved', candidateId: null })} type="button"><span aria-hidden="true">▱</span> Saved searches</button>
+        <button aria-current={view === 'saved' ? 'page' : undefined} disabled={!session.data} onClick={() => navigate({ view: 'saved', candidateId: null })} type="button"><span aria-hidden="true"><CompassIcon name="folder" /></span> Saved searches</button>
         <button
           aria-current={view === 'ranked' || (view === 'candidate' && rankingUnlocked) ? 'page' : undefined}
           disabled={!rankingUnlocked}
@@ -177,7 +181,7 @@ function App() {
           onClick={() => navigate({ view: 'ranked', candidateId: null })}
           type="button"
         >
-          <span aria-hidden="true">▥</span> Compare matches
+          <span aria-hidden="true"><CompassIcon name="compare" /></span> Compare matches
         </button>
       </nav>
 
@@ -275,6 +279,8 @@ function App() {
             <SavedSearchesPage sessionId={session.data.id} onSearch={() => { setSourceRun(null); navigate({ view: 'search', candidateId: null }) }} onOpenRun={id => { setSourceRun(id); navigate({ view: 'search', candidateId: null }) }} />
           ) : view === 'ranked' ? (
             <CandidatesPage
+              brief={brief.data}
+              onEditBrief={() => navigate({ view: 'brief', candidateId: null })}
               selectedForComparison={comparisonIds}
               onComparisonChange={setComparisonIds}
               onEvidenceReconciled={reconcileEvidenceVerifications}
