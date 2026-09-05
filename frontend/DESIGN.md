@@ -14,6 +14,11 @@ not just its colors.
   separate editing controls.
 - Results use two columns of equal-width cards, a role summary above them, and
   Review/Compare actions at the bottom of each card. Cards become one column on phones.
+- Candidate review opens in a 576px right-side modal drawer, preserving the
+  originating results and scroll position. Use the prototype’s compact profile
+  header, fit observations, career timeline, and saved-source downloads. Put
+  scoring calculations and source-offset controls behind a secondary disclosure.
+  Evidence cards use thin neutral borders, without colored side rails.
 - Show evidence and questions before score calculations. Keep unknown evidence
   distinct from an exact-text mismatch. Never label a text match as independent verification.
 - Select two or three people before explicitly opening comparison; selecting a
@@ -24,7 +29,8 @@ not just its colors.
 
 Implementation: `search-setup.css` owns the prompt/criteria screens; `results.css`
 owns result headers, cards, comparison controls, and discovery layout. `compass.css`
-contains the shared palette and application shell. Legacy evidence and diagnostic
+contains the shared palette and application shell. `candidate-profile.css` owns
+the profile drawer. Legacy evidence and diagnostic
 views still have styles in `App.css`.
 
 Typography roles are defined centrally in `index.css`: Figtree 400 for body text,

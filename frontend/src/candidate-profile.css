@@ -1,0 +1,64 @@
+/* CandidatePanel in the supplied Compass prototype: a quiet, person-first drawer. */
+.candidate-drawer { position: fixed; inset: 0 0 0 auto; width: min(100%, 576px); max-width: 100%; height: 100dvh; max-height: 100dvh; margin: 0; padding: 0; border: 0; background: var(--canvas); color: var(--ink-soft); overflow-y: auto; overscroll-behavior: contain; box-shadow: -12px 0 40px #26251f18; }
+.candidate-drawer::backdrop { background: #26251f40; backdrop-filter: blur(2px); }
+.profile-close { position: fixed; top: 20px; right: 16px; z-index: 2; display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 50%; background: var(--surface); color: var(--ink-faint); }
+.profile-close:hover { background: var(--subtle); color: var(--ink-soft); }
+.profile-heading { position: sticky; top: 0; z-index: 1; display: flex; align-items: flex-start; gap: 16px; padding: 20px 62px 20px 24px; border-bottom: 1px solid var(--line); background: var(--surface); }
+.profile-initials { display: grid; place-items: center; flex-shrink: 0; width: 48px; height: 48px; font: 700 16px/1 var(--font-display); color: var(--accent); }
+.profile-heading h1 { margin: 0; font: 700 18px/1.4 var(--font-display); letter-spacing: -.02em; color: var(--ink); }
+.profile-heading p { margin: 3px 0 0; font: 400 14px/1.5 var(--font-body); overflow-wrap: anywhere; }
+.profile-heading small { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; margin-top: 6px; font: 400 12px/1.5 var(--font-body); color: var(--ink-faint); }
+.profile-overview { padding: 24px; }
+.profile-actions { display: flex; align-items: stretch; gap: 8px; }
+.profile-actions .primary-action { flex: 1; }
+.profile-actions .primary-action, .profile-actions .quiet-action { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 10px 16px; font: 600 14px/1.5 var(--font-body); text-decoration: none; }
+.profile-actions .quiet-action { width: auto; flex: 0 0 auto; color: var(--ink-soft); background: transparent; }
+.profile-actions .quiet-action[aria-pressed=true] { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+.profile-section { margin-top: 32px; }
+.profile-section h2 { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; color: var(--ink); font: 700 14px/1.5 var(--font-display); text-transform: uppercase; letter-spacing: .015em; }
+.profile-section h2 svg { color: var(--ink-faint); }
+.profile-muted { margin: 6px 0 0; font: 400 12px/1.6 var(--font-body); color: var(--ink-faint); }
+.profile-observations, .profile-files { display: grid; gap: 12px; list-style: none; padding: 0; margin: 12px 0 0; }
+.profile-observations > li, .profile-file { padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.profile-questions > li { border-style: dashed; background: #ffffff99; }
+.profile-observation-heading { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 6px 12px; }
+.profile-observation-heading p, .profile-file > p { margin: 0; font: 400 14px/1.6 var(--font-body); color: var(--ink-soft); }
+.profile-trust { color: var(--ink-faint); font: 400 11px/1.5 var(--font-body); }
+.profile-text-action { display: inline-flex; align-items: center; gap: 6px; padding: 0; min-height: 28px; margin-top: 6px; background: none; border: 0; color: var(--accent); font: 500 12px/1.5 var(--font-body); }
+.profile-timeline { list-style: none; margin: 16px 0 0; padding: 0; }
+.profile-timeline li { position: relative; margin-left: 5px; padding: 0 0 24px 22px; border-left: 1px solid var(--line); }
+.profile-timeline li:last-child { border-left-color: transparent; padding-bottom: 0; }
+.profile-timeline li::before { content: ''; position: absolute; left: -5px; top: 5px; width: 10px; height: 10px; border: 2px solid var(--accent); border-radius: 50%; background: var(--canvas); }
+.profile-timeline p { margin: 0; color: var(--ink); font: 600 14px/1.5 var(--font-body); }
+.profile-timeline small, .profile-file > small { display: block; margin-top: 3px; color: var(--ink-faint); font: 400 12px/1.5 var(--font-body); }
+.profile-file-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.profile-file-actions .quiet-action { width: auto; display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 5px 10px; background: transparent; font: 500 12px/1.5 var(--font-body); color: var(--accent); }
+.profile-secondary { padding: 0 24px 32px; }
+.profile-secondary > .promotion-panel, .profile-diagnostics { padding: 16px 0; margin: 0; border: 0; border-top: 1px solid var(--line); border-radius: 0; background: transparent; box-shadow: none; }
+.profile-secondary summary { color: var(--ink-soft); font: 500 14px/1.5 var(--font-body); cursor: pointer; }
+.profile-diagnostic-content { display: grid; gap: 20px; padding-top: 16px; }
+.profile-secondary .panel, .profile-secondary .simple-options { padding: 16px 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.profile-secondary h2 { font: 600 16px/1.5 var(--font-body); }
+.profile-secondary h3 { font: 600 14px/1.5 var(--font-body); }
+.profile-secondary .eyebrow { display: none; }
+.profile-secondary .detail-columns { display: block; }
+.profile-secondary .candidate-score-summary { align-items: flex-start; }
+.profile-secondary .claim-card { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); padding: 16px; }
+.profile-secondary .claim-card strong, .profile-secondary .claim-card .verdict-symbol { font-weight: 500; }
+.profile-secondary .claim-heading { flex-wrap: wrap; }
+.profile-secondary .signal-table { font-size: 12px; }
+.profile-secondary .signal-table th, .profile-secondary .signal-table td { padding: 8px 4px; }
+.profile-secondary pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; }
+.profile-secondary .section-map { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.profile-secondary .promotion-panel > div { margin-top: 12px; }
+@media (max-width: 600px) {
+  .profile-heading { padding-left: 16px; gap: 10px; }
+  .profile-initials { width: 36px; }
+  .profile-overview { padding: 20px 16px; }
+  .profile-secondary { padding: 0 16px 24px; }
+  .profile-actions .primary-action, .profile-actions .quiet-action { padding: 10px 12px; font-size: 13px; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .candidate-drawer[open] { animation: profile-enter 180ms ease-out; }
+  @keyframes profile-enter { from { transform: translateX(30px); opacity: .6; } to { transform: translateX(0); opacity: 1; } }
+}

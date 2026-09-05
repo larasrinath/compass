@@ -18,6 +18,7 @@ import {
   useNewRevisionEffect,
   type EvidenceVerification,
 } from './scoreVerification'
+import { CandidateDrawer } from './components/CandidateDrawer'
 import { CompassIcon } from './components/CompassIcon'
 import './fonts.css'
 import './App.css'
@@ -25,6 +26,7 @@ import './compass.css'
 import './search-setup.css'
 import './results.css'
 import './saved-searches.css'
+import './candidate-profile.css'
 
 function StatusDot({ healthy }: { healthy: boolean }) {
   return (
@@ -42,7 +44,7 @@ function App() {
   )
   const [comparisonIds, setComparisonIds] = useState<string[]>([])
   const [sourceRun, setSourceRun] = useState<string | null>(null)
-  const [returnToSaved, setReturnToSaved] = useState(false)
+  const [candidateBackground, setCandidateBackground] = useState<AppRoute | null>(() => typeof window.history.state?.compassBackground === 'string' ? parseAppRoute(window.history.state.compassBackground) : null)
   const [sessionLabel, setSessionLabel] = useState('Focused candidate search')
   const [verificationState, setVerificationState] = useState<{
     scope: string
@@ -67,6 +69,7 @@ function App() {
   const view = route.view
   const candidateId = route.candidateId
   const rankingUnlocked = Boolean(session.data?.phase_gates?.A)
+  const contentView = view === 'candidate' ? candidateBackground?.view ?? (rankingUnlocked ? 'ranked' : 'search') : view
   const verificationScope = `${session.data?.id ?? ''}:${brief.data?.id ?? ''}:${brief.data?.version ?? ''}`
   const verifiedEvidence =
     verificationState.scope === verificationScope
@@ -84,10 +87,17 @@ function App() {
   useNewRevisionEffect(queue.scoringRevision, clearEvidenceVerifications)
   const navigate = useCallback((next: AppRoute, replace = false) => {
     const path = pathForRoute(next)
-    if (replace) window.history.replaceState(null, '', path)
-    else window.history.pushState(null, '', path)
+    const background = next.view === 'candidate' ? (route.view === 'candidate' ? candidateBackground : route) : null
+    const state = background ? { compassBackground: pathForRoute(background) } : null
+    if (replace) window.history.replaceState(state, '', path)
+    else window.history.pushState(state, '', path)
+    setCandidateBackground(background)
     setRoute(next)
-  }, [])
+  }, [route, candidateBackground])
+  const closeCandidate = () => {
+    if (window.history.state?.compassBackground) window.history.back()
+    else navigate({ view: rankingUnlocked ? 'ranked' : 'search', candidateId: null }, true)
+  }
   useEffect(() => {
     if (queue.revision > 0) {
       void queryClient.invalidateQueries({ queryKey: ['session'] })
@@ -112,7 +122,10 @@ function App() {
   })
 
   useEffect(() => {
-    const onPopState = () => setRoute(parseAppRoute(window.location.pathname))
+    const onPopState = () => {
+      setRoute(parseAppRoute(window.location.pathname))
+      setCandidateBackground(typeof window.history.state?.compassBackground === 'string' ? parseAppRoute(window.history.state.compassBackground) : null)
+    }
     window.addEventListener('popstate', onPopState)
     return () => window.removeEventListener('popstate', onPopState)
   }, [])
@@ -163,23 +176,23 @@ function App() {
 
       <nav aria-label="Sourcing workflow" className="workflow-nav">
         <button
-          aria-current={view === 'brief' ? 'page' : undefined}
+          aria-current={contentView === 'brief' ? 'page' : undefined}
           onClick={() => navigate({ view: 'brief', candidateId: null })}
           type="button"
         >
           <span className="nav-icon" aria-hidden="true"><CompassIcon name="brief" /></span><span className="nav-label">Role brief</span>
         </button>
         <button
-          aria-current={view === 'search' || (view === 'candidate' && !rankingUnlocked && !returnToSaved) ? 'page' : undefined}
+          aria-current={contentView === 'search' ? 'page' : undefined}
           disabled={!brief.data}
           onClick={() => { setSourceRun(null); navigate({ view: 'search', candidateId: null }) }}
           type="button"
         >
           <span className="nav-icon" aria-hidden="true"><CompassIcon name="search" /></span><span className="nav-label">Find candidates</span>
         </button>
-        <button aria-current={view === 'saved' || (view === 'candidate' && returnToSaved) ? 'page' : undefined} disabled={!session.data} onClick={() => navigate({ view: 'saved', candidateId: null })} type="button"><span className="nav-icon" aria-hidden="true"><CompassIcon name="folder" /></span><span className="nav-label">Saved searches</span></button>
+        <button aria-current={contentView === 'saved' ? 'page' : undefined} disabled={!session.data} onClick={() => navigate({ view: 'saved', candidateId: null })} type="button"><span className="nav-icon" aria-hidden="true"><CompassIcon name="folder" /></span><span className="nav-label">Saved searches</span></button>
         <button
-          aria-current={view === 'ranked' || (view === 'candidate' && rankingUnlocked && !returnToSaved) ? 'page' : undefined}
+          aria-current={contentView === 'ranked' ? 'page' : undefined}
           disabled={!rankingUnlocked}
           title={!rankingUnlocked ? 'Review the candidate list to unlock comparison' : undefined}
           onClick={() => navigate({ view: 'ranked', candidateId: null })}
@@ -243,24 +256,58 @@ function App() {
             </form>
           </section>
         ) : session.data ? (
-          view === 'brief' ? (
+          contentView === 'brief' ? (
             brief.isPending ? <p role="status">Loading your role brief…</p> : brief.isError ? <div className="form-error" role="alert">Your role brief could not be loaded. <button className="quiet-action" onClick={() => void brief.refetch()} type="button">Try again</button></div> : <BriefPage
               current={brief.data}
               key={brief.data?.id ?? 'new-brief'}
               session={session.data}
               onSaved={() => navigate({ view: 'search', candidateId: null })}
             />
-          ) : view === 'candidate' && candidateId ? (
+          ) : contentView === 'saved' ? (
+            <SavedSearchesPage sessionId={session.data.id} onOpenCandidate={id => { navigate({ view: 'candidate', candidateId: id }) }} onSearch={() => { setSourceRun(null); navigate({ view: 'search', candidateId: null }) }} onOpenRun={id => { setSourceRun(id); navigate({ view: 'search', candidateId: null }) }} />
+          ) : contentView === 'ranked' ? (
+            <CandidatesPage
+              brief={brief.data}
+              onEditBrief={() => navigate({ view: 'brief', candidateId: null })}
+              selectedForComparison={comparisonIds}
+              onComparisonChange={setComparisonIds}
+              onEvidenceReconciled={reconcileEvidenceVerifications}
+              onCandidateOpen={(id) => {
+                navigate({ view: 'candidate', candidateId: id })
+              }}
+              onScoresChanged={clearEvidenceVerifications}
+              session={session.data}
+              verifiedEvidence={verifiedEvidence}
+            />
+          ) : (
+            <SearchPage
+              key={`${brief.data?.id ?? 'loading'}:${sourceRun ?? 'all'}`}
+              initialRunId={sourceRun}
+              retrievalReady={retrievalReady}
+              onEditBrief={() => navigate({ view: 'brief', candidateId: null })}
+              brief={brief.data}
+              onCandidateOpen={(id) => {
+                navigate({ view: 'candidate', candidateId: id })
+              }}
+              onGateAChanged={() => navigate({ view: 'ranked', candidateId: null })}
+              queue={queue}
+              session={session.data}
+            />
+          )
+        ) : (
+          <p aria-live="polite">Opening your local workspace…</p>
+        )}
+      </main>
+
+      {view === 'candidate' && candidateId && session.data ? <CandidateDrawer onClose={closeCandidate}>
             <CandidateDetailPage
               key={candidateId}
-              backDestination={returnToSaved ? 'saved searches' : rankingUnlocked ? 'candidates' : 'search'}
+              backDestination={contentView === 'saved' ? 'saved searches' : contentView === 'ranked' ? 'candidates' : 'search'}
               candidateId={candidateId}
-              onBack={() =>
-                navigate({
-                  view: returnToSaved ? 'saved' : rankingUnlocked ? 'ranked' : 'search',
-                  candidateId: null,
-                })
-              }
+              onBack={closeCandidate}
+              comparing={comparisonIds.includes(candidateId)}
+              comparisonFull={comparisonIds.length >= 3}
+              onCompare={() => setComparisonIds(ids => ids.includes(candidateId) ? ids.filter(id => id !== candidateId) : ids.length < 3 ? [...ids, candidateId] : ids)}
               onEvidenceVerified={(verification, verified) =>
                 setVerificationState((current) => {
                   const values =
@@ -279,43 +326,7 @@ function App() {
               sessionId={session.data.id}
               verifiedEvidence={verifiedEvidence}
             />
-          ) : view === 'saved' ? (
-            <SavedSearchesPage sessionId={session.data.id} onOpenCandidate={id => { setReturnToSaved(true); navigate({ view: 'candidate', candidateId: id }) }} onSearch={() => { setSourceRun(null); navigate({ view: 'search', candidateId: null }) }} onOpenRun={id => { setSourceRun(id); navigate({ view: 'search', candidateId: null }) }} />
-          ) : view === 'ranked' ? (
-            <CandidatesPage
-              brief={brief.data}
-              onEditBrief={() => navigate({ view: 'brief', candidateId: null })}
-              selectedForComparison={comparisonIds}
-              onComparisonChange={setComparisonIds}
-              onEvidenceReconciled={reconcileEvidenceVerifications}
-              onCandidateOpen={(id) => {
-                setReturnToSaved(false)
-                navigate({ view: 'candidate', candidateId: id })
-              }}
-              onScoresChanged={clearEvidenceVerifications}
-              session={session.data}
-              verifiedEvidence={verifiedEvidence}
-            />
-          ) : (
-            <SearchPage
-              key={`${brief.data?.id ?? 'loading'}:${sourceRun ?? 'all'}`}
-              initialRunId={sourceRun}
-              retrievalReady={retrievalReady}
-              onEditBrief={() => navigate({ view: 'brief', candidateId: null })}
-              brief={brief.data}
-              onCandidateOpen={(id) => {
-                setReturnToSaved(false)
-                navigate({ view: 'candidate', candidateId: id })
-              }}
-              onGateAChanged={() => navigate({ view: 'ranked', candidateId: null })}
-              queue={queue}
-              session={session.data}
-            />
-          )
-        ) : (
-          <p aria-live="polite">Opening your local workspace…</p>
-        )}
-      </main>
+      </CandidateDrawer> : null}
 
       <footer>
         <strong>Scores rank retrieved evidence, not people.</strong>

@@ -6,6 +6,7 @@ import {
   getCandidateSection,
   getProfileSections,
 } from '../api/client'
+import { CandidateOverview } from '../components/CandidateOverview'
 import { QueueStatus } from '../components/QueueStatus'
 import { ConfidenceBand } from '../components/ConfidenceBand'
 import { EvidencePanel } from '../components/EvidencePanel'
@@ -26,7 +27,13 @@ export function CandidateDetailPage({
   verifiedEvidence,
   onEvidenceVerified,
   onScoreInputsChanged,
+  onCompare,
+  comparing,
+  comparisonFull,
 }: {
+  onCompare?: () => void
+  comparing?: boolean
+  comparisonFull?: boolean
   candidateId: string
   onBack: () => void
   backDestination: 'search' | 'candidates' | 'saved searches'
@@ -41,6 +48,8 @@ export function CandidateDetailPage({
   ) => void
   onScoreInputsChanged: () => void
 }) {
+  const diagnosticsRef = useRef<HTMLDetailsElement>(null)
+  const sourceRef = useRef<HTMLElement>(null)
   const queryClient = useQueryClient()
   const enrichmentErrorRef = useRef<HTMLParagraphElement>(null)
   const lastQueueRevision = useRef(queue.revision)
@@ -142,41 +151,14 @@ export function CandidateDetailPage({
       ? candidate.scoring_empty_state
       : null
   return (
-    <section aria-labelledby="candidate-title" className="workspace-page">
-      <button className="quiet-action back-action" onClick={onBack} type="button">
-        ← Back to {backDestination}
-      </button>
-      <div className="page-intro compact-intro">
-        <div>
-          <p className="eyebrow">Candidate profile</p>
-          <h1 id="candidate-title">
-            {candidate.display_name || candidate.username}
-          </h1>
-          <p>
-            Check profile details against the original text below.
-            Opening evidence does not mark it verified.
-          </p>
-        </div>
-        {rankingUnlocked && candidate.score ? (
-          <div className="candidate-score-summary">
-            <ScoreBadge candidate={candidate.score} />
-            <ConfidenceBand candidate={candidate.score} />
-            <span className={`stage-badge ${candidate.score.stage}`}>
-              {candidate.score.stage === 'provisional' ? '◐ Provisional' : '◆ Enriched'}
-            </span>
-            <small>
-              {Object.keys(candidate.available_sections).length} of 6 sections retrieved · config{' '}
-              {candidate.score.weights_version}
-            </small>
-          </div>
-        ) : (
-          <div className="version-card">
-            <strong>{candidate.retrieval_status.replaceAll('_', ' ')}</strong>
-            <span>{Object.keys(candidate.available_sections).length} sections stored</span>
-          </div>
-        )}
-      </div>
-
+    <section aria-labelledby="candidate-title" className="candidate-profile">
+      <CandidateOverview candidate={candidate} rankingUnlocked={rankingUnlocked} onCompare={onCompare} comparing={comparing} comparisonFull={comparisonFull} onSourceOpen={(section, fieldId) => {
+        setSelectedSectionName(section)
+        setSelectedFieldId(fieldId ?? null)
+        if (diagnosticsRef.current) diagnosticsRef.current.open = true
+        requestAnimationFrame(() => { sourceRef.current?.scrollIntoView({ block: 'start' }); sourceRef.current?.focus() })
+      }} />
+      <div className="profile-secondary">
       <QueueStatus queue={queue} />
       {candidate.errors.map((error, index) => (
         <div
@@ -201,71 +183,6 @@ export function CandidateDetailPage({
           Profile identifier routing is disabled while this identity conflict remains
           quarantined.
         </p>
-      ) : null}
-
-      <details className="simple-options"><summary>Downloaded sections <span>{Object.keys(candidate.available_sections).length} saved</span></summary><SectionAvailabilityMap available={candidate.available_sections} /></details>
-
-      {rankingUnlocked && (hasScoreSignals || allInert) ? (
-        <EvidencePanel
-          allInert={allInert}
-          onEvidenceOpen={(sectionName, evidenceId) => {
-            setSelectedSectionName(sectionName)
-            setSelectedFieldId(evidenceId)
-          }}
-          onEvidenceVerified={(evidenceId, verified) => {
-            if (currentScoreIdentity) {
-              onEvidenceVerified(
-                { evidenceId, ...currentScoreIdentity },
-                verified,
-              )
-            }
-          }}
-          signals={candidate.signals ?? []}
-          verifiedEvidenceIds={verifiedEvidenceIds}
-        />
-      ) : null}
-
-      {scoringEmptyState ? (
-        <section
-          aria-labelledby="scoring-empty-title"
-          className="panel scoring-empty-state"
-          role="status"
-        >
-          <p className="eyebrow">Scoring</p>
-          <h2 id="scoring-empty-title">Score unavailable</h2>
-          <p>{scoringEmptyState}</p>
-        </section>
-      ) : null}
-
-      {rankingUnlocked && candidate.score_history?.length ? (
-        <details className="panel score-history simple-options"><summary>Previous scores</summary>
-          <p className="eyebrow">Immutable history</p>
-          <h2 id="score-history-title">Current and previous scores</h2>
-          <ol>
-            {candidate.score_history.map((score) => (
-              <li key={score.id}>
-                <strong>{score.score === null ? 'Not scored' : score.score.toFixed(1)}</strong>
-                <span>{score.current ? 'Current' : 'Previous'} · config {score.weights_version} · {new Date(score.computed_at).toLocaleString()}</span>
-              </li>
-            ))}
-          </ol>
-        </details>
-      ) : null}
-
-      {contextHints.length ? (
-        <details className="panel context-panel">
-          <summary>Search details</summary>
-          <p className="eyebrow">Context only</p>
-          <h2>Search and routing hints</h2>
-          <p>These details are displayed for workflow context and carry zero scoring weight.</p>
-          <dl>
-            {contextHints.map((hint, index) => (
-              <div key={`${hint.kind}-${index}`}>
-                <dt>{hint.label}</dt><dd>{hint.value} · non-scoring</dd>
-              </div>
-            ))}
-          </dl>
-        </details>
       ) : null}
 
       <details className="panel promotion-panel" open={candidate.stage === 'discovered' ? true : undefined}>
@@ -345,7 +262,79 @@ export function CandidateDetailPage({
         ) : null}
       </details>
 
-      <section className="panel" aria-labelledby="stored-sections-title">
+      <details className="profile-diagnostics" ref={diagnosticsRef}>
+        <summary>Scoring & source details</summary>
+        <div className="profile-diagnostic-content">
+        <p className="profile-muted">Opening evidence does not mark it verified. Check the original text before confirming a source.</p>
+        {rankingUnlocked && candidate.score ? <div className="candidate-score-summary">
+          <ScoreBadge candidate={candidate.score} /><ConfidenceBand candidate={candidate.score} />
+        </div> : null}
+      <details className="simple-options"><summary>Downloaded sections <span>{Object.keys(candidate.available_sections).length} saved</span></summary><SectionAvailabilityMap available={candidate.available_sections} /></details>
+
+      {rankingUnlocked && (hasScoreSignals || allInert) ? (
+        <EvidencePanel
+          allInert={allInert}
+          onEvidenceOpen={(sectionName, evidenceId) => {
+            setSelectedSectionName(sectionName)
+            setSelectedFieldId(evidenceId)
+          }}
+          onEvidenceVerified={(evidenceId, verified) => {
+            if (currentScoreIdentity) {
+              onEvidenceVerified(
+                { evidenceId, ...currentScoreIdentity },
+                verified,
+              )
+            }
+          }}
+          signals={candidate.signals ?? []}
+          verifiedEvidenceIds={verifiedEvidenceIds}
+        />
+      ) : null}
+
+      {scoringEmptyState ? (
+        <section
+          aria-labelledby="scoring-empty-title"
+          className="panel scoring-empty-state"
+          role="status"
+        >
+          <p className="eyebrow">Scoring</p>
+          <h2 id="scoring-empty-title">Score unavailable</h2>
+          <p>{scoringEmptyState}</p>
+        </section>
+      ) : null}
+
+      {rankingUnlocked && candidate.score_history?.length ? (
+        <details className="panel score-history simple-options"><summary>Previous scores</summary>
+          <p className="eyebrow">Immutable history</p>
+          <h2 id="score-history-title">Current and previous scores</h2>
+          <ol>
+            {candidate.score_history.map((score) => (
+              <li key={score.id}>
+                <strong>{score.score === null ? 'Not scored' : score.score.toFixed(1)}</strong>
+                <span>{score.current ? 'Current' : 'Previous'} · config {score.weights_version} · {new Date(score.computed_at).toLocaleString()}</span>
+              </li>
+            ))}
+          </ol>
+        </details>
+      ) : null}
+
+      {contextHints.length ? (
+        <details className="panel context-panel">
+          <summary>Search details</summary>
+          <p className="eyebrow">Context only</p>
+          <h2>Search and routing hints</h2>
+          <p>These details are displayed for workflow context and carry zero scoring weight.</p>
+          <dl>
+            {contextHints.map((hint, index) => (
+              <div key={`${hint.kind}-${index}`}>
+                <dt>{hint.label}</dt><dd>{hint.value} · non-scoring</dd>
+              </div>
+            ))}
+          </dl>
+        </details>
+      ) : null}
+
+      <section className="panel" aria-labelledby="stored-sections-title" ref={sourceRef} tabIndex={-1}>
         <p className="eyebrow">Stored source sections</p>
         <h2 id="stored-sections-title">Review saved profile information</h2>
         {Object.keys(candidate.available_sections).length ? (
@@ -423,6 +412,10 @@ export function CandidateDetailPage({
           )}
         </div>
       </section>
+        <button className="profile-text-action" onClick={onBack} type="button">Back to {backDestination}</button>
+        </div>
+      </details>
+      </div>
     </section>
   )
 }

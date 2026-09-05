@@ -771,13 +771,10 @@ footer strong {
 }
 .claim-card {
   border: 1px solid var(--line);
-  border-left: 5px solid #83908b;
   border-radius: 12px;
   padding: 14px;
 }
-.claim-card.matched { border-left-color: var(--sage); }
-.claim-card.contradicted { border-left-color: #a64d45; }
-.claim-card.unknown { border-left-style: dashed; }
+.claim-card.unknown { border-style: dashed; }
 .claim-heading {
   display: flex;
   flex-wrap: wrap;

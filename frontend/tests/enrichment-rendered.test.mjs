@@ -46,6 +46,8 @@ const { useNewRevisionEffect } = await vite.ssrLoadModule(
 )
 const { SearchPage } = await vite.ssrLoadModule('/src/pages/SearchPage.tsx')
 const { QueueStatus } = await vite.ssrLoadModule('/src/components/QueueStatus.tsx')
+const { CandidateOverview } = await vite.ssrLoadModule('/src/components/CandidateOverview.tsx')
+const { CandidateDrawer } = await vite.ssrLoadModule('/src/components/CandidateDrawer.tsx')
 await vite.close()
 
 test.after(async () => {
@@ -396,4 +398,93 @@ test('queue recovery surfaces a failed resume instead of silently doing nothing'
   await user.click(screen.getByRole('button', { name: 'Resume downloads' }))
   await screen.findByText(/Request failed|Queue resume failed/)
   assert.equal(resumes, 1)
+})
+
+
+test('profile overview keeps withheld evidence hidden and exports the actual saved text', async () => {
+  const field = (field_key, value, provenance_available = true) => ({ field_key, value, provenance_available })
+  const candidate = {
+    id: 'person', display_name: 'Casey Chen', username: 'casey', profile_url: 'https://www.linkedin.com/in/casey/',
+    score: { headline: 'Engineer' },
+    fields: [field('headline', 'Platform engineer'), field('location', 'Berlin'),
+      field('experience.0.title', 'Staff engineer'), field('experience.0.company', 'Example Co'),
+      field('experience.0.dates', '2022 – Present'), field('experience.1.title', 'Withheld role', false)],
+    available_sections: { experience: { retrieved_at: '2026-09-04T12:00:00Z' } },
+    signals: [{ claims: [
+      { id: 'found', display_term: 'Go', verdict: 'matched', evidence: [
+        { id: 'hidden', section_name: 'experience', snippet: 'Sensitive source content', availability: { state: 'masked' } },
+        { id: 'visible', section_name: 'experience', snippet: 'Built services in Go', availability: { state: 'available' } },
+      ] },
+      { id: 'missing', display_term: 'PMP', verdict: 'unknown', evidence: [] },
+    ] }],
+  }
+  let opened = null
+  let comparisons = 0
+  const user = userEvent.setup({ document: dom.window.document })
+  render(React.createElement(CandidateOverview, {
+    candidate, rankingUnlocked: true, onSourceOpen: (...args) => { opened = args }, onCompare: () => { comparisons++ },
+  }))
+  assert.equal(screen.getByRole('heading', { name: 'Casey Chen' }).textContent, 'Casey Chen')
+  assert.ok(screen.getByText('Staff engineer · Example Co'))
+  assert.equal(screen.queryByText('Withheld role'), null)
+  assert.equal(screen.queryByText(/Sensitive source content/), null)
+  assert.ok(screen.getByText('Not yet checked'))
+  await user.click(screen.getByRole('button', { name: 'View evidence' }))
+  assert.deepEqual(opened, ['experience', 'visible'])
+  await user.click(screen.getByRole('button', { name: 'Compare' }))
+  assert.equal(comparisons, 1)
+
+  let exported = null
+  let downloaded = null
+  const originalCreate = URL.createObjectURL
+  const originalRevoke = URL.revokeObjectURL
+  const originalClick = dom.window.HTMLAnchorElement.prototype.click
+  URL.createObjectURL = blob => { exported = blob; return 'blob:test' }
+  URL.revokeObjectURL = () => {}
+  dom.window.HTMLAnchorElement.prototype.click = function () { downloaded = this.download }
+  globalThis.fetch = input => {
+    assert.equal(String(input), '/api/candidates/person/sections/experience')
+    return json({ raw_text: 'Actual saved career text' })
+  }
+  try {
+    await user.click(screen.getByRole('button', { name: 'Download text' }))
+    await waitFor(() => assert.notEqual(exported, null))
+    assert.equal(await exported.text(), 'Actual saved career text')
+    assert.equal(downloaded, 'compass-person-experience.txt')
+  } finally {
+    URL.createObjectURL = originalCreate
+    URL.revokeObjectURL = originalRevoke
+    dom.window.HTMLAnchorElement.prototype.click = originalClick
+  }
+})
+
+test('drawer closes on cancel, locks page scrolling, and restores focus', async () => {
+  // JSDOM lacks native showModal; the browser check covers the actual modal surface.
+  dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true }
+  dom.window.HTMLDialogElement.prototype.close = function () { this.open = false }
+  const opener = document.createElement('button')
+  opener.textContent = 'Review candidate'
+  document.body.append(opener)
+  opener.focus()
+  const user = userEvent.setup({ document: dom.window.document })
+  function Harness() {
+    const [open, setOpen] = React.useState(true)
+    return open ? React.createElement(CandidateDrawer, { onClose: () => setOpen(false) }, React.createElement('p', null, 'Saved candidate')) : null
+  }
+  const rendered = render(React.createElement(Harness))
+  const dialog = screen.getByRole('dialog', { name: 'Candidate review' })
+  assert.equal(document.body.style.overflow, 'hidden')
+  await user.click(screen.getByRole('button', { name: 'Close candidate profile' }))
+  assert.equal(screen.queryByRole('dialog'), null)
+  assert.equal(document.body.style.overflow, '')
+  assert.equal(document.activeElement, opener)
+  rendered.unmount()
+  render(React.createElement(Harness))
+  const second = screen.getByRole('dialog', { name: 'Candidate review' })
+  const { act } = await import('@testing-library/react')
+  await act(async () => second.dispatchEvent(new dom.window.Event('cancel', { cancelable: true, bubbles: true })))
+  assert.equal(screen.queryByRole('dialog'), null)
+  assert.equal(document.body.style.overflow, '')
+  assert.equal(dialog.isConnected, false)
+  opener.remove()
 })
