@@ -19,6 +19,8 @@ Later launches reuse your installation and login.
 **Requirements:** macOS or desktop Linux, Git, curl, and internet access for setup.
 Linux also needs Chromium's system libraries. The first launch may take a few
 minutes. Keep the terminal open; **Ctrl+C** stops Compass without deleting saved work.
+Running `./compass` again gracefully restarts the previous instance from this
+repository and opens the app. Closing the browser tab alone does not stop Compass.
 
 [Startup help](docs/usage-notes.md#startup-help) · [Developer setup](docs/development.md)
 

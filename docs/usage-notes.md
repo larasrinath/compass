@@ -6,9 +6,14 @@ Run `./compass` from the repository folder. The app opens at
 [127.0.0.1:8787](http://127.0.0.1:8787/brief).
 
 - **Sign-in cancelled:** choose **Sign in to LinkedIn** in Compass to try again.
-- **Login expired:** stop Compass, then run `./compass --login` to sign in again.
-- **Port already in use:** stop the previous Compass terminal or run
-  `./compass --port 8788 --connector-port 8001`. Existing services are not stopped automatically.
+- **Already running:** run `./compass` again. It stops the verified instance from
+  this repository, waits for shutdown, then launches the current version. Saved
+  work is preserved; an active download may be interrupted. If installation is
+  still preparing, let that launch finish first.
+- **Login expired:** run `./compass --login` to restart and sign in again.
+- **Port already in use:** another service may own the port. Stop that service
+  yourself or run `./compass --port 8788 --connector-port 8001`. Compass only stops
+  a verified launcher from this repository; unrelated services are left alone.
 - **Browser did not open:** use the URL printed in the terminal.
 - **Startup failed:** check `.compass/connector.log` for details.
 

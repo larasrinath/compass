@@ -1,7 +1,10 @@
 """Launcher checks use fake subprocesses and local HTTP; never LinkedIn."""
 
 import asyncio
+import fcntl
+import os
 import socket
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -13,6 +16,7 @@ from linkedin_dashboard.launcher import (
     CompassFiles,
     ManagedConnector,
     ensure_connector,
+    launcher_lock,
     require_free_port,
     supported_node,
 )
@@ -210,3 +214,111 @@ def test_status_probe_starts_only_after_managed_connector_is_ready(tmp_path):
         assert response.json()["reachable"] is True
         assert response.json()["tools"] == ["search_people"]
         assert calls == [JobKind.LIST_TOOLS]
+
+
+@pytest.fixture
+def running_launcher(tmp_path):
+    processes = []
+
+    def start(
+        *, state="running", module="linkedin_dashboard.launcher", other_root=False
+    ):
+        root = tmp_path / "repo"
+        cache = root / ".compass"
+        cache.mkdir(parents=True, exist_ok=True)
+        launch_root = tmp_path / "other" if other_root else root
+        package = launch_root / "linkedin_dashboard"
+        package.mkdir(parents=True, exist_ok=True)
+        (package / "__init__.py").write_text("")
+        script = (
+            package / "launcher.py"
+            if module.startswith("linkedin_dashboard")
+            else launch_root / "other.py"
+        )
+        script.write_text("""
+import fcntl, pathlib, signal, subprocess, sys, time
+cache = pathlib.Path(sys.argv[1])
+with (cache / 'launcher.lock').open('w') as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    lock.write(sys.argv[2])
+    lock.flush()
+    child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
+    def stop(*args):
+        child.terminate()
+        child.wait(timeout=5)
+        (cache / 'closed-cleanly').write_text('yes')
+        sys.exit(0)
+    signal.signal(signal.SIGTERM, stop)
+    print('ready', flush=True)
+    while True:
+        time.sleep(.05)
+""")
+        process = subprocess.Popen(
+            [sys.executable, "-m", module, str(cache), state],
+            cwd=launch_root,
+            env={**os.environ, "PYTHONPATH": str(launch_root)},
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        processes.append(process)
+        assert process.stdout.readline().strip() == "ready"
+        return root, cache, process
+
+    yield start
+    for process in processes:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=5)
+
+
+@pytest.mark.parametrize("state", ["", "running"])
+def test_repeat_launch_stops_verified_owner_and_waits_for_cleanup(
+    running_launcher, state
+):
+    root, cache, process = running_launcher(state=state)
+    saved = root / "saved-data"
+    saved.write_text("keep this")
+    with launcher_lock(cache, root):
+        assert process.poll() is not None
+        assert (cache / "closed-cleanly").read_text() == "yes"
+        assert saved.read_text() == "keep this"
+        assert (cache / "launcher.lock").read_text() == "preparing"
+    # A leftover lock file does not block later launches.
+    with launcher_lock(cache, root):
+        pass
+
+
+@pytest.mark.parametrize("other_root", [False, True])
+def test_repeat_launch_refuses_unrelated_lock_owner(running_launcher, other_root):
+    root, cache, process = running_launcher(
+        module="linkedin_dashboard.launcher" if other_root else "other",
+        other_root=other_root,
+    )
+    with pytest.raises(RuntimeError, match="Cannot verify"):
+        with launcher_lock(cache, root):
+            pytest.fail("Unrelated process must retain its lock")
+    assert process.poll() is None
+
+
+def test_repeat_launch_does_not_interrupt_installation(running_launcher):
+    root, cache, process = running_launcher(state="preparing")
+    with pytest.raises(RuntimeError, match="still preparing"):
+        with launcher_lock(cache, root):
+            pytest.fail("Installation must finish first")
+    assert process.poll() is None
+
+
+def test_setup_only_does_not_stop_running_app(running_launcher):
+    root, cache, process = running_launcher()
+    with pytest.raises(RuntimeError, match="setup-only"):
+        with launcher_lock(cache, root, setup_only=True):
+            pytest.fail("Maintenance must not stop the app")
+    assert process.poll() is None
+
+
+def test_simultaneous_restart_is_serialized(tmp_path):
+    with (tmp_path / "launcher-restart.lock").open("a+") as takeover:
+        fcntl.flock(takeover, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(RuntimeError, match="Another Compass launch"):
+            with launcher_lock(tmp_path, tmp_path):
+                pytest.fail("Only one takeover can run")
