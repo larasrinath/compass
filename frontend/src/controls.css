@@ -16,3 +16,7 @@ select:not([multiple]) {
 @media (forced-colors: active) {
   select:not([multiple]) { appearance: auto; -webkit-appearance: auto; background-image: none; }
 }
+
+/* Keep controls visually unchanged on focus, as requested for this personal UI. */
+:focus-visible { outline: none; }
+input:focus, textarea:focus, select:focus { outline: none; box-shadow: none; }

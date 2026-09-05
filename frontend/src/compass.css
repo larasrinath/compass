@@ -36,7 +36,6 @@ footer { grid-column: 2; font-size: 11px; color: var(--ink-soft); border-color: 
 .quiet-action:hover:not(:disabled) { background: var(--subtle); border-color: var(--line-strong); }
 input, textarea, select { background: #fff; border: 1px solid var(--line-strong); border-radius: 12px; color: var(--ink); }
 input:hover, textarea:hover, select:hover { border-color: #918b7a; }
-:focus-visible { outline: 3px solid #8bb5a8; outline-offset: 3px; }
 a, .pool-heading-meta a { color: var(--accent); }
 .term-editor { border: 0; border-radius: 0; background: transparent; padding: 0; }
 .field-help, .term-editor .field-help { color: var(--ink-faint); font-size: 12px; }

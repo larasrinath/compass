@@ -51,3 +51,6 @@ Keep status labels in sentence case. Page styles should use these tokens rather
 than introducing near-matching colors. Check computed browser styles as well as
 screenshots whenever changing typography, since legacy selector specificity can
 otherwise silently override the intended face, weight, or color.
+
+User preference: controls must not gain focus rings, glow, or a colored chip
+border on focus. Preserve the caret and focus behavior without adding a halo.

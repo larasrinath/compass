@@ -230,9 +230,6 @@ textarea,
 summary {
   outline-offset: 3px;
 }
-:focus-visible {
-  outline: 3px solid #147a58;
-}
 button {
   min-height: 44px;
 }
@@ -1205,7 +1202,6 @@ footer { grid-column: 2; margin: 0 32px; padding: 18px 0; font-size: 12px; }
 .field > span, .network-fieldset legend { font-size: 14px; }
 input, textarea, select { border-radius: 7px; font-size: 14px; }
 input:hover, textarea:hover, select:hover { border-color: #809ac1; }
-:focus-visible { outline: 3px solid #80abff; }
 .primary-action, .lookup-card button, .pause-banner button, .lookup-result button { background: var(--accent); color: white; border-radius: 7px; font-size: 14px; font-weight: 600; }
 .primary-action:hover:not(:disabled), .lookup-card button:hover:not(:disabled), .pause-banner button:hover:not(:disabled) { background: #1842a7; }
 .quiet-action { border-radius: 7px; font-size: 14px; background: #fff; }
