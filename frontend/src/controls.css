@@ -1,0 +1,51 @@
+/* Shared select treatment: keep the native interaction, with Compass spacing. */
+select:not([multiple]) {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url('/icons/chevron-down.svg');
+  background-repeat: no-repeat;
+  background-position: right 16px center;
+  background-size: 16px 16px;
+  padding-right: 44px;
+}
+.criteria-filter-add select:not([multiple]) {
+  background-position: right 8px center;
+  background-size: 12px 12px;
+  padding-right: 28px;
+}
+@media (forced-colors: active) {
+  select:not([multiple]) { appearance: auto; -webkit-appearance: auto; background-image: none; }
+}
+
+/* Keep controls visually unchanged on focus, as requested for this personal UI. */
+:focus-visible { outline: none; }
+input:focus, textarea:focus, select:focus { outline: none; box-shadow: none; }
+
+/* Compass disclosures use an inset down/up chevron, not a browser triangle. */
+details:not(.trust-markers) > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  list-style: none;
+  color: var(--ink-faint);
+  font-weight: 400;
+  line-height: 1.5;
+}
+details:not(.trust-markers) > summary::-webkit-details-marker { display: none; }
+details:not(.trust-markers) > summary::marker { content: ''; }
+details:not(.trust-markers) > summary::before {
+  content: '';
+  display: block;
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  background: currentColor;
+  -webkit-mask: url('/icons/chevron-down.svg') center / 16px 16px no-repeat;
+  mask: url('/icons/chevron-down.svg') center / 16px 16px no-repeat;
+}
+details[open]:not(.trust-markers) > summary::before { transform: rotate(180deg); }
+.weights-editor > summary { justify-content: flex-start; }
+.weights-editor > summary > span:first-child { flex: 1; }
+@media (prefers-reduced-motion: no-preference) {
+  details:not(.trust-markers) > summary::before { transition: transform 160ms ease; }
+}

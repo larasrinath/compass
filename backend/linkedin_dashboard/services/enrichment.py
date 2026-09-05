@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from pydantic import ValidationError
@@ -21,6 +22,7 @@ from linkedin_dashboard.db.models import (
     ProfileFetch,
     ProfileIdentityObservation,
     ProfileSection,
+    RoleBrief,
     SectionError,
     SectionReference,
 )
@@ -37,6 +39,9 @@ from linkedin_dashboard.queue.jobs import (
     validate_payload,
 )
 from linkedin_dashboard.queue.worker import DurableJobQueue, JobResultProcessor
+
+if TYPE_CHECKING:
+    from linkedin_dashboard.services.scoring_service import ScoringService
 
 # Pinned by the sibling Tier-1 contract test.  Runtime code intentionally does
 # not import the upstream server (D-01).
@@ -251,8 +256,11 @@ class CompositeResultProcessor:
 class EnrichmentResultProcessor:
     """Project only committed profile envelopes into immutable history."""
 
-    def __init__(self, database: Database) -> None:
+    def __init__(
+        self, database: Database, scoring_service: ScoringService | None = None
+    ) -> None:
         self.database = database
+        self.scoring_service = scoring_service
 
     def reconcile(self) -> None:
         with self.database.sessions() as session:
@@ -470,6 +478,12 @@ class EnrichmentResultProcessor:
             return fetch.id
 
     def _parse_fetch(self, fetch_id: str, result: dict[str, Any]) -> None:
+        # Acquire before opening the write transaction. This ordering is shared
+        # with brief/config changes and prevents lock/SQLite writer inversion.
+        with self.database.transition_lock:
+            self._parse_fetch_locked(fetch_id, result)
+
+    def _parse_fetch_locked(self, fetch_id: str, result: dict[str, Any]) -> None:
         with self.database.sessions.begin() as session:
             fetch = session.get(ProfileFetch, fetch_id)
             if fetch is None or fetch.processed_at is not None:
@@ -491,6 +505,7 @@ class EnrichmentResultProcessor:
                     fetch_id=fetch.id,
                     section_name=section_name,
                     raw_text=raw_text,
+                    content_sha256=hashlib.sha256(raw_text.encode("utf-8")).hexdigest(),
                     retrieved_at=now,
                     char_len=len(raw_text),
                 )
@@ -600,6 +615,21 @@ class EnrichmentResultProcessor:
             fetch.finished_at = now
             fetch.duration_ms = _duration_ms(fetch.started_at, now)
             fetch.processed_at = now
+            if self.scoring_service is not None:
+                # The session disables autoflush.  Make the new immutable
+                # sections, parsed spans, and error lineage visible to the
+                # score built in this same transaction.
+                session.flush()
+                has_brief = session.scalar(
+                    select(RoleBrief.id).where(
+                        RoleBrief.session_id == candidate.session_id,
+                        RoleBrief.superseded_at.is_(None),
+                    )
+                )
+                if has_brief is not None:
+                    self.scoring_service.rescore_candidate_in_session(
+                        session, candidate.id
+                    )
 
     def _mark_contract_failure(
         self,

@@ -3,19 +3,27 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from sqlalchemy import func, select, update
 
-from linkedin_dashboard.audit import append_audit_event
+from linkedin_dashboard.correlation import current_correlation_id
 from linkedin_dashboard.db.models import (
+    AuditLog,
+    BriefCredential,
     BriefSkill,
     BriefTerm,
     CandidateScore,
     DashboardSession,
     RoleBrief,
 )
+from linkedin_dashboard.db.scoring_manifest import build_manifest
 from linkedin_dashboard.db.session import Database
+from linkedin_dashboard.services.scoring.normalization import normalize_text
+
+if TYPE_CHECKING:
+    from linkedin_dashboard.services.scoring_service import ScoringService
 
 PROTECTED_TERMS = frozenset(
     {
@@ -63,6 +71,8 @@ class BriefValue:
     positive_keywords: tuple[str, ...]
     negative_keywords: tuple[str, ...]
     message_tone: str
+    required_experience_months: int | None = None
+    required_credentials: tuple[TermValue, ...] = ()
 
 
 class ProtectedTermError(ValueError):
@@ -72,34 +82,62 @@ class ProtectedTermError(ValueError):
 
 
 def _clean_terms(values: tuple[TermValue, ...]) -> tuple[TermValue, ...]:
-    result: list[TermValue] = []
-    seen: set[str] = set()
+    displays: dict[str, set[str]] = {}
+    aliases: dict[str, dict[str, str]] = {}
     for item in values:
-        term = item.term.strip()
-        if not term:
+        if type(item.term) is not str:
+            raise ValueError("brief terms must be strings")
+        if "\x00" in item.term:
+            raise ValueError("brief terms cannot contain NUL")
+        term = " ".join(item.term.strip().split())
+        key = normalize_text(term)
+        if not key:
             continue
-        key = term.casefold()
-        if key in seen:
-            continue
-        seen.add(key)
-        aliases: list[str] = []
-        alias_seen = {key}
+        displays.setdefault(key, set()).add(term)
+        owned_aliases = aliases.setdefault(key, {})
         for raw_alias in item.aliases:
-            alias = raw_alias.strip()
-            alias_key = alias.casefold()
-            if alias and alias_key not in alias_seen:
-                alias_seen.add(alias_key)
-                aliases.append(alias)
-        result.append(TermValue(term=term, aliases=tuple(aliases)))
-    return tuple(result)
+            if type(raw_alias) is not str:
+                raise ValueError("brief aliases must be strings")
+            if "\x00" in raw_alias:
+                raise ValueError("brief aliases cannot contain NUL")
+            alias = " ".join(raw_alias.strip().split())
+            alias_key = normalize_text(alias)
+            if not alias_key or alias_key == key:
+                continue
+            previous = owned_aliases.get(alias_key)
+            if previous is None or alias < previous:
+                owned_aliases[alias_key] = alias
+
+    primary_keys = set(displays)
+    alias_owners: dict[str, str] = {}
+    for owner in sorted(aliases):
+        for alias_key in aliases[owner]:
+            if alias_key in primary_keys:
+                raise ValueError("an alias cannot equal another primary term")
+            previous = alias_owners.get(alias_key)
+            if previous is not None and previous != owner:
+                raise ValueError("an alias cannot belong to multiple primary terms")
+            alias_owners[alias_key] = owner
+
+    return tuple(
+        TermValue(
+            term=min(displays[key]),
+            aliases=tuple(aliases[key][alias] for alias in sorted(aliases[key])),
+        )
+        for key in sorted(displays)
+    )
 
 
 def _clean_strings(values: tuple[str, ...]) -> tuple[str, ...]:
     result: list[str] = []
     seen: set[str] = set()
     for value in values:
+        if type(value) is not str:
+            raise ValueError("brief text values must be strings")
+        if "\x00" in value:
+            raise ValueError("brief text cannot contain NUL")
         cleaned = value.strip()
-        key = cleaned.casefold()
+        key = normalize_text(cleaned)
         if cleaned and key not in seen:
             seen.add(key)
             result.append(cleaned)
@@ -107,6 +145,16 @@ def _clean_strings(values: tuple[str, ...]) -> tuple[str, ...]:
 
 
 def normalize_brief(value: BriefValue) -> BriefValue:
+    if not all(
+        type(text) is str
+        for text in (value.job_description, value.location, value.message_tone)
+    ):
+        raise ValueError("brief text fields must be strings")
+    if any(
+        "\x00" in text
+        for text in (value.job_description, value.location, value.message_tone)
+    ):
+        raise ValueError("brief text cannot contain NUL")
     normalized = BriefValue(
         job_description=value.job_description.strip(),
         required_skills=_clean_terms(value.required_skills),
@@ -117,11 +165,19 @@ def normalize_brief(value: BriefValue) -> BriefValue:
         positive_keywords=_clean_strings(value.positive_keywords),
         negative_keywords=_clean_strings(value.negative_keywords),
         message_tone=value.message_tone.strip(),
+        required_experience_months=value.required_experience_months,
+        required_credentials=_clean_terms(value.required_credentials),
     )
     if not normalized.job_description:
         raise ValueError("job_description is required")
+    if normalized.required_experience_months is not None and (
+        type(normalized.required_experience_months) is not int
+        or normalized.required_experience_months < 0
+    ):
+        raise ValueError("required_experience_months must be a nonnegative integer")
     if not (
         normalized.required_skills
+        or normalized.required_credentials
         or normalized.optional_skills
         or normalized.target_titles
         or normalized.positive_keywords
@@ -131,10 +187,24 @@ def normalize_brief(value: BriefValue) -> BriefValue:
     return normalized
 
 
+def scoring_inputs(value: BriefValue) -> dict[str, object]:
+    """Freeze the exact normalized terms used by absence provenance."""
+    return build_manifest(
+        required_skills=((item.term, item.aliases) for item in value.required_skills),
+        optional_skills=((item.term, item.aliases) for item in value.optional_skills),
+        target_titles=((item.term, item.aliases) for item in value.target_titles),
+        industries=((item.term, item.aliases) for item in value.industries),
+        location=value.location,
+        required_credentials=(
+            (item.term, item.aliases) for item in value.required_credentials
+        ),
+    )
+
+
 def contains_protected_criterion(entered: str) -> bool:
     # Treat punctuation, including underscores, as separators so an alias
     # cannot evade the exact token/phrase blocklist through formatting.
-    words = " ".join(re.findall(r"[^\W_]+", entered.casefold()))
+    words = " ".join(re.findall(r"[^\W_]+", normalize_text(entered)))
     return any(
         re.search(rf"(?:^|\s){re.escape(term)}(?:$|\s)", words)
         for term in PROTECTED_TERMS
@@ -148,6 +218,7 @@ def _reject_protected(value: BriefValue) -> None:
         "optional_skills",
         "target_titles",
         "industries",
+        "required_credentials",
     ):
         for index, item in enumerate(getattr(value, name)):
             fields.append((f"{name}.{index}.term", item.term))
@@ -159,6 +230,7 @@ def _reject_protected(value: BriefValue) -> None:
         fields.extend(
             (f"{name}.{index}", term) for index, term in enumerate(getattr(value, name))
         )
+    fields.append(("location", value.location))
 
     offending: list[dict[str, str]] = []
     for path, entered in fields:
@@ -169,10 +241,22 @@ def _reject_protected(value: BriefValue) -> None:
 
 
 class BriefService:
-    def __init__(self, database: Database) -> None:
+    def __init__(
+        self, database: Database, scoring_service: ScoringService | None = None
+    ) -> None:
         self.database = database
+        self.scoring_service = scoring_service
+        self._transition_lock = database.transition_lock
 
     def create_session(self, label: str, nav_budget: int = 120) -> DashboardSession:
+        if type(label) is not str:
+            raise ValueError("session label must be a string")
+        with self._transition_lock:
+            return self._create_session_locked(label, nav_budget)
+
+    def _create_session_locked(
+        self, label: str, nav_budget: int = 120
+    ) -> DashboardSession:
         cleaned = label.strip()
         if not cleaned:
             raise ValueError("session label is required")
@@ -188,15 +272,21 @@ class BriefService:
         )
         with self.database.sessions.begin() as session:
             session.add(row)
-        append_audit_event(
-            self.database,
-            session_id=row.id,
-            actor="operator",
-            action="session.created",
-            subject_type="session",
-            subject_id=row.id,
-            detail={"label": cleaned, "nav_budget": nav_budget},
-        )
+            session.flush()
+            if self.scoring_service is not None:
+                self.scoring_service.ensure_default_config(session, row.id)
+            session.add(
+                AuditLog(
+                    session_id=row.id,
+                    at=now.isoformat(),
+                    actor="operator",
+                    action="session.created",
+                    subject_type="session",
+                    subject_id=row.id,
+                    detail={"label": cleaned, "nav_budget": nav_budget},
+                    correlation_id=current_correlation_id(),
+                )
+            )
         return row
 
     def current_session(self) -> DashboardSession | None:
@@ -217,7 +307,10 @@ class BriefService:
         with self.database.sessions() as session:
             row = session.scalar(
                 select(RoleBrief)
-                .where(RoleBrief.session_id == session_id)
+                .where(
+                    RoleBrief.session_id == session_id,
+                    RoleBrief.superseded_at.is_(None),
+                )
                 .order_by(RoleBrief.version.desc())
                 .limit(1)
             )
@@ -226,7 +319,30 @@ class BriefService:
             return row
 
     def save(self, session_id: str, value: BriefValue) -> tuple[RoleBrief, int]:
+        if type(session_id) is not str:
+            raise ValueError("session_id must be a string")
         value = normalize_brief(value)
+        positive = {normalize_text(term) for term in value.positive_keywords}
+        conflicts = [
+            term for term in value.negative_keywords if normalize_text(term) in positive
+        ]
+        if conflicts:
+            raise ValueError(
+                "Keywords cannot be both positive and excluded: " + ", ".join(conflicts)
+            )
+        manifest = scoring_inputs(value)
+        # SQLite serializes writers, but a process-local lock prevents two
+        # deferred transactions from both choosing the same next version and
+        # turning an optimistic conflict into an opaque "database is locked".
+        with self._transition_lock:
+            return self._save_locked(session_id, value, manifest)
+
+    def _save_locked(
+        self,
+        session_id: str,
+        value: BriefValue,
+        manifest: dict[str, object],
+    ) -> tuple[RoleBrief, int]:
         now = datetime.now(UTC).isoformat()
         stale_count = 0
         with self.database.sessions.begin() as session:
@@ -234,11 +350,27 @@ class BriefService:
                 raise LookupError("session does not exist")
             current = session.scalar(
                 select(RoleBrief)
-                .where(RoleBrief.session_id == session_id)
+                .where(
+                    RoleBrief.session_id == session_id,
+                    RoleBrief.superseded_at.is_(None),
+                )
                 .order_by(RoleBrief.version.desc())
                 .limit(1)
             )
             version = 1 if current is None else current.version + 1
+            previous_had_credentials = bool(
+                current
+                and session.scalar(
+                    select(func.count(BriefCredential.id)).where(
+                        BriefCredential.brief_id == current.id
+                    )
+                )
+            )
+            config = (
+                self.scoring_service.ensure_default_config(session, session_id)
+                if self.scoring_service is not None
+                else None
+            )
             if current is not None:
                 current.superseded_at = now
                 stale_count = int(
@@ -250,14 +382,18 @@ class BriefService:
                     )
                     or 0
                 )
-                session.execute(
-                    update(CandidateScore)
-                    .where(
-                        CandidateScore.brief_id == current.id,
-                        CandidateScore.is_current.is_(True),
+                if self.scoring_service is None:
+                    session.execute(
+                        update(CandidateScore)
+                        .where(
+                            CandidateScore.brief_id == current.id,
+                            CandidateScore.is_current.is_(True),
+                        )
+                        .values(is_current=False, superseded_at=now)
                     )
-                    .values(is_current=False, superseded_at=now)
-                )
+                # The BEFORE INSERT collision guard must observe the prior
+                # version's explicit lifecycle transition before the new row.
+                session.flush()
             brief = RoleBrief(
                 id=str(uuid4()),
                 session_id=session_id,
@@ -272,7 +408,9 @@ class BriefService:
                 positive_keywords=list(value.positive_keywords),
                 negative_keywords=list(value.negative_keywords),
                 message_tone=value.message_tone,
-                weights_version="v1",
+                required_experience_months=value.required_experience_months,
+                weights_version=str(config.version) if config is not None else "v1",
+                scoring_inputs=manifest,
             )
             session.add(brief)
             session.flush()
@@ -302,22 +440,45 @@ class BriefService:
                             brief_id=brief.id,
                             kind=kind,
                             term=item.term,
-                            term_key=item.term.casefold(),
+                            term_key=normalize_text(item.term),
                             aliases=list(item.aliases),
                             position=position,
                         )
                     )
+            for position, item in enumerate(value.required_credentials):
+                session.add(
+                    BriefCredential(
+                        id=str(uuid4()),
+                        brief_id=brief.id,
+                        term=item.term,
+                        term_key=normalize_text(item.term),
+                        aliases=list(item.aliases),
+                        position=position,
+                    )
+                )
             session.flush()
             brief.sealed_at = now
-        append_audit_event(
-            self.database,
-            session_id=session_id,
-            actor="operator",
-            action="brief.saved",
-            subject_type="role_brief",
-            subject_id=brief.id,
-            detail={"version": brief.version, "stale_scores": stale_count},
-        )
+            if self.scoring_service is not None:
+                self.scoring_service.on_brief_saved(
+                    session,
+                    previous=current,
+                    current=brief,
+                    removed_final_credential=(
+                        previous_had_credentials and not value.required_credentials
+                    ),
+                )
+            session.add(
+                AuditLog(
+                    session_id=session_id,
+                    at=now,
+                    actor="operator",
+                    action="brief.saved",
+                    subject_type="role_brief",
+                    subject_id=brief.id,
+                    detail={"version": brief.version, "stale_scores": stale_count},
+                    correlation_id=current_correlation_id(),
+                )
+            )
         return brief, stale_count
 
     def load_value(self, brief_id: str) -> BriefValue:
@@ -337,6 +498,13 @@ class BriefService:
                     select(BriefTerm)
                     .where(BriefTerm.brief_id == brief_id)
                     .order_by(BriefTerm.kind, BriefTerm.position, BriefTerm.id)
+                )
+            )
+            credentials = list(
+                session.scalars(
+                    select(BriefCredential)
+                    .where(BriefCredential.brief_id == brief_id)
+                    .order_by(BriefCredential.position, BriefCredential.id)
                 )
             )
             return BriefValue(
@@ -365,4 +533,8 @@ class BriefService:
                 positive_keywords=tuple(brief.positive_keywords),
                 negative_keywords=tuple(brief.negative_keywords),
                 message_tone=brief.message_tone,
+                required_experience_months=brief.required_experience_months,
+                required_credentials=tuple(
+                    TermValue(row.term, tuple(row.aliases)) for row in credentials
+                ),
             )

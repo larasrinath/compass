@@ -1,123 +1,49 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import type { BriefTerm } from '../api/client'
+import { CompassIcon } from './CompassIcon'
 
-export function TermEditor({
-  field,
-  label,
-  values,
-  errors = [],
-  onChange,
-}: {
+export function TermEditor({ field, label, values, errors = [], onChange, hint, placeholder = 'Add a term' }: {
   field: string
   label: string
   values: BriefTerm[]
   errors?: string[]
   onChange: (values: BriefTerm[]) => void
+  hint?: string
+  placeholder?: string
 }) {
+  const inputRef = useRef<HTMLInputElement>(null)
   const [nextTerm, setNextTerm] = useState('')
-
   function addTerm() {
     const term = nextTerm.trim()
     if (!term) return
-    if (
-      values.some(
-        (value) =>
-          value.term.localeCompare(term, undefined, { sensitivity: 'accent' }) === 0,
-      )
-    ) {
-      setNextTerm('')
-      return
+    if (!values.some(value => value.term.localeCompare(term, undefined, { sensitivity: 'accent' }) === 0)) {
+      onChange([...values, { term, aliases: [] }])
     }
-    onChange([...values, { term, aliases: [] }])
     setNextTerm('')
   }
-
   return (
-    <div
-      aria-labelledby={`${field}-label`}
-      className="term-editor"
-      data-field-prefix={field}
-      role="group"
-    >
-      <strong id={`${field}-label`}>{label}</strong>
-      <p className="field-help">
-        Add each term, then optional aliases. Aliases are comma separated.
-      </p>
-      {values.map((value, index) => (
-        <div className="term-row" key={`term-${index}`}>
-          <label className="field">
-            <span>
-              {label} term {index + 1}
-            </span>
-            <input
-              onChange={(event) => {
-                const updated = [...values]
-                updated[index] = { ...value, term: event.target.value }
-                onChange(updated)
-              }}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') event.preventDefault()
-              }}
-              value={value.term}
-            />
-          </label>
-          <label className="field">
-            <span>
-              Aliases for {value.term || `${label} term ${index + 1}`}
-            </span>
-            <input
-              onChange={(event) => {
-                const updated = [...values]
-                updated[index] = {
-                  ...value,
-                  aliases: event.target.value
-                    .split(',')
-                    .map((alias) => alias.trimStart()),
-                }
-                onChange(updated)
-              }}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') event.preventDefault()
-              }}
-              placeholder="Alias one, alias two"
-              value={value.aliases.join(', ')}
-            />
-          </label>
-          <button
-            aria-label={`Remove ${value.term || `${label} term ${index + 1}`}`}
-            className="quiet-action"
-            onClick={() => onChange(values.filter((_, row) => row !== index))}
-            type="button"
-          >
-            Remove
-          </button>
+    <div aria-labelledby={`${field}-label`} className="criteria-terms" data-field-prefix={field} role="group">
+      <div className="criteria-heading-row">
+        <span className="criteria-label" id={`${field}-label`}>{label}</span>
+        <div className="criteria-chip criteria-chip-add" onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) addTerm() }}>
+          <input ref={inputRef} aria-label={`New ${label.toLocaleLowerCase()} term`} placeholder={placeholder} value={nextTerm} onChange={event => setNextTerm(event.target.value)}
+            onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); addTerm() } }} />
+          <button aria-label="Add term" onClick={() => { addTerm(); inputRef.current?.focus() }} type="button"><CompassIcon name="plus" size={18} /></button>
         </div>
-      ))}
-      <div className="term-add-row">
-        <label className="field">
-          <span>New {label.toLocaleLowerCase()} term</span>
-          <input
-            onChange={(event) => setNextTerm(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') {
-                event.preventDefault()
-                addTerm()
-              }
-            }}
-            value={nextTerm}
-          />
-        </label>
-        <button className="quiet-action" onClick={addTerm} type="button">
-          Add term
-        </button>
       </div>
-      {errors.length ? (
-        <ul className="field-errors" role="alert">
-          {errors.map((error) => (
-            <li key={error}>{error}</li>
-          ))}
-        </ul>
-      ) : null}
+      {hint ? <p className="criteria-hint">{hint}</p> : null}
+      <div className="criteria-chips criteria-values">
+        {values.map((value, index) => (
+          <div className="criteria-chip" key={`term-${index}`}>
+            <input aria-label={`${label} term ${index + 1}`} style={{ width: `${Math.max(4, Math.min(32, value.term.length + 1))}ch` }} value={value.term}
+              onChange={event => onChange(values.map((item, row) => row === index ? { ...item, term: event.target.value } : item))}
+              onKeyDown={event => { if (event.key === 'Enter') event.preventDefault() }} />
+            <button aria-label={`Remove ${value.term || `${label} term ${index + 1}`}`} onClick={() => onChange(values.filter((_, row) => row !== index))} type="button"><CompassIcon name="close" size={14} /></button>
+          </div>
+        ))}
+
+      </div>
+      {errors.length ? <ul className="field-errors" role="alert">{errors.map(error => <li key={error}>{error}</li>)}</ul> : null}
     </div>
   )
 }

@@ -219,6 +219,7 @@ _STRUCTURAL_HEADER_NAMES = ("content-length",)
 _PROVENANCE_TEXT_FIELDS = {"claim_text", "matched_term", "raw_text", "snippet"}
 _DIAGNOSTIC_CONTAINERS = {"error", "errors", "section_error", "section_errors"}
 _PROVENANCE_HANDLER_MARKER = object()
+_BRIEF_DOMAIN_HANDLER_MARKER = object()
 _SAFE_PROVENANCE_PROSE = re.compile(
     r"\bAuthentication:\s*OAuth(?:\s+2\.0)?(?=\s*(?:/|[\r\n]|$))|"
     r"\bBearer token validation\b|"
@@ -237,6 +238,12 @@ def preserve_provenance_text(handler: Any) -> Any:
     not grant it a less restrictive response policy.
     """
     handler.__linkedin_dashboard_provenance__ = _PROVENANCE_HANDLER_MARKER
+    return handler
+
+
+def preserve_brief_domain_credentials(handler: Any) -> Any:
+    """Allow only the role brief's structured credential requirements."""
+    handler.__linkedin_dashboard_brief_domain__ = _BRIEF_DOMAIN_HANDLER_MARKER
     return handler
 
 
@@ -976,6 +983,7 @@ def sanitize_for_frontend(
     field_name: str | None = None,
     _trusted_openapi: bool = False,
     _preserve_provenance_text: bool = False,
+    _preserve_brief_domain: bool = False,
     _location: tuple[str, ...] = (),
 ) -> Any:
     """Recursively remove process-local diagnostics and path material."""
@@ -990,10 +998,16 @@ def sanitize_for_frontend(
                 field_name=str(key).casefold(),
                 _trusted_openapi=_trusted_openapi,
                 _preserve_provenance_text=_preserve_provenance_text,
+                _preserve_brief_domain=_preserve_brief_domain,
                 _location=(*_location, str(key)),
             )
             for key, child in value.items()
             if not _drop_key(key)
+            or (
+                _preserve_brief_domain
+                and not _location
+                and str(key).casefold() == "required_credentials"
+            )
         }
     if isinstance(value, list):
         return [
@@ -1002,6 +1016,7 @@ def sanitize_for_frontend(
                 field_name=field_name,
                 _trusted_openapi=_trusted_openapi,
                 _preserve_provenance_text=_preserve_provenance_text,
+                _preserve_brief_domain=_preserve_brief_domain,
                 _location=_location,
             )
             for child in value
@@ -1013,6 +1028,7 @@ def sanitize_for_frontend(
                 field_name=field_name,
                 _trusted_openapi=_trusted_openapi,
                 _preserve_provenance_text=_preserve_provenance_text,
+                _preserve_brief_domain=_preserve_brief_domain,
                 _location=_location,
             )
             for child in value
@@ -1065,6 +1081,14 @@ def _request_preserves_provenance(scope: Scope) -> bool:
     return (
         getattr(endpoint, "__linkedin_dashboard_provenance__", None)
         is _PROVENANCE_HANDLER_MARKER
+    )
+
+
+def _request_preserves_brief_domain(scope: Scope) -> bool:
+    endpoint = scope.get("endpoint")
+    return (
+        getattr(endpoint, "__linkedin_dashboard_brief_domain__", None)
+        is _BRIEF_DOMAIN_HANDLER_MARKER
     )
 
 
@@ -1306,13 +1330,16 @@ class PrivacyFilterMiddleware:
         chunks: list[bytes] = []
         response_kind = "passthrough"
         preserve_provenance_text = False
+        preserve_brief_domain = False
         sse_parser: _SSEParser | None = None
         trusted_openapi = scope.get("path") == "/api/openapi.json"
 
         async def capture(message: Message) -> None:
+            nonlocal preserve_brief_domain
             nonlocal preserve_provenance_text, response_kind, sse_parser, start
             if message["type"] == "http.response.start":
                 preserve_provenance_text = _request_preserves_provenance(scope)
+                preserve_brief_domain = _request_preserves_brief_domain(scope)
                 sse_parser = _SSEParser(
                     preserve_provenance_text=preserve_provenance_text
                 )
@@ -1402,6 +1429,7 @@ class PrivacyFilterMiddleware:
                         payload,
                         _trusted_openapi=trusted_openapi,
                         _preserve_provenance_text=preserve_provenance_text,
+                        _preserve_brief_domain=preserve_brief_domain,
                     )
                 ).encode("utf-8")
             except (

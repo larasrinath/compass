@@ -109,6 +109,14 @@ export interface SessionRecord {
   nav_budget: number
   nav_used: number
   send_enabled: boolean
+  phase_gates?: Partial<Record<'A' | 'B' | 'C', PhaseGateRecord>>
+}
+
+export interface PhaseGateRecord {
+  gate: 'A' | 'B' | 'C'
+  accepted_at: string
+  note: string | null
+  evidence_ids: string[]
 }
 
 export interface BriefTerm {
@@ -121,9 +129,11 @@ export interface BriefInput {
   job_description: string
   required_skills: BriefTerm[]
   optional_skills: BriefTerm[]
+  required_experience_months: number | null
   target_titles: BriefTerm[]
   location: string
   industries: BriefTerm[]
+  required_credentials: BriefTerm[]
   positive_keywords: string[]
   negative_keywords: string[]
   message_tone: string
@@ -147,6 +157,16 @@ export interface SearchInput {
   current_company?: string | null
 }
 
+export type SearchRunStatus =
+  | 'queued'
+  | 'running'
+  | 'ok'
+  | 'partial'
+  | 'rate_limited'
+  | 'failed'
+  | 'interrupted'
+  | 'cancelled'
+
 export interface SearchRun {
   id: string
   job_id: string
@@ -156,7 +176,7 @@ export interface SearchRun {
   location: string | null
   network: string[]
   current_company: string | null
-  status: string
+  status: SearchRunStatus
   reference_count: number
   person_reference_count: number
   new_candidate_count: number
@@ -274,6 +294,17 @@ export interface CandidateDetail {
     error_message: string
     extra: Record<string, unknown>
   }>
+  score?: RankedCandidateRecord | null
+  score_history?: Array<{
+    id: string
+    score: number | null
+    weights_version: string
+    computed_at: string
+    current: boolean
+  }>
+  signals?: ScoreSignalRecord[]
+  non_scoring_hints?: RankedCandidateRecord['non_scoring_hints']
+  scoring_empty_state?: string | null
 }
 
 export interface CandidateSection {
@@ -284,7 +315,7 @@ export interface CandidateSection {
   span_unit: 'unicode_code_point'
   spans: Array<{
     id: string
-    field_key: string
+    field_key?: string
     profile_section_id: string
     span_start: number | null
     span_end: number | null
@@ -294,6 +325,131 @@ export interface CandidateSection {
     provenance_available: boolean
     provenance_label: string
   }>
+}
+
+export type ClaimVerdict =
+  | 'matched'
+  | 'not_matched'
+  | 'unknown'
+  | 'contradicted'
+
+export interface ProfileEvidenceRecord {
+  id: string
+  section_name: string
+  profile_section_id: string
+  span_start: number
+  span_end: number
+  snippet: string
+  matched_term: string
+  matcher: 'exact' | 'alias' | 'stem' | 'llm_verified'
+  polarity: 'supporting' | 'contradicting'
+  availability:
+    | { state: 'available' }
+    | { state: 'masked'; reason: string }
+    | { state: 'raw_purged'; reason: string; purged_at: string }
+}
+
+export interface AbsenceCoverageRecord {
+  section_name: string
+  normalized_terms: string[]
+  aliases: string[]
+  matcher_version: string
+}
+
+export type MissingReason =
+  | 'not_requested'
+  | 'rate_limit'
+  | 'fetch_error'
+  | 'unparseable'
+
+export interface MissingSectionRecord {
+  section_name: string
+  reason: MissingReason
+}
+
+export interface ScoreClaimRecord {
+  id: string
+  claim_key: string
+  display_term: string
+  verdict: ClaimVerdict
+  evidence: ProfileEvidenceRecord[]
+  coverage: AbsenceCoverageRecord[]
+  missing_sections: MissingSectionRecord[]
+}
+
+export interface ScoreSignalRecord {
+  id: string
+  signal_id: 'S-1' | 'S-2' | 'S-3' | 'S-4' | 'S-5' | 'S-6' | 'S-8'
+  label: string
+  rollup: ClaimVerdict | 'mixed'
+  weight: number
+  raw_subscore: number
+  contribution: number
+  availability: number
+  claims: ScoreClaimRecord[]
+}
+
+export interface RankedCandidateRecord {
+  id: string
+  score_id: string
+  input_fingerprint: string
+  username: string
+  profile_url: string
+  display_name: string | null
+  headline: string | null
+  stage: 'provisional' | 'enriched'
+  score: number | null
+  score_lower: number | null
+  score_upper: number | null
+  previous_score: number | null
+  delta: number | null
+  confidence: number
+  confidence_band: 'low' | 'medium' | 'high' | null
+  calculation_status: 'scored' | 'unknown'
+  active_signal_count: number
+  all_inert_attested: boolean
+  weights_version: string
+  top_signals: Array<{
+    signal_id: string
+    label: string
+    contribution: number
+    rollup: ScoreSignalRecord['rollup']
+  }>
+  non_scoring_hints: Array<{
+    kind: 'network' | 'profile_urn' | 'messageability' | 'search_context'
+    label: string
+    value: string
+  }>
+}
+
+export interface ScoringConfigRecord {
+  version: string
+  weights: Record<ScoringWeightKey, number>
+  active_signal_ids: string[]
+  inert_reasons: Partial<
+    Record<ScoringWeightKey, { code: string; message: string }>
+  >
+  metro_region_equivalences: Record<string, string[]>
+}
+
+export const SCORING_WEIGHT_KEYS = [
+  'S-1',
+  'S-2',
+  'S-3',
+  'S-4',
+  'S-5',
+  'S-6',
+  'S-8',
+] as const
+
+export type ScoringWeightKey = (typeof SCORING_WEIGHT_KEYS)[number]
+
+export interface RankedCandidatesQuery {
+  session_id: string
+  stage?: string
+  min_score?: number
+  confidence?: string
+  sort?: string
 }
 
 export const getSession = () => requestJson<SessionRecord | null>('/api/session')
@@ -329,10 +485,75 @@ export const runSearch = (input: SearchInput) =>
     body: JSON.stringify(input),
   })
 
-export const listCandidates = (sessionId: string) =>
+export const listCandidatePool = (sessionId: string) =>
   requestJson<CandidateRecord[]>(
-    `/api/candidates?session_id=${encodeURIComponent(sessionId)}`,
+    `/api/candidate-pool?session_id=${encodeURIComponent(sessionId)}`,
   )
+
+export const listCandidates = (query: RankedCandidatesQuery) => {
+  const params = new URLSearchParams({ session_id: query.session_id })
+  if (query.stage) params.set('stage', query.stage)
+  if (query.min_score !== undefined) {
+    params.set('min_score', String(query.min_score))
+  }
+  if (query.confidence) params.set('confidence', query.confidence)
+  if (query.sort) params.set('sort', query.sort)
+  return requestJson<RankedCandidateRecord[]>(`/api/candidates?${params}`)
+}
+
+export const acceptPhaseGateA = (note: string) =>
+  requestJson<PhaseGateRecord>('/api/session/gates/A', {
+    method: 'POST',
+    body: JSON.stringify({ note }),
+  })
+
+export const acceptPhaseGateB = (evidenceIds: string[], note?: string) =>
+  requestJson<PhaseGateRecord>('/api/session/gates/B', {
+    method: 'POST',
+    body: JSON.stringify({ evidence_ids: evidenceIds, note: note || null }),
+  })
+
+export const getScoringConfig = async () =>
+  validateScoringConfig(await requestJson<unknown>('/api/weights'))
+
+export const updateScoringConfig = (input: {
+  expected_version: string
+  weights: Record<ScoringWeightKey, number>
+  metro_region_equivalences: Record<string, string[]>
+}) =>
+  requestJson<ScoringConfigRecord>('/api/weights/current', {
+    method: 'PUT',
+    body: JSON.stringify(input),
+  })
+
+function validateScoringConfig(value: unknown): ScoringConfigRecord {
+  if (!value || typeof value !== 'object') {
+    throw new Error('Scoring configuration contract error: response must be an object.')
+  }
+  const record = value as Record<string, unknown>
+  if (!record.weights || typeof record.weights !== 'object') {
+    throw new Error('Scoring configuration contract error: weights must be an object.')
+  }
+  const keys = Object.keys(record.weights as object)
+  const unexpected = keys.filter(
+    (key) => !SCORING_WEIGHT_KEYS.includes(key as ScoringWeightKey),
+  )
+  const missing = SCORING_WEIGHT_KEYS.filter((key) => !keys.includes(key))
+  if (unexpected.length || missing.length) {
+    throw new Error(
+      `Scoring configuration contract error: ${unexpected.length ? `unexpected weight keys ${unexpected.join(', ')}` : ''}${unexpected.length && missing.length ? '; ' : ''}${missing.length ? `missing weight keys ${missing.join(', ')}` : ''}.`,
+    )
+  }
+  for (const key of SCORING_WEIGHT_KEYS) {
+    const weight = (record.weights as Record<string, unknown>)[key]
+    if (typeof weight !== 'number' || !Number.isFinite(weight) || weight < 0) {
+      throw new Error(
+        `Scoring configuration contract error: ${key} weight must be a finite nonnegative number.`,
+      )
+    }
+  }
+  return value as ScoringConfigRecord
+}
 
 export const getCandidate = (candidateId: string) =>
   requestJson<CandidateDetail>(
@@ -372,3 +593,7 @@ export const getCompanyLookup = (lookupId: string) =>
   requestJson<CompanyLookup>(
     `/api/companies/urn-lookups/${encodeURIComponent(lookupId)}`,
   )
+
+export async function cancelQueuedJob(jobId: string): Promise<QueueJob> {
+  return requestJson(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' })
+}

@@ -32,10 +32,16 @@ from linkedin_dashboard.db.migrations import (
     v0020_m3_integrity_corrections,
     v0021_m3_final_integrity,
     v0022_terminal_projection_authority,
+    v0023_m4_scoring,
+    v0024_m4_integrity_upgrade,
+    v0025_m4_semantic_integrity,
+    v0026_m4_manifest_convergence,
+    v0027_m4_bounded_manifests,
+    v0028_m4_text_storage,
+    v0029_m4_claim_stage_identity,
 )
 from linkedin_dashboard.db.models import (
     Candidate,
-    CandidateScore,
     DashboardSession,
     DraftClaim,
     MessageDraft,
@@ -620,6 +626,13 @@ def test_existing_v0001_database_receives_integrity_migration(tmp_path) -> None:
         v0020_m3_integrity_corrections.VERSION,
         v0021_m3_final_integrity.VERSION,
         v0022_terminal_projection_authority.VERSION,
+        v0023_m4_scoring.VERSION,
+        v0024_m4_integrity_upgrade.VERSION,
+        v0025_m4_semantic_integrity.VERSION,
+        v0026_m4_manifest_convergence.VERSION,
+        v0027_m4_bounded_manifests.VERSION,
+        v0028_m4_text_storage.VERSION,
+        v0029_m4_claim_stage_identity.VERSION,
     ]
     assert "NEW.candidate_id IS NOT OLD.candidate_id" in trigger_sql
 
@@ -912,22 +925,6 @@ def test_all_persisted_boolean_columns_reject_non_booleans(database: Database) -
         db_session.add(brief)
         db_session.flush()
         db_session.add(
-            CandidateScore(
-                id="score-all-booleans",
-                candidate_id=candidate_id,
-                brief_id=brief.id,
-                weights_version="v1",
-                stage="provisional",
-                score=0.0,
-                score_lower=0.0,
-                score_upper=0.0,
-                confidence=0.0,
-                confidence_band="low",
-                computed_at=NOW,
-                is_current=True,
-            )
-        )
-        db_session.add(
             DraftClaim(
                 id="claim-all-booleans",
                 draft_id=draft_id,
@@ -948,7 +945,6 @@ def test_all_persisted_boolean_columns_reject_non_booleans(database: Database) -
 
     statements = (
         "UPDATE session SET send_enabled=2 WHERE id='session-all-booleans'",
-        "UPDATE score SET is_current=2 WHERE id='score-all-booleans'",
         "UPDATE draft_claim SET grounded=2 WHERE id='claim-all-booleans'",
         "UPDATE send_attempt SET confirm_send=2 WHERE id='attempt-all-booleans'",
         "UPDATE send_attempt SET tool_sent=2 WHERE id='attempt-all-booleans'",

@@ -453,7 +453,7 @@ def test_raw_cap_dedupe_provenance_and_diagnostic_privacy(tmp_path) -> None:
         ).json()
         assert wait_for_job(app, second["job_id"]).state == "done"
         candidates = client.get(
-            "/api/candidates", params={"session_id": session_id}
+            "/api/candidate-pool", params={"session_id": session_id}
         ).json()
         alice = next(item for item in candidates if item["username"] == "Alice")
         assert alice["source_count"] == 2
@@ -708,3 +708,64 @@ def test_person_identifier_parity_accepts_server_reference_forms(
 def test_person_identifier_parity_refuses_unsafe_forms(value: str) -> None:
     with pytest.raises(InvalidPersonReference):
         normalize_person_reference(value)
+
+
+def test_conflicting_keywords_rejected_without_losing_saved_brief(tmp_path) -> None:
+    app = create_app(
+        settings(tmp_path / "conflicts.db"), queue_executor=FixtureExecutor()
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        session_id = start_session(client)
+        payload = brief_payload(session_id)
+        saved = client.post("/api/briefs", json=payload)
+        assert saved.status_code == 201
+        payload["positive_keywords"] = ["Anaplan"]
+        payload["negative_keywords"] = ["  ANAPLAN  "]
+        rejected = client.put("/api/briefs/current", json=payload)
+        assert rejected.status_code == 422
+        assert "both positive and excluded" in rejected.json()["detail"]
+        current = client.get("/api/briefs/current", params={"session_id": session_id})
+        assert current.json()["id"] == saved.json()["id"]
+        assert current.json()["version"] == 1
+
+
+def test_credential_only_brief_is_a_usable_discovery_criterion(tmp_path) -> None:
+    app = create_app(
+        settings(tmp_path / "credential-only.sqlite3"), queue_executor=FixtureExecutor()
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        session_id = start_session(client)
+        payload = {
+            "session_id": session_id,
+            "job_description": "Find experienced certified planning specialists.",
+            "required_credentials": [{"term": "Master Anaplanner", "aliases": []}],
+        }
+        # Retain the positive-weight invariant and make its recovery actionable.
+        response = client.post("/api/briefs", json=payload)
+        assert response.status_code == 422
+        assert "positive credential weight" in response.json()["detail"]
+        seeded = {**payload, "required_skills": [{"term": "Anaplan"}]}
+        assert client.post("/api/briefs", json=seeded).status_code == 201
+        config = client.get("/api/weights").json()
+        assert (
+            client.put(
+                "/api/weights/current",
+                json={
+                    "expected_version": config["version"],
+                    "weights": {**config["weights"], "S-8": 10},
+                    "metro_region_equivalences": config["metro_region_equivalences"],
+                },
+            ).status_code
+            == 200
+        )
+        response = client.put("/api/briefs/current", json=payload)
+        assert response.status_code == 200, response.json()
+        assert (
+            response.json()["required_credentials"] == payload["required_credentials"]
+        )
+        assert response.json()["required_skills"] == []
+
+        blocked = {**payload, "required_credentials": [{"term": "gender"}]}
+        response = client.put("/api/briefs/current", json=blocked)
+        assert response.status_code == 422
+        assert response.json()["detail"]["offending_terms"]

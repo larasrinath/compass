@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from pydantic import ValidationError
@@ -34,6 +34,9 @@ from linkedin_dashboard.queue.jobs import JobKind
 from linkedin_dashboard.queue.worker import DurableJobQueue
 from linkedin_dashboard.services.brief import contains_protected_criterion
 from linkedin_dashboard.services.enrichment import profile_urn_routing_allowed
+
+if TYPE_CHECKING:
+    from linkedin_dashboard.services.scoring_service import ScoringService
 
 MAX_SEARCHES_PER_SESSION = 40
 MAX_CANDIDATES_PER_SESSION = 200
@@ -75,8 +78,11 @@ def _safe_job_message(error: str | None) -> str:
 class DiscoveryResultProcessor:
     """Idempotent raw-to-domain projector for queued M2 read operations."""
 
-    def __init__(self, database: Database) -> None:
+    def __init__(
+        self, database: Database, scoring_service: ScoringService | None = None
+    ) -> None:
         self.database = database
+        self.scoring_service = scoring_service
 
     def reconcile(self) -> None:
         with self.database.sessions() as session:
@@ -127,7 +133,13 @@ class DiscoveryResultProcessor:
         committed_result = envelope.result_payload()
         if kind is JobKind.SEARCH_PEOPLE:
             self._persist_search_raw(job_id, raw, committed_result)
-            self._parse_search(job_id, committed_result)
+            candidate_ids = self._parse_search(job_id, committed_result)
+            if self.scoring_service is not None:
+                for candidate_id in candidate_ids:
+                    try:
+                        self.scoring_service.rescore_candidate(candidate_id)
+                    except (LookupError, ValueError):
+                        continue
         elif kind is JobKind.GET_COMPANY_PROFILE:
             self._persist_company_raw(job_id, raw)
             self._parse_company(job_id, committed_result)
@@ -183,11 +195,12 @@ class DiscoveryResultProcessor:
             if run.result_url is None and isinstance(result.get("url"), str):
                 run.result_url = str(result["url"])
 
-    def _parse_search(self, job_id: str, result: dict[str, Any]) -> None:
+    def _parse_search(self, job_id: str, result: dict[str, Any]) -> list[str]:
         with self.database.sessions.begin() as session:
             run = session.scalar(select(SearchRun).where(SearchRun.job_id == job_id))
             if run is None or run.processed_at is not None:
-                return
+                return []
+            affected_candidates: set[str] = set()
             references = result.get("references")
             reference_map = references if isinstance(references, dict) else {}
             search_references = reference_map.get("search_results", [])
@@ -317,6 +330,7 @@ class DiscoveryResultProcessor:
                     session.add(candidate)
                     session.flush()
                     candidate_count += 1
+                affected_candidates.add(candidate.id)
                 reference_row = ref_rows.get(id(item))
                 if reference_row is None:
                     continue
@@ -329,6 +343,10 @@ class DiscoveryResultProcessor:
                             candidate_ref_id=reference_row.id,
                         )
                     )
+                    # A results page can link the same profile more than once.
+                    # Flush this composite-key row before the next session.get;
+                    # pending rows are not visible through the identity map yet.
+                    session.flush()
 
             errors = result.get("section_errors")
             error_map = errors if isinstance(errors, dict) else {}
@@ -397,6 +415,7 @@ class DiscoveryResultProcessor:
             else:
                 run.status = "ok"
             run.processed_at = _now()
+            return sorted(affected_candidates)
 
     def _persist_company_raw(self, job_id: str, raw: dict[str, Any]) -> None:
         with self.database.sessions.begin() as session:

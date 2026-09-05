@@ -60,10 +60,12 @@ def test_real_openapi_preserves_distinct_routes_and_schema_references(tmp_path) 
         "/api/audit",
         "/api/briefs",
         "/api/briefs/current",
+        "/api/candidate-pool",
         "/api/candidates",
         "/api/candidates/enrich-batch",
         "/api/candidates/{candidate_id}",
         "/api/candidates/{candidate_id}/enrich",
+        "/api/candidates/{candidate_id}/rescore",
         "/api/candidates/{candidate_id}/sections/{section_name}",
         "/api/companies/urn-lookup",
         "/api/companies/urn-lookups/{lookup_id}",
@@ -78,6 +80,10 @@ def test_real_openapi_preserves_distinct_routes_and_schema_references(tmp_path) 
         "/api/searches",
         "/api/searches/{run_id}",
         "/api/session",
+        "/api/session/gates/A",
+        "/api/session/gates/B",
+        "/api/weights",
+        "/api/weights/current",
     }
     references: list[str] = []
 

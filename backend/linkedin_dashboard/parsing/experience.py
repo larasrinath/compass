@@ -10,7 +10,19 @@ from linkedin_dashboard.parsing.common import (
 )
 
 _DURATION_PART = r"\d+\s+(?:mos?|yrs?)"
-_DURATION_LINE = re.compile(rf"{_DURATION_PART}(?:\s+{_DURATION_PART})*", re.IGNORECASE)
+_DURATION_LINE = re.compile(
+    rf"(?:(?:full[- ]time|part[- ]time|contract|freelance|self[- ]employed)\s*[·•]\s*)?"
+    rf"{_DURATION_PART}(?:\s+{_DURATION_PART})*",
+    re.IGNORECASE,
+)
+_ROLE_WORDS = re.compile(
+    r"\b(?:director|engineer|architect|manager|lead|specialist|officer|analyst|"
+    r"consultant|developer|advisor|partner|founder|head|executive|president|technician)\b",
+    re.IGNORECASE,
+)
+_TAIL_METADATA = re.compile(
+    r"^(?:skills:|remote$|hybrid$|on[- ]site$)|\b(?:area|region)\s*$", re.IGNORECASE
+)
 _YEAR = r"(?:19|20)\d{2}"
 _MONTH_YEAR = rf"(?:[^\W\d_]+\.?\s+)?{_YEAR}"
 _ROLE_DATE_LINE = re.compile(
@@ -107,6 +119,17 @@ def parse(raw_text: str) -> list[ParsedValue]:
                 continue
 
             if group_company is not None and starts_at_boundary:
+                group_company = None
+
+            if (
+                group_company is not None
+                and len(candidates) >= 2
+                and _ROLE_WORDS.search(candidates[-2].text)
+                and not _ROLE_WORDS.search(candidates[-1].text)
+                and not _TAIL_METADATA.search(candidates[-2].text)
+            ):
+                # A standalone title/company pair ends a preceding grouped
+                # employer even when LinkedIn uses ordinary two-newline gaps.
                 group_company = None
 
             if group_company is not None:

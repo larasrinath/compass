@@ -6,22 +6,55 @@ import {
   getCandidateSection,
   getProfileSections,
 } from '../api/client'
+import { CandidateOverview } from '../components/CandidateOverview'
 import { QueueStatus } from '../components/QueueStatus'
+import { ConfidenceBand } from '../components/ConfidenceBand'
+import { EvidencePanel } from '../components/EvidencePanel'
 import { RawTextViewer } from '../components/RawTextViewer'
+import { SignalTable } from '../components/SignalTable'
+import { ScoreBadge } from '../components/ScoreBadge'
 import { SectionAvailabilityMap } from '../components/SectionAvailabilityMap'
 import type { ReturnTypeOfJobEvents } from '../hooks/useJobEvents'
+import type { EvidenceVerification } from '../scoreVerification'
 
 export function CandidateDetailPage({
   candidateId,
   onBack,
+  backDestination,
   queue,
+  retrievalReady = true,
+  rankingUnlocked,
+  sessionId,
+  verifiedEvidence,
+  onEvidenceVerified,
+  onScoreInputsChanged,
+  onCompare,
+  comparing,
+  comparisonFull,
 }: {
+  onCompare?: () => void
+  comparing?: boolean
+  comparisonFull?: boolean
   candidateId: string
   onBack: () => void
+  backDestination: 'search' | 'candidates' | 'saved searches'
   queue: ReturnTypeOfJobEvents
+  retrievalReady?: boolean
+  rankingUnlocked: boolean
+  sessionId: string
+  verifiedEvidence: ReadonlyMap<string, EvidenceVerification>
+  onEvidenceVerified: (
+    verification: EvidenceVerification,
+    verified: boolean,
+  ) => void
+  onScoreInputsChanged: () => void
 }) {
+  const scoreEvidenceRef = useRef<HTMLDivElement>(null)
+  const diagnosticsRef = useRef<HTMLDetailsElement>(null)
+  const sourceRef = useRef<HTMLElement>(null)
   const queryClient = useQueryClient()
   const enrichmentErrorRef = useRef<HTMLParagraphElement>(null)
+  const lastQueueRevision = useRef(queue.revision)
   const [selected, setSelected] = useState<string[]>([
     'education',
     'skills',
@@ -52,6 +85,7 @@ export function CandidateDetailPage({
   const enrich = useMutation({
     mutationFn: (sections: string[]) => enrichCandidate(candidateId, sections),
     onSuccess: async () => {
+      onScoreInputsChanged()
       await queryClient.invalidateQueries({
         queryKey: ['candidate', candidateId],
       })
@@ -61,14 +95,15 @@ export function CandidateDetailPage({
   })
 
   useEffect(() => {
-    if (queue.revision > 0) {
-      void queryClient.invalidateQueries({
-        queryKey: ['candidate', candidateId],
-      })
-      void queryClient.invalidateQueries({
-        queryKey: ['candidate-section', candidateId],
-      })
-    }
+    const previous = lastQueueRevision.current
+    lastQueueRevision.current = queue.revision
+    if (queue.revision <= previous) return
+    void queryClient.invalidateQueries({
+      queryKey: ['candidate', candidateId],
+    })
+    void queryClient.invalidateQueries({
+      queryKey: ['candidate-section', candidateId],
+    })
   }, [candidateId, queryClient, queue.revision])
 
   if (detail.isPending) return <p aria-live="polite">Opening stored profile…</p>
@@ -80,30 +115,68 @@ export function CandidateDetailPage({
     )
   }
   const candidate = detail.data
+  const currentScoreIdentity =
+    rankingUnlocked && candidate.score
+      ? {
+          sessionId,
+          scoreId: candidate.score.score_id,
+          inputFingerprint: candidate.score.input_fingerprint,
+        }
+      : null
+  const verifiedEvidenceIds = new Set(
+    [...verifiedEvidence].flatMap(([evidenceId, verification]) =>
+      currentScoreIdentity &&
+      verification.sessionId === currentScoreIdentity.sessionId &&
+      verification.scoreId === currentScoreIdentity.scoreId &&
+      verification.inputFingerprint === currentScoreIdentity.inputFingerprint
+        ? [evidenceId]
+        : [],
+    ),
+  )
+  const contextHints = [...(candidate.non_scoring_hints ?? [])]
+  if (
+    candidate.profile_urn &&
+    !contextHints.some((hint) => hint.kind === 'profile_urn')
+  ) {
+    contextHints.push({
+      kind: 'profile_urn',
+      label: 'Profile identifier',
+      value: candidate.profile_urn,
+    })
+  }
   const promotedSections =
     profileSections.data?.filter((section) => section !== 'experience') ?? []
+  const hasScoreSignals = Boolean(candidate.signals?.length)
+  const allInert = candidate.score?.all_inert_attested ?? false
+  const scoringEmptyState =
+    rankingUnlocked && !candidate.score && !hasScoreSignals
+      ? candidate.scoring_empty_state
+      : null
   return (
-    <section aria-labelledby="candidate-title" className="workspace-page">
-      <button className="quiet-action back-action" onClick={onBack} type="button">
-        ← Back to candidate pool
-      </button>
-      <div className="page-intro compact-intro">
-        <div>
-          <p className="eyebrow">Retrieved profile · {candidate.stage}</p>
-          <h1 id="candidate-title">
-            {candidate.display_name || candidate.username}
-          </h1>
-          <p>
-            Parsed claims stay linked to the exact stored profile text. No score or
-            shortlist decision exists in this milestone.
-          </p>
-        </div>
-        <div className="version-card">
-          <strong>{candidate.retrieval_status.replaceAll('_', ' ')}</strong>
-          <span>{Object.keys(candidate.available_sections).length} sections stored</span>
-        </div>
-      </div>
-
+    <section aria-labelledby="candidate-title" className="candidate-profile">
+      <CandidateOverview scoreSummary={rankingUnlocked && (candidate.score || hasScoreSignals || scoringEmptyState) ? (
+        <section className="profile-score-overview" aria-labelledby="profile-score-title">
+          <div className="profile-score-topline">
+            <div>
+              <h2 id="profile-score-title">Match score</h2>
+              {candidate.score ? <ScoreBadge candidate={candidate.score} /> : <p className="profile-muted">Score unavailable</p>}
+            </div>
+            {candidate.score ? <div className="profile-score-context"><ConfidenceBand candidate={candidate.score} /><p>Confidence reflects available evidence.</p></div> : null}
+          </div>
+          {scoringEmptyState ? <p className="profile-muted" role="status">{scoringEmptyState}</p> : null}
+          {hasScoreSignals && !allInert ? <SignalTable signals={candidate.signals ?? []} /> : null}
+          {hasScoreSignals || allInert ? <button className="profile-text-action" type="button" onClick={() => {
+            if (diagnosticsRef.current) diagnosticsRef.current.open = true
+            requestAnimationFrame(() => { scoreEvidenceRef.current?.scrollIntoView?.({ block: 'start' }); scoreEvidenceRef.current?.focus() })
+          }}>Review score evidence</button> : null}
+        </section>
+      ) : null} candidate={candidate} rankingUnlocked={rankingUnlocked} onCompare={onCompare} comparing={comparing} comparisonFull={comparisonFull} onSourceOpen={(section, fieldId) => {
+        setSelectedSectionName(section)
+        setSelectedFieldId(fieldId ?? null)
+        if (diagnosticsRef.current) diagnosticsRef.current.open = true
+        requestAnimationFrame(() => { sourceRef.current?.scrollIntoView({ block: 'start' }); sourceRef.current?.focus() })
+      }} />
+      <div className="profile-secondary">
       <QueueStatus queue={queue} />
       {candidate.errors.map((error, index) => (
         <div
@@ -130,14 +203,13 @@ export function CandidateDetailPage({
         </p>
       ) : null}
 
-      <SectionAvailabilityMap available={candidate.available_sections} />
-
-      <section className="panel promotion-panel" aria-labelledby="promotion-title">
+      <details className="panel promotion-panel" open={candidate.stage === 'discovered' ? true : undefined}>
+        <summary>Download more profile information</summary>
         <div>
           <p className="eyebrow">
             {candidate.stage === 'discovered'
               ? 'Stage 1 · explicit retry'
-              : 'Stage 2 · explicit action'}
+              : 'Additional evidence'}
           </p>
           <h2 id="promotion-title">
             {candidate.stage === 'discovered'
@@ -146,8 +218,7 @@ export function CandidateDetailPage({
           </h2>
           {candidate.stage !== 'discovered' ? (
             <p>
-              Main profile is implicit, so three promoted sections keep this call to
-              four navigations.
+              Choose up to three sections to add more evidence to this profile.
             </p>
           ) : null}
         </div>
@@ -180,6 +251,7 @@ export function CandidateDetailPage({
           className="primary-action"
           disabled={
             (candidate.stage !== 'discovered' && selected.length === 0) ||
+            !retrievalReady ||
             enrich.isPending ||
             Boolean(candidate.active_job_id)
           }
@@ -206,11 +278,71 @@ export function CandidateDetailPage({
             {enrich.error.message}
           </p>
         ) : null}
-      </section>
+      </details>
 
-      <section className="panel" aria-labelledby="stored-sections-title">
+      <details className="profile-diagnostics" ref={diagnosticsRef}>
+        <summary>Scoring & source details</summary>
+        <div className="profile-diagnostic-content">
+        <p className="profile-muted">Opening evidence does not mark it verified. Check the original text before confirming a source.</p>
+      <details className="simple-options"><summary>Downloaded sections <span>{Object.keys(candidate.available_sections).length} saved</span></summary><SectionAvailabilityMap available={candidate.available_sections} /></details>
+
+      {rankingUnlocked && (hasScoreSignals || allInert) ? (
+        <div ref={scoreEvidenceRef} tabIndex={-1} className="profile-score-evidence">
+        <EvidencePanel
+          showSummary={false}
+          allInert={allInert}
+          onEvidenceOpen={(sectionName, evidenceId) => {
+            setSelectedSectionName(sectionName)
+            setSelectedFieldId(evidenceId)
+          }}
+          onEvidenceVerified={(evidenceId, verified) => {
+            if (currentScoreIdentity) {
+              onEvidenceVerified(
+                { evidenceId, ...currentScoreIdentity },
+                verified,
+              )
+            }
+          }}
+          signals={candidate.signals ?? []}
+          verifiedEvidenceIds={verifiedEvidenceIds}
+        />
+        </div>
+      ) : null}
+
+      {rankingUnlocked && candidate.score_history?.length ? (
+        <details className="panel score-history simple-options"><summary>Previous scores</summary>
+          <p className="eyebrow">Immutable history</p>
+          <h2 id="score-history-title">Current and previous scores</h2>
+          <ol>
+            {candidate.score_history.map((score) => (
+              <li key={score.id}>
+                <strong>{score.score === null ? 'Not scored' : score.score.toFixed(1)}</strong>
+                <span>{score.current ? 'Current' : 'Previous'} · config {score.weights_version} · {new Date(score.computed_at).toLocaleString()}</span>
+              </li>
+            ))}
+          </ol>
+        </details>
+      ) : null}
+
+      {contextHints.length ? (
+        <details className="panel context-panel">
+          <summary>Search details</summary>
+          <p className="eyebrow">Context only</p>
+          <h2>Search and routing hints</h2>
+          <p>These details are displayed for workflow context and carry zero scoring weight.</p>
+          <dl>
+            {contextHints.map((hint, index) => (
+              <div key={`${hint.kind}-${index}`}>
+                <dt>{hint.label}</dt><dd>{hint.value} · non-scoring</dd>
+              </div>
+            ))}
+          </dl>
+        </details>
+      ) : null}
+
+      <section className="panel" aria-labelledby="stored-sections-title" ref={sourceRef} tabIndex={-1}>
         <p className="eyebrow">Stored source sections</p>
-        <h2 id="stored-sections-title">Open any retrieved raw section</h2>
+        <h2 id="stored-sections-title">Review saved profile information</h2>
         {Object.keys(candidate.available_sections).length ? (
           <div
             aria-label="Stored profile sections"
@@ -238,11 +370,11 @@ export function CandidateDetailPage({
 
       <section aria-labelledby="parsed-title" className="detail-columns">
         <div className="panel parsed-panel">
-          <p className="eyebrow">Deterministic parser</p>
-          <h2 id="parsed-title">Parsed fields</h2>
-          {candidate.fields.length ? (
+          <p className="eyebrow">Extracted from this section</p>
+          <h2 id="parsed-title">Profile details</h2>
+          {candidate.fields.some((field) => field.section_name === effectiveSelectedSection) ? (
             <ol className="parsed-fields">
-              {candidate.fields.map((field) => (
+              {candidate.fields.filter((field) => field.section_name === effectiveSelectedSection).map((field) => (
                 <li key={field.id}>
                   <button
                     aria-pressed={selectedFieldId === field.id}
@@ -253,7 +385,7 @@ export function CandidateDetailPage({
                     }}
                     type="button"
                   >
-                  <small>{field.field_key}</small>
+                  <small>{field.field_key.replace(/\.\d+\.?/g, ' · ').replaceAll('_', ' ')}</small>
                   <strong>{field.value ?? field.provenance_label}</strong>
                   {field.provenance_available ? (
                     <span>
@@ -286,6 +418,10 @@ export function CandidateDetailPage({
           )}
         </div>
       </section>
+        <button className="profile-text-action" onClick={onBack} type="button">Back to {backDestination}</button>
+        </div>
+      </details>
+      </div>
     </section>
   )
 }

@@ -22,6 +22,7 @@ export function useJobEvents() {
   const [snapshot, setSnapshot] = useState<QueueSnapshot>(EMPTY_SNAPSHOT)
   const [connected, setConnected] = useState(false)
   const [revision, setRevision] = useState(0)
+  const [scoringRevision, setScoringRevision] = useState(0)
   const [lastEventAt, setLastEventAt] = useState<string | null>(null)
 
   useEffect(() => {
@@ -56,13 +57,22 @@ export function useJobEvents() {
         )
         setLastEventAt(new Date().toISOString())
         setRevision((current) => current + 1)
+        if (eventName === 'job' && isScoringMutationEvent(incoming)) {
+          setScoringRevision((current) => current + 1)
+        }
       })
     }
 
     return () => source.close()
   }, [])
 
-  return { ...snapshot, connected, revision, lastEventAt }
+  return { ...snapshot, connected, revision, scoringRevision, lastEventAt }
 }
 
 export type ReturnTypeOfJobEvents = ReturnType<typeof useJobEvents>
+
+export function isScoringMutationEvent(
+  job: Pick<QueueJob, 'kind' | 'state'>,
+): boolean {
+  return job.kind === 'get_person_profile' && job.state === 'done'
+}
