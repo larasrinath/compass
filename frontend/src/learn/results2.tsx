@@ -35,7 +35,7 @@ export function Ch8() {
       chapterId="priorities-verify"
       kicker="Working with results · 8 of 9"
       title="Change priorities and verify evidence"
-      intro="In Compare matches, expand Filter, sort & scoring settings, then Scoring weights. Edit a signal’s numeric weight and choose Save from the displayed version. Saving new weights — or saving changes to the brief — recalculates every result locally, using the same saved evidence. To verify a source, open a candidate, choose Review score evidence, and check I verified this exact source span after reading the original text. Return to Compare matches and expand Evidence quality check to record at least 10 distinct links for current scores."
+      intro="In Compare matches, expand Filter, sort & scoring settings, then Scoring weights. Edit a signal’s numeric weight and choose Save from the displayed version. Saving new weights — or saving changes to the brief — recalculates every result locally, using the same saved evidence. To verify a source, open a candidate, choose Review score evidence, open a quoted passage under Review against your criteria, and select I checked this passage against the criterion after reading its highlighted source. Return to Compare matches and expand Record source checks to record at least 10 distinct links for current scores."
     >
       <Figure caption="The same saved evidence, scored under your priorities. Edit a number and save — the recalculation is local and instant, and the candidate keeps the previous score for reference. Nothing is re-downloaded.">
         <div className="rounded-xl border border-line bg-canvas p-5">
@@ -86,9 +86,9 @@ export function Ch8() {
         </div>
       </Figure>
 
-      <Figure caption="The evidence-quality check is separate from comparing — it is not required to open a comparison. On the working pages, verification boxes are in each candidate’s Scoring & source details. This example collects them together for practice. Read each passage and record the check once 10 distinct current evidence links are verified. Saving scoring changes clears this example’s verification selection. Search context and records of past checks don’t count.">
+      <Figure caption="The evidence-quality check is separate from comparing — it is not required to open a comparison. On the working pages, each source check appears directly below the highlighted saved passage in Review against your criteria. This example collects them together for practice. Read each passage and record the check once 10 distinct current evidence links are verified. Saving scoring changes clears this example’s verification selection. This is an optional audit record, not a prerequisite for comparison or a candidate approval. Unrecorded selections clear on reload or when scoring inputs change. Search context and records of past checks don’t count.">
         <div className="flex items-center justify-between gap-3">
-          <p className="text-xs font-bold uppercase tracking-wide text-faint">Evidence quality check</p>
+          <p className="text-xs font-bold uppercase tracking-wide text-faint">Record source checks</p>
           <StatePill tone={verified.length >= 10 ? 'sage' : 'plain'}>
             {accepted ? 'Example check recorded' : `${verified.length} of 10 verified`}
           </StatePill>
@@ -109,7 +109,7 @@ export function Ch8() {
               />
               <span>
                 <span className="block text-xs font-medium text-ink">{v.claim}</span>
-                <span className="block text-xs text-body">I verified this exact source span</span>
+                <span className="block text-xs text-body">I checked this passage against the criterion</span>
                 <span className="block text-[11px] leading-relaxed text-faint">{v.passage}</span>
               </span>
             </label>
@@ -118,7 +118,7 @@ export function Ch8() {
         <label className="mt-4 block text-sm text-body">Verification note
           <textarea value={verificationNote} onChange={(e) => setVerificationNote(e.target.value)} className="mt-2 block w-full rounded-xl border border-line p-3" rows={2} />
         </label>
-        <button onClick={() => setAccepted(true)} disabled={verified.length < 10 || accepted} className="mt-3 rounded-full bg-ink px-4 py-2 text-sm text-canvas disabled:opacity-40">{accepted ? 'Example check recorded' : 'Accept Gate B'}</button>
+        <button onClick={() => setAccepted(true)} disabled={verified.length < 10 || !verificationNote.trim() || accepted} className="mt-3 rounded-full bg-ink px-4 py-2 text-sm text-canvas disabled:opacity-40">{accepted ? 'Example check recorded' : 'Record checks'}</button>
       </Figure>
 
       <Callout>
@@ -174,7 +174,7 @@ function SavedWorkExample() {
   if (view === 'profile') return <div className="rounded-2xl border border-line bg-canvas p-5">
     <button onClick={() => setView('saved')} className="text-sm text-accent">Back to saved searches</button>
     <h2 className="mt-4 text-lg font-semibold text-ink">{person}</h2><p className="text-sm text-body">Backend Engineer · Profile saved locally</p>
-    <h3 className="mt-4 text-sm font-medium">Why they might fit</h3><p className="mt-1 text-sm text-faint">Saved experience mentions Go and PostgreSQL.</p>
+    <h3 className="mt-4 text-sm font-medium">Review against your criteria</h3><p className="mt-1 text-sm text-faint">Saved experience mentions Go and PostgreSQL.</p>
     <h3 className="mt-4 text-sm font-medium">Evidence & downloads</h3><p className="mt-1 text-sm text-faint">Profile overview · Saved profile text</p>
   </div>;
   return <div className="overflow-hidden rounded-2xl border border-line bg-surface">

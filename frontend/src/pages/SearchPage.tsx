@@ -138,7 +138,7 @@ export function SearchPage({
     mutationFn: () => acceptPhaseGateA(gateNote),
     onSuccess: async () => {
       await client.invalidateQueries({ queryKey: ['session'] })
-      onGateAChanged?.()
+      setPoolView('ranked')
     },
     onError: () => requestAnimationFrame(() => errorRef.current?.focus()),
   })
@@ -186,26 +186,26 @@ export function SearchPage({
             <p className="eyebrow">Saved candidates</p>
             <h2 id="pool-title">Candidate pool</h2>
           </div>
-          <div className="pool-heading-meta"><span>{filteredCandidates.length} shown · {poolView === 'ranked' && rankingUnlocked ? 'highest score first' : 'first-seen order'}</span><div className="pool-heading-actions">{session.phase_gates?.A ? <><span className="pool-review-status">List reviewed</span>{onGateAChanged ? <button className="quiet-action" type="button" onClick={onGateAChanged}>Compare candidates <CompassIcon name="compare" size={16} /></button> : null}</> : gateAEligible ? <a href="#pool-review">Review list to compare →</a> : null}</div></div>
+          <div className="pool-heading-meta"><span>{filteredCandidates.length} shown · {poolView === 'ranked' && rankingUnlocked ? 'highest score first' : 'first-seen order'}</span><div className="pool-heading-actions">{session.phase_gates?.A ? <><span className="pool-review-status">List check recorded</span>{onGateAChanged ? <button className="quiet-action" type="button" onClick={onGateAChanged}>Compare candidates <CompassIcon name="compare" size={16} /></button> : null}</> : gateAEligible ? <a href="#pool-review">Check candidate list</a> : null}</div></div>
         </div>
         <div className="pool-view-toolbar">
           <div className="pool-view-switch" role="group" aria-label="Candidate view">
             <button type="button" aria-pressed={poolView === 'cards' || !rankingUnlocked} onClick={() => setPoolView('cards')}><CompassIcon name="grid" size={16} />Cards</button>
             <button type="button" aria-pressed={poolView === 'ranked' && rankingUnlocked} disabled={!rankingUnlocked} aria-describedby={!rankingUnlocked ? 'ranked-view-help' : undefined} onClick={() => setPoolView('ranked')}><CompassIcon name="list" size={16} />Ranked list</button>
           </div>
-          {!rankingUnlocked ? <span id="ranked-view-help">Review the candidate list to unlock ranking.</span> : poolView === 'ranked' ? <span>Ranks are within {poolRun ? 'this search' : 'all saved searches'}.</span> : null}
+          {!rankingUnlocked ? <span id="ranked-view-help">Check names and sources below to unlock ranking.</span> : poolView === 'ranked' ? <span>Ranks are within {poolRun ? 'this search' : 'all saved searches'}.</span> : null}
         </div>
         <div className="pool-filter-row"><label className="field pool-filter"><span>Results from</span><select value={poolRun ?? ''} onChange={event => { setPoolRun(event.target.value || null); setSelectedRun(event.target.value || null) }}><option value="">All saved searches</option>{runs.data?.map(run => <option key={run.id} value={run.id}>{run.keywords} · {new Date(run.created_at).toLocaleDateString()}</option>)}</select></label>
         <label className="field pool-filter"><span>Find a saved candidate</span><input placeholder="Search by name" value={nameFilter} onChange={(event) => setNameFilter(event.target.value)} /></label></div>
         {!session.phase_gates?.A ? (
         <details id="pool-review" className="pool-review phase-gate-card panel" open={gateAEligible && !session.phase_gates?.A}>
-          <summary>Review candidate list & unlock comparison</summary>
+          <summary>Check candidate list</summary>
           <div>
           <div>
-            <p className="eyebrow">Candidate review</p>
+            <p className="eyebrow">Before ranking</p>
             <h3>Check names and duplicates</h3>
             <p>
-              Review names and source searches for duplicates, then confirm to compare candidates.
+              Check that the names link to the expected people. Expand source searches to spot repeated appearances. A list check unlocks ranking and comparison; it does not verify anyone’s qualifications.
             </p>
           </div>
             <form
@@ -215,9 +215,10 @@ export function SearchPage({
               }}
             >
               <label className="field">
-                <span>Inspection note</span>
+                <span>What did you check?</span>
                 <textarea
                   onChange={(event) => setGateNote(event.target.value)}
+                  placeholder="For example: checked names and LinkedIn links; repeated results refer to the same people."
                   required
                   rows={2}
                   value={gateNote}
@@ -226,10 +227,10 @@ export function SearchPage({
               <button
                 aria-describedby="gate-a-eligibility"
                 className="primary-action"
-                disabled={gateA.isPending || !gateAEligible}
+                disabled={gateA.isPending || !gateAEligible || !gateNote.trim()}
                 type="submit"
               >
-                {gateA.isPending ? 'Recording…' : 'Confirm review & compare'}
+                {gateA.isPending ? 'Recording…' : 'Confirm list & show ranking'}
               </button>
               <p id="gate-a-eligibility" role="status">
                 {gateAEligibility}

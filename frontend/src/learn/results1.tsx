@@ -20,6 +20,7 @@ const RESULT_TONE = { matched: 'sage', 'not-matched': 'amber', unknown: 'plain' 
 export function Ch6() {
   const [note, setNote] = useState('');
   const [confirmed, setConfirmed] = useState(false);
+  const [compareOpen, setCompareOpen] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
   const [reloadCount, setReloadCount] = useState(0);
   const [showComparison, setShowComparison] = useState(false);
@@ -42,8 +43,13 @@ export function Ch6() {
       chapterId="review-and-compare"
       kicker="Working with results · 6 of 9"
       title="Review the pool and compare people"
-      intro="On Find candidates, use Results from and Find a saved candidate to inspect the pool. Open Review candidate list & unlock comparison, add an Inspection note, then choose Confirm review & compare. On Compare matches, select 2–3 people using their Compare controls, then choose View comparison."
+      intro="Start by checking who is in the list. Then save the profiles worth investigating and review them against the role. Finally, compare two or three people on the same criteria. A list check, a candidate assessment, and a source check answer different questions."
     >
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Callout><strong>Is this the right person?</strong><p>In Find candidates, check names, LinkedIn links, and repeated source searches. Add a note under Check candidate list and choose Confirm list &amp; show ranking. You stay on Find candidates.</p></Callout>
+        <Callout><strong>What makes them relevant?</strong><p>Save profile, then open Review. Read the score with confidence, check the key criteria, and use career history to understand what they actually did.</p></Callout>
+        <Callout><strong>Does the source support it?</strong><p>Open a passage under Review against your criteria. Read the highlighted text in context before checking it. This records your source check without changing the score.</p></Callout>
+      </div>
       <Figure caption="The gate is deliberate: inspect the saved candidate list and add a note to unlock comparison. There is no per-person review checkbox in the connected dashboard. Try confirming with the note empty — it stays locked. The “reload page” button demonstrates that the comparison selection is temporary to the session.">
         <p className="text-xs font-bold uppercase tracking-wide text-faint">Find candidates · Candidate pool</p>
         <ul className="mt-3 space-y-2">
@@ -54,14 +60,14 @@ export function Ch6() {
             </li>
           ))}
         </ul>
-        <h2 className="mt-4 text-sm font-medium text-ink">Check names and duplicates</h2><label htmlFor="example-inspection-note" className="mt-3 block text-sm text-body">Inspection note</label>
+        <h2 className="mt-4 text-sm font-medium text-ink">Check names and duplicates</h2><label htmlFor="example-inspection-note" className="mt-3 block text-sm text-body">What did you check?</label>
         <textarea id="example-inspection-note"
           value={note}
           onChange={(e) => setNote(e.target.value)}
-          aria-label="Inspection note"
+          aria-label="What did you check?"
           disabled={confirmed}
           rows={2}
-          placeholder="Review note, e.g. “Looked at all three — Robin and Marta worth comparing.”"
+          placeholder="For example: checked names and LinkedIn links; repeated results refer to the same people."
           className="mt-3 w-full rounded-xl border border-line bg-surface px-4 py-3 text-sm text-ink placeholder:text-faint/70 focus:border-accent focus:outline-none"
         />
         <div className="mt-3 flex items-center justify-between gap-3">
@@ -74,11 +80,16 @@ export function Ch6() {
             className="inline-flex items-center gap-2 rounded-full bg-ink px-4 py-2 text-xs font-semibold text-canvas hover:bg-accent-strong disabled:cursor-not-allowed disabled:opacity-40"
           >
             {confirmed ? <LockOpen className="h-3.5 w-3.5" /> : <Lock className="h-3.5 w-3.5" />}
-            {confirmed ? 'Comparison unlocked' : 'Confirm review & compare'}
+            {confirmed ? 'Comparison unlocked' : 'Confirm list & show ranking'}
           </button>
         </div>
 
-        <div className={`mt-5 rounded-xl border p-4 transition-all ${confirmed ? 'border-line bg-canvas' : 'border-dashed border-line bg-subtle/40 opacity-70'}`}>
+        {confirmed && !compareOpen ? <div className="mt-4 rounded-xl border border-line p-4">
+          <p className="text-sm text-ink">Find candidates · Ranked list</p><p className="mt-1 text-xs text-faint">List check recorded. Open saved profiles to assess the evidence before choosing people to compare.</p>
+          <ol className="mt-3 space-y-2 text-sm">{POOL.map((name, i) => <li key={name}>{i + 1}. {name} · {[89, 82, 76][i]} / 100 · {[75, 90, 65][i]}% confidence</li>)}</ol>
+          <button className="mt-3 rounded-full border border-line px-4 py-2 text-accent" onClick={() => setCompareOpen(true)}>Compare candidates</button>
+        </div> : null}
+        {compareOpen ? <div className={`mt-5 rounded-xl border p-4 transition-all ${confirmed ? 'border-line bg-canvas' : 'border-dashed border-line bg-subtle/40 opacity-70'}`}>
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-xs font-bold uppercase tracking-wide text-faint">Compare matches</p>
             <button onClick={simulateReload} className="inline-flex items-center gap-1 text-[11px] font-medium text-faint hover:text-body">
@@ -136,11 +147,11 @@ export function Ch6() {
               </p>
             </div>
           )}
-        </div>
+        </div> : null}
       </Figure>
 
       <Callout>
-        The profile’s signal table uses Matched, No exact match, Not checked, Conflicting evidence, and Partial match. The comparison table calls a match Evidence found. Inspect individual criteria and their evidence — not just the overall order. And remember: opening a candidate profile alone never completes the review step; confirming with a note does.
+        The profile’s signal table uses Matched, No exact match, Not checked, Conflicting evidence, and Partial match. The comparison table calls a match Evidence found. Inspect individual criteria and their evidence — not just the overall order. The list note records an identity check, not a hiring decision. Source checks do not certify someone’s qualifications. Use the evidence to decide what to explore in a conversation.
       </Callout>
     </ChapterShell>
   );
@@ -160,7 +171,7 @@ export function Ch7() {
       chapterId="scores-uncertainty"
       kicker="Working with results · 7 of 9"
       title="Understand scores and uncertainty"
-      intro="Expand Scoring details on a result card, or open Review to see Match score and the signal table at the top of the candidate panel. Review score evidence opens Scoring & source details."
+      intro="Expand Scoring details on a result card, or open Review to see Match score and the signal table at the top of the candidate panel. Review score evidence takes you to Review against your criteria. Open a quoted passage to read its saved source and check it in place."
     >
       <Figure caption="Three separate concepts: the score (how strongly usable information matched), the range (bounds when unknowns are unresolved), and confidence (how much of the assessment rests on usable information). This simplified binary example uses the dashboard’s score and bounds logic, but omits partial signals and penalties. Change a result, resolve missing information, or clear the criteria.">
         <div className="rounded-xl border border-line bg-canvas p-5">

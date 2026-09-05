@@ -36,9 +36,10 @@ function SavedSection({ candidateId, name, savedAt, onOpen }: { candidateId: str
   </li>
 }
 
-export function CandidateOverview({ candidate, rankingUnlocked, onSourceOpen, onCompare, comparing, comparisonFull, scoreSummary }: {
+export function CandidateOverview({ candidate, rankingUnlocked, onSourceOpen, onCompare, comparing, comparisonFull, scoreSummary, reviewContent }: {
   candidate: CandidateDetail
   scoreSummary?: ReactNode
+  reviewContent?: ReactNode
   rankingUnlocked: boolean
   onSourceOpen: (section: string, fieldId?: string) => void
   onCompare?: () => void
@@ -56,9 +57,6 @@ export function CandidateOverview({ candidate, rankingUnlocked, onSourceOpen, on
     const index = Number(match[1])
     jobs.set(index, { ...jobs.get(index), [match[2]]: item })
   }
-  const claims = rankingUnlocked ? (candidate.signals ?? []).flatMap(signal => signal.claims) : []
-  const strengths = claims.filter(claim => claim.verdict === 'matched')
-  const questions = claims.filter(claim => claim.verdict !== 'matched')
   return <>
     <header className="profile-heading">
       <span className="profile-initials" aria-hidden="true">{name.split(/\s+/).slice(0, 2).map(word => word[0]).join('')}</span>
@@ -75,23 +73,9 @@ export function CandidateOverview({ candidate, rankingUnlocked, onSourceOpen, on
         {onCompare && rankingUnlocked && candidate.score ? <button className="quiet-action" type="button" aria-pressed={comparing} disabled={!comparing && comparisonFull} onClick={onCompare}><CompassIcon name="compare" size={16} />{comparing ? 'Comparing' : 'Compare'}</button> : null}
       </div>
       {!comparing && comparisonFull ? <p className="profile-muted">Three people selected. Remove one from comparison to add this person.</p> : null}
-      <section className="profile-section" aria-labelledby="profile-fit-title">
-        <h2 id="profile-fit-title">Why they might fit</h2>
-        {strengths.length ? <ul className="profile-observations">{strengths.map(claim => {
-          const evidence = claim.evidence.find(item => item.availability.state === 'available')
-          return <li key={claim.id}>
-            <div className="profile-observation-heading"><p>{claim.display_term}</p><span className="profile-trust">Profile mention</span></div>
-            {evidence ? <><p className="profile-muted">“{evidence.snippet}” · {sectionLabel(evidence.section_name)}</p><button className="profile-text-action" type="button" onClick={() => onSourceOpen(evidence.section_name, evidence.id)}>View evidence <CompassIcon name="arrow" size={14} /></button></> : <p className="profile-muted">Supporting source is unavailable. Check the original profile.</p>}
-          </li>
-        })}</ul> : <p className="profile-muted">{rankingUnlocked ? 'No supporting matches recorded yet. Review the saved profile below.' : 'Review the candidate pool to compare this profile with your criteria.'}</p>}
-      </section>
-      {questions.length ? <section className="profile-section" aria-labelledby="profile-check-title">
-        <h2 id="profile-check-title">Worth checking</h2>
-        <ul className="profile-observations profile-questions">{questions.map(claim => <li key={claim.id}>
-          <div className="profile-observation-heading"><p>{claim.display_term}</p><span className="profile-trust">{claim.verdict === 'unknown' ? 'Not yet checked' : 'Needs review'}</span></div>
-          <p className="profile-muted">{claim.verdict === 'unknown' ? 'The saved sections do not provide enough evidence to check this criterion.' : claim.verdict === 'not_matched' ? 'No exact match in the searched text. This does not establish that the qualification is missing.' : 'The saved evidence conflicts with this criterion. Review the source before deciding.'}</p>
-        </li>)}</ul>
-      </section> : null}
+      {!rankingUnlocked ? <p className="profile-muted">Check the candidate list in Find candidates to unlock scores and criteria. You can read the saved career history and source text now.</p> : null}
+      {comparing ? <p className="profile-muted">Selected for comparison. Close this profile, then open Compare matches and choose View comparison.</p> : null}
+      {reviewContent}
       <section className="profile-section" aria-labelledby="profile-career-title">
         <h2 id="profile-career-title"><CompassIcon name="career" size={16} />Career history</h2>
         {jobs.size ? <ol className="profile-timeline">{[...jobs].sort(([a], [b]) => a - b).map(([index, job]) => <li key={index}>

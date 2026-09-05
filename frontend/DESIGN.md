@@ -35,9 +35,11 @@ not just its colors.
 - Candidate review opens in a 760px right-side modal drawer, preserving the
   originating results and scroll position. Use the prototype’s compact profile
   header, then show the match score and criteria breakdown immediately. Follow
-  with profile actions, fit observations, questions, career history, and downloads.
-  Keep detailed source verification and history behind a secondary disclosure,
-  reachable through Review score evidence beside the score summary.
+  with profile actions, Review against your criteria, career history, and downloads.
+  Open a passage inline, with highlighted source text and its check directly below.
+  Review score evidence scrolls to the visible criteria. Keep full raw text, parsed
+  fields, and history in All saved text & score history. The list check stays on
+  Find candidates and opens Ranked list; the source audit is optional and separate.
   Evidence cards use thin neutral borders, without colored side rails. Verdicts
   use softly tinted text badges: teal for matches, amber for no exact/partial
   matches, neutral for unchecked evidence, and rust for conflicts. Do not add

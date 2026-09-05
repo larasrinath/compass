@@ -8,38 +8,45 @@ import { FICTION } from './content';
 const REVIEW_STEPS = [
   {
     title: 'Interpret the score with its range and confidence',
-    body: 'Open Review on a candidate card. Match score and the signal table are at the top of the panel. The headline number orients you; the range tells you how uncertain it is; confidence tells you how much of the assessment rests on usable information. Never treat the number as a complete assessment.',
+    body: 'Open Review on a saved candidate. Match score is at the top. Use it to choose where to look first. A high score with low confidence can rest on very little evidence; confidence measures evidence availability, not the probability of job success.',
     visual: 'score',
   },
   {
-    title: 'Read the criteria results',
-    body: 'For each requirement, note which have supporting evidence, which were checked and not matched, and which remain unknown. These three states mean different things.',
+    title: 'Start with the criteria that matter most',
+    body: 'Choose Review score evidence to reach Review against your criteria. For a backend role, start with the required skills and relevant experience. Matched means text was found. No exact match means the searched text did not match. Not checked means the evidence is incomplete. None of these alone is a hiring decision.',
     visual: 'criteria',
   },
   {
-    title: 'Read the extracted profile details',
-    body: 'Continue through Why they might fit, Worth checking, and Career history. Review experience, titles, employers, and the other available fields. This is Compass’s structured reading of the saved text.',
-    visual: 'extracted',
-  },
-  {
-    title: 'Check what was downloaded',
-    body: 'Under Evidence & downloads, check the saved sections; Scoring & source details also lists Downloaded sections. Missing experience or skills sections limit what any comparison can tell you. An incomplete download is an incomplete view of the person.',
-    visual: 'sections',
-  },
-  {
-    title: 'Inspect the original text',
-    body: 'Choose Review score evidence or View evidence to open Scoring & source details and the supporting passage. Ask: does the extracted detail accurately represent what the passage actually says?',
+    title: 'Open the passage and check its context',
+    body: 'Click a quoted passage. Its saved source opens directly underneath, with the exact text highlighted. Was this hands-on work, a course, or a passing mention? Which role and period does it refer to? Select I checked this passage against the criterion only if you checked the context. Leave it unchecked when unclear. The score does not change.',
     visual: 'source',
   },
   {
+    title: 'Read the career behind the keywords',
+    body: 'Continue to Career history. Look for relevant responsibilities, scope, and dates. For example, “built reporting services using PostgreSQL” supports hands-on usage but says nothing by itself about database architecture or scale. Use All saved text & score history to inspect the complete career text when the extracted entries are incomplete.',
+    visual: 'extracted',
+  },
+  {
+    title: 'Separate missing evidence from a mismatch',
+    body: 'Check Evidence & downloads to see what is saved. A missing Skills section leaves a question open; it does not establish that a person lacks a skill. A location mismatch may need a conversation about relocation. Identify the specific gap before requesting more data.',
+    visual: 'sections',
+  },
+  {
     title: 'Decide whether you need more',
-    body: 'If an important unknown could be resolved, request the relevant sections — up to three at a time — and review again once they arrive.',
+    body: 'Open Download more profile information and request up to three relevant sections. Wait for retrieval to finish, then revisit the score and source evidence. New scoring inputs clear unrecorded checks so an old check is not applied to new evidence.',
     visual: 'request',
+  },
+  {
+    title: 'Compare people and carry the open questions forward',
+    body: 'Use Compare to select this person, then open Compare matches and select two or three people. Choose View comparison and read across the same criterion. Decide whose experience merits a conversation and what still needs asking. The optional Record source checks audit needs 10 distinct current passages; it is separate from candidate selection.',
+    visual: 'criteria',
   },
 ] as const;
 
 function StepVisual({ kind }: { kind: string }) {
   const [requested, setRequested] = useState(false);
+  const [sourceOpen, setSourceOpen] = useState(false);
+  const [checked, setChecked] = useState(false);
   switch (kind) {
     case 'sections':
       return (
@@ -62,14 +69,16 @@ function StepVisual({ kind }: { kind: string }) {
         </div>
       );
     case 'source':
-      return (
-        <div className="rounded-lg border border-line bg-canvas p-3 font-mono text-[11px] leading-relaxed">
-          <p className="text-faint">Backend Engineer — Example Metrics Co. (2021 — now)</p>
-          <p className="rounded bg-amber-soft px-1.5 py-0.5 text-ink outline outline-1 outline-amberdeep/40">Built reporting services using PostgreSQL.</p>
-          <p className="text-faint">Maintained payment services in Go for four years.</p>
-          <p className="mt-2 font-sans text-[10px] uppercase tracking-wide text-accent">↑ the passage behind the “PostgreSQL” field</p>
-        </div>
-      );
+      return <div className="rounded-xl border border-line bg-canvas p-4 text-xs">
+        <p className="font-medium text-ink">PostgreSQL <StatePill tone="sage">Matched</StatePill></p>
+        <button aria-expanded={sourceOpen} onClick={() => setSourceOpen(!sourceOpen)} className="mt-3 w-full rounded-lg border border-line bg-surface p-3 text-left text-accent">“Built reporting services using PostgreSQL.”<span className="block mt-1 text-faint">Experience · {checked ? 'Source checked' : 'Open source to check'}</span></button>
+        {sourceOpen ? <div className="mt-3 rounded-lg border border-line p-3">
+          <p>Backend Engineer — Example Metrics Co. (2021 — now)</p>
+          <p className="mt-2"><mark className="bg-amber-soft">Built reporting services using PostgreSQL.</mark> Maintained payment services in Go. The profile does not describe the database size or architecture responsibilities.</p>
+          <label className="mt-3 flex gap-2 items-start"><input type="checkbox" checked={checked} onChange={event => setChecked(event.target.checked)} />I checked this passage against the criterion</label>
+          <p className="mt-2 text-faint">{checked ? 'Example source checked. Score unchanged.' : 'Hands-on usage is supported. Ask about scale and ownership in a conversation.'}</p>
+        </div> : null}
+      </div>;
     case 'criteria':
       return (
         <ul className="space-y-1.5 text-xs">
@@ -112,7 +121,7 @@ export function TourReview() {
       chapterId="tour-review"
       kicker="Guided tour"
       title="How to review a candidate"
-      intro="Follow the candidate panel from Match score through criteria, career history, saved sections, and source evidence. Compass checks saved text against your criteria — your review adds the context: what the person actually did, how relevant it is, and whether the source supports the displayed result."
+      intro="Use the candidate panel to answer three questions: what is relevant, what is supported, and what still needs asking. Compass checks saved text against your criteria — your review adds the context: what the person actually did, how relevant it is, and whether the source supports the displayed result."
     >
       <Figure caption={`A guided reading journey through one fictional candidate (${FICTION.candidate}). Step ${step + 1} of ${REVIEW_STEPS.length}: ${REVIEW_STEPS[step].title}.`}>
         <div className="flex flex-wrap gap-1.5">
