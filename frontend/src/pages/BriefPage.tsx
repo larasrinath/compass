@@ -198,7 +198,7 @@ export function BriefPage({
               <button type="button" aria-label="Increase minimum experience by one year" onClick={() => { setRequiredExperienceMonths((Math.floor((requiredExperienceMonths ?? 0) / 12) + 1) * 12); markDirty() }}><CompassIcon name="plus" size={18} /></button>
             </div>
           </div>
-          <TermEditor errors={fieldErrors.location} field="location" label="Locations" placeholder="Add a location" hint="Match any location. Each location runs a separate search." values={splitLocations(location).map(term => ({ term, aliases: [] }))} onChange={values => { setLocation(values.map(value => value.term).join('; ')); markDirty() }} />
+          <TermEditor errors={fieldErrors.location} field="location" label="Locations" placeholder="Add a location" values={splitLocations(location).map(term => ({ term, aliases: [] }))} onChange={values => { setLocation(values.map(value => value.term).join('; ')); markDirty() }} />
           <section className="criteria-optional" aria-labelledby="optional-title">
             <h2 id="optional-title">Optional preferences</h2>
             <div className="criteria-optional-fields">
