@@ -8,6 +8,7 @@ const app = readFileSync(`${root}/src/App.tsx`, 'utf8')
 const brief = readFileSync(`${root}/src/pages/BriefPage.tsx`, 'utf8')
 const search = readFileSync(`${root}/src/pages/SearchPage.tsx`, 'utf8')
 const css = readFileSync(`${root}/src/index.css`, 'utf8')
+const compassCss = readFileSync(`${root}/src/compass.css`, 'utf8')
 
 function luminance(hex) {
   const channels = hex
@@ -33,7 +34,12 @@ test('workflow updates are announced and decorations are hidden', () => {
 })
 
 test('footer text meets WCAG AA contrast', () => {
-  const foreground = css.match(/--ink-faint:\s*(#[0-9a-f]{6})/i)?.[1]
+  const footerRule = compassCss.match(/footer\s*\{([^}]+)\}/)?.[1]
+  const token = footerRule?.match(/(?:^|;)\s*color:\s*var\((--[\w-]+)\)/)?.[1]
+  assert.notEqual(token, undefined)
+  const foreground = css.match(new RegExp(`${token}:\\s*(#[0-9a-f]{6})`, 'i'))?.[1]
+  const background = css.match(/--canvas:\s*(#[0-9a-f]{6})/i)?.[1]
   assert.notEqual(foreground, undefined)
-  assert.ok(contrast(foreground, '#f4f2ec') >= 4.5)
+  assert.notEqual(background, undefined)
+  assert.ok(contrast(foreground, background) >= 4.5)
 })

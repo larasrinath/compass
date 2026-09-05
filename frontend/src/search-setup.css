@@ -1,23 +1,23 @@
 /* Search pages follow app 4's Home and SearchSetup layout and spacing. */
-h1, h2, h3, .brand-title { font-family: 'Plus Jakarta Sans', 'Figtree', sans-serif; }
+h1, h2, h3, .brand-title { font-family: var(--font-display); }
 .workflow-nav button > span { display: inline-flex; align-items: center; }
 .brand-mark { display: flex; align-items: center; }
 .compass-start, .compass-setup { width: 100%; margin: 0 auto; color: var(--ink); }
 .compass-start { max-width: 768px; padding: 36px 0 80px; text-align: center; }
-.compass-kicker { margin: 0 0 16px; font: 600 12px/1.5 'Figtree', sans-serif; letter-spacing: .16em; text-transform: uppercase; color: #8a8577; }
-.compass-start h1 { font-size: clamp(30px, 3.7vw, 44px); line-height: 1.15; font-weight: 800; letter-spacing: -.045em; margin: 0; }
+.compass-kicker { margin: 0 0 16px; font: 600 12px/1.5 'Figtree', sans-serif; letter-spacing: .16em; text-transform: uppercase; color: var(--ink-faint); }
+.compass-start h1 { font-size: clamp(30px, 3.7vw, 44px); line-height: 1.15; font-weight: 800; letter-spacing: -.025em; margin: 0; }
 .compass-start-copy { max-width: 520px; margin: 20px auto 32px; color: var(--ink-soft); font-size: 16px; line-height: 1.7; }
 .prompt-composer { padding: 12px; background: white; border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 2px 20px #26251f0f; text-align: left; }
 .prompt-composer textarea { border: 0; width: 100%; resize: vertical; min-height: 145px; padding: 12px 16px; background: transparent; font-size: 16px; line-height: 1.65; border-radius: 8px; }
-.prompt-composer textarea::placeholder { color: #8a8577; }
+.prompt-composer textarea::placeholder { color: var(--ink-faint); }
 .prompt-composer-footer { border-top: 1px solid var(--line); margin-top: 8px; padding-top: 12px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.prompt-composer-footer > span { color: #8a8577; font-size: 12px; padding-left: 8px; }
-.prompt-guidance { font-size: 14px; color: #8a8577; margin: 20px 0 40px; }
+.prompt-composer-footer > span { color: var(--ink-faint); font-size: 12px; padding-left: 8px; }
+.prompt-guidance { font-size: 14px; color: var(--ink-faint); margin: 20px 0 40px; }
 .compass-setup { max-width: 672px; padding-bottom: 36px; }
-.compass-back { display: inline-flex; align-items: center; gap: 8px; color: #8a8577; background: none; border: 0; padding: 0; font-size: 14px; font-weight: 400; min-height: 36px; cursor: pointer; }
+.compass-back { display: inline-flex; align-items: center; gap: 8px; color: var(--ink-faint); background: none; border: 0; padding: 0; font-size: 14px; font-weight: 400; min-height: 36px; cursor: pointer; }
 .compass-back:hover { color: var(--accent); }
 .compass-setup-heading { margin: 24px 0 32px; }
-.compass-setup-heading h1 { font-size: 30px; font-weight: 800; line-height: 1.3; letter-spacing: -.045em; margin: 0; }
+.compass-setup-heading h1 { font-size: 30px; font-weight: 800; line-height: 1.3; letter-spacing: -.025em; margin: 0; }
 .compass-setup-heading blockquote { margin: 20px 0 0; border-left: 2px solid #b0c0ba; padding-left: 16px; font-size: 14px; line-height: 1.7; color: var(--ink-soft); overflow-wrap: anywhere; }
 .compass-setup .form-error { margin-bottom: 20px; }
 .compass-criteria-form { display: block; }
@@ -25,38 +25,38 @@ h1, h2, h3, .brand-title { font-family: 'Plus Jakarta Sans', 'Figtree', sans-ser
 .criteria-sheet > * { min-width: 0; }
 .criteria-label, .criteria-sheet .field > span { display: block; font-size: 14px; line-height: 1.5; color: var(--ink); font-weight: 600; }
 .criteria-label { margin-bottom: 8px; }
-.criteria-hint { margin: -2px 0 12px; color: #8a8577; font-size: 12px; line-height: 1.6; }
+.criteria-hint { margin: -2px 0 12px; color: var(--ink-faint); font-size: 12px; line-height: 1.6; }
 .criteria-sheet .field { gap: 10px; }
-.criteria-sheet .field > input, .criteria-sheet .field > textarea { background: #fbfaf6; border: 1px solid var(--line); border-radius: 12px; font-size: 14px; line-height: 1.5; padding: 10px 16px; width: 100%; min-width: 0; }
+.criteria-sheet .field > input, .criteria-sheet .field > textarea { background: var(--canvas); border: 1px solid var(--line); border-radius: 12px; font-size: 14px; line-height: 1.5; padding: 10px 16px; width: 100%; min-width: 0; }
 .criteria-sheet .field > textarea { resize: vertical; }
 .criteria-chips { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .criteria-chip { display: inline-flex; align-items: center; max-width: 100%; min-width: 0; border: 1px solid var(--line); border-radius: 24px; background: #fff; padding-left: 12px; }
 .criteria-chip input { border: 0; border-radius: 0; background: transparent; min-height: 38px; padding: 6px 0; font-size: 14px; line-height: 1.5; min-width: 0; max-width: calc(100% - 36px); }
 .criteria-chip input:focus { outline: none; }
 .criteria-chip:focus-within { border-color: var(--accent); }
-.criteria-chip button { display: inline-flex; align-items: center; justify-content: center; min-width: 36px; min-height: 38px; padding: 0; background: transparent; color: #8a8577; border: 0; border-radius: 20px; }
-.criteria-chip button:hover { background: #f4f2ec; color: var(--accent); }
+.criteria-chip button { display: inline-flex; align-items: center; justify-content: center; min-width: 36px; min-height: 38px; padding: 0; background: transparent; color: var(--ink-faint); border: 0; border-radius: 20px; }
+.criteria-chip button:hover { background: var(--subtle); color: var(--accent); }
 .criteria-chip-add { border-style: dashed; }
 .criteria-chip-add input { width: 125px; }
 .criteria-chip-add input::placeholder { color: #a6a195; }
 .criteria-chip-add button { color: var(--accent); }
-.criteria-aliases { margin-top: 10px; color: #8a8577; font-size: 12px; }
+.criteria-aliases { margin-top: 10px; color: var(--ink-faint); font-size: 12px; }
 .criteria-aliases > summary { cursor: pointer; padding: 2px 0; width: fit-content; }
 .criteria-aliases > .field, .criteria-aliases > p { margin-top: 12px; }
 .criteria-aliases > .field span { font-size: 12px; color: var(--ink-soft); font-weight: 400; }
 .criteria-aliases .field input[type=number] { max-width: 180px; }
 .experience-stepper { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 28px; padding: 0 4px; }
-.experience-stepper button { display: inline-flex; align-items: center; justify-content: center; background: none; border: 0; padding: 0; min-width: 42px; height: 42px; color: #8a8577; border-radius: 50%; }
-.experience-stepper button:hover:not(:disabled) { background: #f4f2ec; }
+.experience-stepper button { display: inline-flex; align-items: center; justify-content: center; background: none; border: 0; padding: 0; min-width: 42px; height: 42px; color: var(--ink-faint); border-radius: 50%; }
+.experience-stepper button:hover:not(:disabled) { background: var(--subtle); }
 .experience-stepper output { min-width: 76px; text-align: center; font-size: 14px; font-weight: 600; }
 .criteria-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: start; }
 .criteria-columns > * { min-width: 0; }
 .criteria-more { border-top: 1px solid var(--line); margin-top: 2px; padding-top: 18px; }
-.criteria-more > summary { cursor: pointer; font-size: 14px; color: #8a8577; padding: 4px 0; }
+.criteria-more > summary { cursor: pointer; font-size: 14px; color: var(--ink-faint); padding: 4px 0; }
 .criteria-more-content { margin-top: 18px; display: flex; flex-direction: column; gap: 24px; background: #f7f6f2; padding: 20px; border-radius: 16px; }
 .criteria-more-content .field > input, .criteria-more-content .field > textarea { background: white; }
 .criteria-footer { position: sticky; bottom: 0; z-index: 2; display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-top: 24px; padding: 16px 0; border-top: 1px solid var(--line); background: #fbfaf6f5; backdrop-filter: blur(12px); }
-.criteria-footer > span { font-size: 12px; color: #8a8577; }
+.criteria-footer > span { font-size: 12px; color: var(--ink-faint); }
 .compass-setup .primary-action, .compass-start .primary-action { display: inline-flex; align-items: center; justify-content: center; gap: 10px; flex-shrink: 0; min-height: 42px; padding: 10px 20px; font-size: 14px; font-weight: 600; }
 @media (max-width: 600px) {
   .compass-start { padding-top: 24px; }

@@ -23,3 +23,14 @@ Implementation: `search-setup.css` owns the prompt/criteria screens; `results.cs
 owns result headers, cards, comparison controls, and discovery layout. `compass.css`
 contains the shared palette and application shell. Legacy evidence and diagnostic
 views still have styles in `App.css`.
+
+Typography roles are defined centrally in `index.css`: Figtree 400 for body text,
+500 for navigation, quiet actions, disclosures and badges, and 600 for field labels
+and primary actions. Plus Jakarta Sans 700 is for section/candidate headings;
+800 is reserved for page titles and the brand. Use the supplied font weights
+exactly (no 550/650/750 fallbacks). Supporting text uses `--ink-faint` (#8A8577),
+body copy uses `--ink-soft` (#4A473E), and headings/field labels use `--ink` (#26251F).
+Keep status labels in sentence case. Page styles should use these tokens rather
+than introducing near-matching colors. Check computed browser styles as well as
+screenshots whenever changing typography, since legacy selector specificity can
+otherwise silently override the intended face, weight, or color.
