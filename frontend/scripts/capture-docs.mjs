@@ -23,6 +23,7 @@ const run = {
   keywords: 'Backend engineer Go PostgreSQL', location: 'Berlin', network: [],
   current_company: null, status: 'ok', reference_count: 4, person_reference_count: 4,
   new_candidate_count: 4, existing_candidate_count: 0,
+  automatic_downloads: true, pagination: { pages_completed: 2, people_found: 4, profile_limit: 1000, stop_reason: 'exhausted' },
 }
 const names = ['Robin Serrano', 'Alex Morgan', 'Sam Rivera', 'Jordan Ellis']
 const companies = ['Example Metrics', 'Example Payments', 'Example Cloud', 'Example Systems']
@@ -118,6 +119,19 @@ try {
   if (!ready) throw new Error('Documentation Vite server timed out.')
   browser = await chromium.launch({ channel: 'chrome', headless: true })
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1, locale: 'en-US', timezoneId: 'UTC', reducedMotion: 'reduce' })
+  await page.addInitScript(() => {
+    // Keep the fictional queue connected without opening a real event stream.
+    window.EventSource = class extends EventTarget {
+      constructor() {
+        super()
+        this.timer = setTimeout(() => {
+          this.dispatchEvent(new Event('open'))
+          this.dispatchEvent(new MessageEvent('snapshot', { data: JSON.stringify({ state: 'active', pause_reason: null, resume_at: null, counts: {}, jobs: [] }) }))
+        }, 0)
+      }
+      close() { clearTimeout(this.timer) }
+    }
+  })
   const failures = []
   page.on('pageerror', error => failures.push(error.message))
   await page.route('**/*', async route => {

@@ -13,6 +13,7 @@ from linkedin_dashboard.db.models import (
     Job,
     ProfileFetch,
     SearchDownload,
+    SearchPage,
     SearchRun,
 )
 from linkedin_dashboard.db.session import Database
@@ -36,15 +37,21 @@ class SearchDownloadService:
                 "rate_limited",
             }:
                 raise ValueError("finish a search before downloading its results")
-            if db.get(SearchDownload, run_id) is None:
-                db.add(
-                    SearchDownload(
-                        search_run_id=run_id,
-                        profile_limit=1000,
-                        requested_at=datetime.now(UTC).isoformat(),
-                        queued_count=0,
-                    )
+            page_ids = list(
+                db.scalars(
+                    select(SearchPage.run_id).where(SearchPage.root_run_id == run_id)
                 )
+            ) or [run_id]
+            for page_id in page_ids:
+                if db.get(SearchDownload, page_id) is None:
+                    db.add(
+                        SearchDownload(
+                            search_run_id=page_id,
+                            profile_limit=1000,
+                            requested_at=datetime.now(UTC).isoformat(),
+                            queued_count=0,
+                        )
+                    )
         await self.dispatch_pending()
 
     async def dispatch_pending(self) -> None:

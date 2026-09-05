@@ -149,6 +149,7 @@ export interface BriefRecord extends BriefInput {
 }
 
 export interface SearchInput {
+  paginate?: boolean
   automatic_downloads?: boolean
   session_id: string
   brief_id: string
@@ -169,6 +170,8 @@ export type SearchRunStatus =
   | 'cancelled'
 
 export interface SearchRun {
+  pagination?: { pages_completed: number; people_found: number; profile_limit: number; stop_reason: string | null } | null
+  pages?: Array<{ run_id: string; status: SearchRunStatus }>
   automatic_downloads?: boolean
   downloads_dispatched?: boolean
   download_limit?: number
@@ -208,6 +211,8 @@ export interface SearchDetail extends SearchRun {
 }
 
 export interface CandidateSource {
+  page_run_id?: string
+  page_number?: number
   search_run_id: string
   created_at: string
   keywords: string
@@ -482,6 +487,9 @@ export const listSearches = (sessionId: string) =>
 
 export const getSearch = (runId: string) =>
   requestJson<SearchDetail>(`/api/searches/${encodeURIComponent(runId)}`)
+
+export const stopSearchDiscovery = (runId: string) =>
+  requestJson<{ search_run_id: string }>(`/api/searches/${encodeURIComponent(runId)}/stop`, { method: 'POST' })
 
 export const downloadSearchResults = (runId: string) =>
   requestJson<{ search_run_id: string }>(`/api/searches/${encodeURIComponent(runId)}/downloads`, { method: 'POST' })

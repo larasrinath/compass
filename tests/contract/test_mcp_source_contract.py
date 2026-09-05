@@ -70,6 +70,7 @@ def test_read_only_tool_signatures_match_sibling_source_without_importing_it() -
         "location",
         "network",
         "current_company",
+        "page",
         "extractor",
     ]
     assert _nested_async_signature(person, "get_person_profile") == [

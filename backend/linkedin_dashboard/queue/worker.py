@@ -33,6 +33,7 @@ from linkedin_dashboard.queue.jobs import (
     JobPayload,
     ListToolsPayload,
     PersonProfilePayload,
+    SearchPeoplePayload,
     max_attempts_for,
     missing_profile_sections,
     navigation_cost,
@@ -424,6 +425,7 @@ class DurableJobQueue:
         *,
         correlation_id: str | None = None,
         related_factory: Callable[[Any, Job], None] | None = None,
+        authorize_search_page: bool = False,
     ) -> str:
         if not self._accepting:
             raise RuntimeError("queue is not accepting jobs")
@@ -465,6 +467,18 @@ class DurableJobQueue:
                 )
                 or 0
             )
+            if authorize_search_page:
+                if (
+                    not isinstance(validated, SearchPeoplePayload)
+                    or validated.page is None
+                ):
+                    raise ValueError(
+                        "only explicit search pages can authorize a page read"
+                    )
+                dashboard_session.nav_budget = max(
+                    dashboard_session.nav_budget,
+                    dashboard_session.nav_used + reserved + cost,
+                )
             if (
                 dashboard_session.nav_used + reserved + cost
                 > dashboard_session.nav_budget

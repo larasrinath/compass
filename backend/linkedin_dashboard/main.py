@@ -39,6 +39,7 @@ from linkedin_dashboard.services.enrichment import (
     EnrichmentResultProcessor,
     EnrichmentService,
 )
+from linkedin_dashboard.services.pagination import SearchPaginationService
 from linkedin_dashboard.services.scoring_service import ScoringService
 from linkedin_dashboard.services.search import DiscoveryResultProcessor, SearchService
 from linkedin_dashboard.settings import Settings
@@ -141,7 +142,13 @@ def create_app(
     enrichment_service = EnrichmentService(database, job_queue)
 
     download_service = SearchDownloadService(database, enrichment_service)
-    job_queue.before_claim = download_service.dispatch_pending
+    pagination_service = SearchPaginationService(database, job_queue)
+
+    async def dispatch_search_work() -> None:
+        await download_service.dispatch_pending()
+        await pagination_service.dispatch_pending()
+
+    job_queue.before_claim = dispatch_search_work
     llm_provider = NullProvider()
 
     @asynccontextmanager
@@ -167,6 +174,7 @@ def create_app(
     app.state.search_service = search_service
     app.state.enrichment_service = enrichment_service
     app.state.download_service = download_service
+    app.state.pagination_service = pagination_service
     app.state.scoring_service = scoring_service
     app.state.llm_provider = llm_provider
 

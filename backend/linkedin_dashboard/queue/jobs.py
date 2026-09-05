@@ -32,6 +32,7 @@ class SearchPeoplePayload(_StrictPayload):
     network: list[Literal["F", "S", "O"]] | None = Field(default=None, max_length=3)
     current_company: str | None = Field(default=None, max_length=32)
     search_run_id: str | None = Field(default=None, min_length=1, max_length=36)
+    page: int | None = Field(default=None, ge=1, le=1000, strict=True)
 
     @field_validator("current_company")
     @classmethod

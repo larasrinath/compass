@@ -20,10 +20,14 @@ or leave them all unchecked, to search across networks. Network distance does no
 contribute to a match score. Broad skills-based searches can surface people an
 exact-title search misses; no search guarantees complete LinkedIn coverage.
 
-The current connector only retrieves the first people-search page; the 1,000 cap
-is **not a promise of 1,000 results**. Pagination remains an
-[upstream limitation](https://github.com/stickerdaniel/linkedin-mcp-server/issues/526).
-Compass retains up to 1,000 candidates and 200 searches per session.
+Compass now follows people-search pages automatically, preserving the same keywords,
+location, network and company filters. Install the [bundled connector pagination
+patch](integrations/linkedin-mcp-server/README.md) before using this feature.
+Each page is a separate checkpointed queue job; all pages appear as one saved search.
+Discovery stops at 1,000 candidates, an empty or repeated page, a failed/incomplete
+page, or **Stop discovery**. Already queued profile downloads continue after stopping.
+LinkedIn controls the results it exposes: the ceiling does **not** guarantee 1,000
+matches. Compass retains up to 1,000 candidates and 200 logical searches per session.
 
 Downloads use the existing durable, single-worker queue with its configured pause
 between calls, rate-limit cooldowns and operator pause/resume controls. A batch
@@ -36,8 +40,9 @@ not turn old searches into new download requests. Select an older search under
 **Results from**, then use **Download remaining profiles** to catch up.
 
 The API keeps discovery-only compatibility: `POST /api/searches` accepts
-`automatic_downloads: true` (the app always sends it). The optional flag defaults
-to false for older clients. `POST /api/searches/{id}/downloads` requests an
+`automatic_downloads: true` and `paginate: true` (the app sends both). Both flags
+default to false for older clients. `POST /api/searches/{id}/stop` stops further
+discovery pages. `POST /api/searches/{id}/downloads` requests an
 idempotent catch-up batch for that search.
 
 See [download behavior and verification](docs/reviews/automatic-downloads.md) for implementation details.
@@ -126,7 +131,9 @@ Run the three services in separate terminals. The connector is a separate checko
 with its own installation and authentication; Compass does not start it or access
 its browser profile.
 
-**1. Connector — from the `linkedin-mcp-server` checkout**
+**1. Connector — from the patched `linkedin-mcp-server` checkout**
+
+Apply the [bundled pagination patch](integrations/linkedin-mcp-server/README.md) first.
 
 ```bash
 uv run -m linkedin_mcp_server --transport streamable-http --host 127.0.0.1 --port 8000 --no-auto-import
