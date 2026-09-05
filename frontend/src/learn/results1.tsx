@@ -43,7 +43,7 @@ export function Ch6() {
       chapterId="review-and-compare"
       kicker="Working with results · 6 of 9"
       title="Review the pool and compare people"
-      intro="Start by checking who is in the list. Then save the profiles worth investigating and review them against the role. Finally, compare two or three people on the same criteria. A list check, a candidate assessment, and a source check answer different questions."
+      intro="Start by checking who is in the list. As profile downloads complete, review the saved evidence against the role. If automatic downloads are off, use Download remaining profiles for the selected search. Finally, compare two or three people on the same criteria. A list check, a candidate assessment, and a source check answer different questions."
     >
       <div className="grid gap-3 sm:grid-cols-3">
         <Callout><strong>Is this the right person?</strong><p>In Find candidates, check names, LinkedIn links, and repeated source searches. Add a note under Check candidate list and choose Confirm list &amp; show ranking. You stay on Find candidates.</p></Callout>

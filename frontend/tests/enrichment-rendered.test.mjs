@@ -512,6 +512,7 @@ test('Find candidates derives keywords from the brief and ignores legacy overrid
   globalThis.fetch = (input, init) => {
     const path = String(input)
     if (path.startsWith('/api/searches?') || path.startsWith('/api/candidate-pool?')) return json([])
+    if (path === '/api/settings') return json({ automatic_downloads: false, automatic_pagination: false, download_batch_limit: 50 })
     if (path === '/api/searches') {
       submitted = JSON.parse(init.body)
       return json({ search_run_id: 'new-run', job_id: 'job' })
@@ -532,7 +533,7 @@ test('Find candidates derives keywords from the brief and ignores legacy overrid
     assert.equal(submitted, null, 'opening results must not start a search')
     await user.click(screen.getByRole('button', { name: 'Run search' }))
     await waitFor(() => assert.notEqual(submitted, null))
-    assert.deepEqual(submitted, { paginate: true, automatic_downloads: true, session_id: 'session', brief_id: 'launch-brief', keywords: 'Engineer Go payments', location: 'Berlin', network: ['O'], current_company: '123' })
+    assert.deepEqual(submitted, { session_id: 'session', brief_id: 'launch-brief', keywords: 'Engineer Go payments', location: 'Berlin', network: ['O'], current_company: '123' })
     await user.click(screen.getByRole('button', { name: 'Adjust criteria' }))
     assert.equal(edited, true)
   } finally { window.localStorage.removeItem('compass:search-settings:launch-brief') }

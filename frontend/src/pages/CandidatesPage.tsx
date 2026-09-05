@@ -9,7 +9,6 @@ import {
 import { ComparisonBoard } from '../components/ComparisonBoard'
 import { ResultHeader } from '../components/ResultHeader'
 import { CandidateRow } from '../components/CandidateRow'
-import { WeightsEditor } from '../components/WeightsEditor'
 import {
   reconcileEvidenceVerifications,
   scoreIdentityKey,
@@ -21,7 +20,6 @@ export function CandidatesPage({
   onCandidateOpen,
   verifiedEvidence,
   onEvidenceReconciled,
-  onScoresChanged,
   selectedForComparison,
   brief,
   onEditBrief,
@@ -31,7 +29,6 @@ export function CandidatesPage({
   onCandidateOpen: (candidateId: string) => void
   verifiedEvidence: ReadonlyMap<string, EvidenceVerification>
   onEvidenceReconciled: (values: Map<string, EvidenceVerification>) => void
-  onScoresChanged: () => void
   brief?: BriefRecord | null
   onEditBrief?: () => void
   selectedForComparison?: string[]
@@ -171,9 +168,7 @@ export function CandidatesPage({
           </form>
         )}
       </details>
-      <details className="results-options"><summary>Filter, sort & scoring settings</summary>
-      <WeightsEditor onScoresChanged={onScoresChanged} />
-
+      <details className="results-options"><summary>Filter & sort</summary>
       <form className="ranking-filters panel" onSubmit={(event) => event.preventDefault()}>
         <p className="eyebrow">Filter and sort</p>
         <label className="field">

@@ -1,7 +1,7 @@
 # Automatic downloads after discovery
 
-Running a search authorizes one initial profile-and-experience download for each
-newly discovered person in that search, up to 1,000. It does not authorize extra
+With automatic downloads enabled in Settings, running a search authorizes one initial profile-and-experience download for each
+newly discovered person in that search, up to the saved batch limit (default 1,000). It does not authorize extra
 sections or repeat retrievals of already requested profiles. The bundled connector patch follows additional result pages. The 1,000-request
 allowance is shared by all pages of one search batch, not by the entire workspace.
 
@@ -15,7 +15,8 @@ allowance is shared by all pages of one search batch, not by the entire workspac
    only that run's candidates, excluding anyone with a previous profile request.
 4. Initial jobs, fetch records, read reservations, an audit entry and the dispatch
    marker commit together. Repeating the action cannot duplicate that batch.
-5. The normal worker executes one request at a time. Existing cooldown, retry,
+5. The worker runs up to the configured profile concurrency (1–2), capped by
+   connector capacity. Other operations remain exclusive. Existing cooldown, retry,
    cancellation and pause/resume behavior applies. Retrieved evidence triggers
    the existing local scoring service.
 
@@ -31,8 +32,12 @@ queue's existing explicit recovery behavior.
 
 ## Interface and compatibility
 
-- Find candidates sends `automatic_downloads: true` with each location's search.
-- Older API clients can continue discovery-only requests by omitting that flag.
+- Find candidates omits `automatic_downloads` and `paginate`; the backend resolves
+  saved Settings defaults. Both default to true on a fresh installation.
+- API clients requiring discovery only must explicitly send
+  `automatic_downloads: false`. Send `paginate: false` for one page.
+- Download and page limits are captured when a batch is created. Changing Settings
+  does not resize existing batches. See [Settings](../settings.md).
 - Select an older run under Results from, then Download remaining profiles to
   request its initial batch. The endpoint is idempotent.
 - Waiting/downloading counts accompany the pool. Numeric scores appear only when

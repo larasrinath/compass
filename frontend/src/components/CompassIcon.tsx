@@ -1,6 +1,7 @@
 /** Small stroke icons shared by the Compass navigation and search controls. */
-export function CompassIcon({ name, size = 20 }: { name: 'compass' | 'plus' | 'search' | 'folder' | 'compare' | 'arrow' | 'back' | 'minus' | 'close' | 'chevron' | 'bookmark' | 'brief' | 'download' | 'career' | 'pin' | 'grid' | 'list'; size?: number }) {
+export function CompassIcon({ name, size = 20 }: { name: 'compass' | 'plus' | 'search' | 'folder' | 'compare' | 'arrow' | 'back' | 'minus' | 'close' | 'chevron' | 'bookmark' | 'brief' | 'download' | 'career' | 'pin' | 'grid' | 'list' | 'settings'; size?: number }) {
   const paths = {
+    settings: <><path d="M4 7h16M4 17h16" /><circle cx="9" cy="7" r="3" fill="var(--surface, #fff)" /><circle cx="15" cy="17" r="3" fill="var(--surface, #fff)" /></>,
     grid: <><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></>,
     list: <><path d="M9 5h12M9 12h12M9 19h12" /><path d="M3 5h1M3 12h1M3 19h1" /></>,
     pin: <><path d="M20 10c0 6-8 12-8 12S4 16 4 10a8 8 0 1 1 16 0Z" /><circle cx="12" cy="10" r="2.5" /></>,

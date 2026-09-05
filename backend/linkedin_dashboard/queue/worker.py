@@ -898,6 +898,9 @@ class DurableJobQueue:
             # another claim races this transaction.
             return None, 0.1
 
+    def configuration_changed(self) -> None:
+        self._wake.set()
+
     def _claim_next_transaction(self) -> tuple[ClaimedJob | None, float | None]:
         now = datetime.now(UTC)
         owner_token = self._owner_token
@@ -938,7 +941,21 @@ class DurableJobQueue:
                     (datetime.fromisoformat(control.resume_at) - now).total_seconds(),
                 )
             running = list(session.scalars(select(Job).where(Job.state == "running")))
-            capacity = min(2, max(1, getattr(self.executor, "profile_concurrency", 1)))
+            from linkedin_dashboard.configuration import Configuration
+            from linkedin_dashboard.db.models import AppConfiguration
+
+            saved = session.get(AppConfiguration, 1)
+            configured_capacity = 2
+            if saved is not None:
+                config = Configuration.model_validate(saved.values)
+                configured_capacity = config.profile_concurrency
+                self.inter_call_delay_seconds = config.inter_call_delay_seconds
+                self.busy_retry_seconds = config.busy_retry_seconds
+                self.timeout_retry_seconds = config.timeout_retry_seconds
+            capacity = min(
+                configured_capacity,
+                max(1, getattr(self.executor, "profile_concurrency", 1)),
+            )
             if len(running) >= capacity:
                 return None, earliest_delay
             for job in jobs:

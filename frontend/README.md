@@ -13,8 +13,8 @@ Vite defaults to `http://127.0.0.1:5173` and proxies `/api` to the local dashboa
 API on port 8787. See the [root README](../README.md#run-locally) for the three-service
 setup and numeric-loopback configuration rules.
 
-Find candidates starts automatic profile-and-experience downloads with each
-search. Queue events refresh the pool and scores; historical searches have an
+By default, Find candidates starts profile-and-experience downloads with each
+search. Settings controls automatic downloads, pagination, pacing, and batch limits. Queue events refresh the pool and scores; historical searches have an
 explicit, run-scoped **Download remaining profiles** action. The backend owns
 batch recovery and deduplication, so this does not depend on keeping the page open.
 See [automatic downloads](../docs/reviews/automatic-downloads.md) for the contract.
@@ -25,9 +25,10 @@ See [automatic downloads](../docs/reviews/automatic-downloads.md) for the contra
 | --- | --- | --- |
 | `/brief` | Role description and editable criteria | `src/pages/BriefPage.tsx`, `src/search-setup.css` |
 | `/search` | Discovery, card/list views, retrieval, and candidate-list review | `src/pages/SearchPage.tsx`, `src/results.css` |
-| `/candidates` | Ranked cards, comparison, and scoring settings | `src/pages/CandidatesPage.tsx`, `src/components/CandidateRow.tsx` |
+| `/candidates` | Ranked cards, comparison, and source checks | `src/pages/CandidatesPage.tsx`, `src/components/CandidateRow.tsx` |
 | `/candidates/:id` | Candidate review drawer | `src/pages/CandidateDetailPage.tsx`, `src/components/CandidateOverview.tsx`, `src/candidate-profile.css` |
 | `/saved` | Saved runs with three-profile previews | `src/pages/SavedSearchesPage.tsx`, `src/saved-searches.css` |
+| `/settings` | Download configuration and scoring weights | `src/pages/SettingsPage.tsx`, `src/pages/settings.css`, `src/components/WeightsEditor.tsx` |
 | `/how-it-works` | Guide overview | `src/learn/LearnHome.tsx` |
 | `/how-it-works/:chapter` | Interactive chapter or guided tour | `src/learn/LearnPage.tsx`, `src/learn/content.ts` |
 
@@ -46,6 +47,18 @@ Nice-to-haves are used when primary terms are absent. Query construction keeps
 up to four normalized unique terms within 500 characters. Multiple locations
 are stored as semicolon-separated alternatives and queued separately.
 Company and network preferences use browser storage keyed to the saved brief.
+
+## Settings
+
+`GET /api/settings` and `PUT /api/settings` persist operational preferences in the
+local database. The page is available before a role brief exists. Search requests
+omit `automatic_downloads` and `paginate` so the backend resolves saved defaults;
+explicit API booleans override them. New batch limits do not resize existing batches.
+
+Scoring uses the separate versioned `/api/weights` contract. Saving weights or
+location equivalences recalculates saved evidence and clears stale source-check
+selections. Both save actions stay disabled until their own form changes.
+See the [settings reference](../docs/settings.md) for defaults and timing.
 
 ## How it works guide
 

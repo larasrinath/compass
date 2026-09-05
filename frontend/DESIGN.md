@@ -57,6 +57,11 @@ not just its colors.
   aliases survive going back to edit the description.
 - Desktop navigation stays fixed while the main content scrolls. Saved-search
   cards show no more than three profiles and use Open results for the full pool.
+- Settings follows the centered Role brief layout: a 768px page, white rounded
+  sheets, quiet separators, and 40px controls aligned to the right of their labels.
+  Group Downloads, Search batches, and Retry timing in one form. Scoring weights
+  use a separate sheet and save action, with signal labels left and inputs right.
+  Keep search criteria in Role brief. Place Settings before How it works in navigation.
 - The How it works guide follows the working pages' labels and action order.
   Workflow diagrams use one vertical sequence at every viewport width, with full
   explanations beside numbered stages and one connected down arrow between stages.

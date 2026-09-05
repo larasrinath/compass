@@ -448,6 +448,10 @@ class SearchService:
         automatic_downloads: bool = False,
         paginate: bool = False,
     ) -> tuple[str, str]:
+        from linkedin_dashboard.configuration import load_configuration
+
+        with self.database.sessions() as config_session:
+            config = load_configuration(config_session)
         keywords = keywords.strip()
         location = location.strip() if location else None
         network = list(dict.fromkeys(network or [])) or None
@@ -501,7 +505,9 @@ class SearchService:
                 session.flush()
                 session.add(
                     SearchPagination(
-                        root_run_id=run_id, profile_limit=1000, page_limit=1000
+                        root_run_id=run_id,
+                        profile_limit=config.download_batch_limit,
+                        page_limit=config.search_page_limit,
                     )
                 )
                 session.flush()
@@ -513,7 +519,7 @@ class SearchService:
                 session.add(
                     SearchDownload(
                         search_run_id=run_id,
-                        profile_limit=1000,
+                        profile_limit=config.download_batch_limit,
                         requested_at=_now(),
                         queued_count=0,
                     )

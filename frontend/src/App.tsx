@@ -13,6 +13,7 @@ import { CandidateDetailPage } from './pages/CandidateDetailPage'
 import { CandidatesPage } from './pages/CandidatesPage'
 import { SavedSearchesPage } from './pages/SavedSearchesPage'
 import { SearchPage } from './pages/SearchPage'
+import { SettingsPage } from './pages/SettingsPage'
 import { parseAppRoute, pathForRoute, type AppRoute } from './routing'
 import {
   useNewRevisionEffect,
@@ -135,7 +136,7 @@ function App() {
 
   useEffect(() => {
     document.title =
-      view === 'learn' ? 'How it works · Compass' : view === 'brief'
+      view === 'settings' ? 'Settings · Compass' : view === 'learn' ? 'How it works · Compass' : view === 'brief'
         ? 'Role brief · Compass'
         : view === 'candidate'
           ? 'Candidate detail · Compass'
@@ -203,6 +204,7 @@ function App() {
         >
           <span className="nav-icon" aria-hidden="true"><CompassIcon name="compare" /></span><span className="nav-label">Compare matches</span>
         </button>
+        <button aria-current={view === 'settings' ? 'page' : undefined} onClick={() => navigate({ view: 'settings', candidateId: null })} type="button"><span className="nav-icon" aria-hidden="true"><CompassIcon name="settings" /></span><span className="nav-label">Settings</span></button>
         <button aria-current={view === 'learn' ? 'page' : undefined} onClick={() => navigate({ view: 'learn', candidateId: null, chapter: null })} type="button">
           <span className="nav-icon" aria-hidden="true"><CompassIcon name="brief" /></span><span className="nav-label">How it works</span>
         </button>
@@ -223,7 +225,7 @@ function App() {
             Dashboard API unavailable. Your entered work stays in this browser.
           </div>
         ) : null}
-        {route.view === 'learn' ? (
+        {route.view === 'settings' ? <SettingsPage onScoresChanged={clearEvidenceVerifications} /> : route.view === 'learn' ? (
           <Suspense fallback={<p role="status">Opening the guide…</p>}>
             <LearnPage chapter={route.chapter} onNavigate={(next) => navigate(next.name === 'home' ? { view: 'brief', candidateId: null } : { view: 'learn', candidateId: null, chapter: next.chapter ?? null })} />
           </Suspense>
@@ -287,7 +289,6 @@ function App() {
               onCandidateOpen={(id) => {
                 navigate({ view: 'candidate', candidateId: id })
               }}
-              onScoresChanged={clearEvidenceVerifications}
               session={session.data}
               verifiedEvidence={verifiedEvidence}
             />

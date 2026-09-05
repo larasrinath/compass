@@ -234,7 +234,7 @@ test('ranked list distinguishes stage and both null-score forms without color', 
   open.focus()
   await user.keyboard('{Enter}')
   assert.equal(opened, 'numeric')
-  await user.click(screen.getByText('Filter, sort & scoring settings'))
+  await user.click(screen.getByText('Filter & sort'))
   await user.selectOptions(screen.getByLabelText('Sort order'), 'confidence_desc')
   await waitFor(() => assert.equal(lastUrl.includes('sort=confidence_desc'), true))
 })
@@ -274,7 +274,7 @@ for (const [sort, expectedIds] of Object.entries(canonicalRanking.orders)) {
       onScoresChanged() {}, onCandidateOpen(id) { opened.push(id) },
     })))
     await screen.findByLabelText('Ranked candidates')
-    await user.click(screen.getByText('Filter, sort & scoring settings'))
+    await user.click(screen.getByText('Filter & sort'))
   await user.selectOptions(screen.getByLabelText('Sort order'), sort)
     await waitFor(() => {
       assert.equal(lastQuery.sort, sort)
@@ -587,11 +587,11 @@ test('weights save uses the loaded optimistic version and never offers S-7 input
   render(wrapper(React.createElement(WeightsEditor, {
     onScoresChanged() { scoresChanged += 1 },
   })))
-  await user.click(await screen.findByText('Scoring weights'))
-  const required = screen.getByLabelText('Required skills weight')
+  await screen.findByText('Scoring weights')
+  const required = await screen.findByLabelText('Required skills weight')
   await user.clear(required)
   await user.type(required, '31')
-  await user.click(screen.getByRole('button', { name: 'Save from v3' }))
+  await user.click(screen.getByRole('button', { name: 'Save scoring weights' }))
   await waitFor(() => assert.equal(payload.expected_version, 'v3'))
   assert.equal(payload.weights['S-1'], 31)
   assert.equal(scoresChanged, 1)
@@ -613,7 +613,7 @@ test('hostile unexpected weight key is a contract error and never reaches PUT', 
   const alert = await screen.findByRole('alert')
   assert.equal(alert.textContent.includes('unexpected weight keys S-7'), true)
   assert.equal(writes, 0)
-  assert.equal(screen.queryByRole('button', { name: /Save from/ }), null)
+  assert.equal(screen.queryByRole('button', { name: 'Save scoring weights' }), null)
 })
 
 

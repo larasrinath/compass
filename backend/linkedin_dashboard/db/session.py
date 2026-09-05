@@ -51,6 +51,7 @@ from linkedin_dashboard.db.migrations import (
     v0030_search_downloads,
     v0031_search_pagination,
     v0032_parallel_profiles,
+    v0033_app_configuration,
 )
 from linkedin_dashboard.db.models import Base
 from linkedin_dashboard.db.unicode_identity import (
@@ -92,6 +93,7 @@ _MIGRATION_MODULES = (
     v0030_search_downloads,
     v0031_search_pagination,
     v0032_parallel_profiles,
+    v0033_app_configuration,
 )
 
 _SCHEMA_ACTIONS = {

@@ -264,8 +264,8 @@ def current_brief(
 
 
 class SearchInput(BaseModel):
-    automatic_downloads: bool = False
-    paginate: bool = False
+    automatic_downloads: bool | None = None
+    paginate: bool | None = None
     model_config = ConfigDict(extra="forbid")
 
     session_id: str = Field(min_length=1, max_length=36)
@@ -283,7 +283,16 @@ class SearchQueued(BaseModel):
 
 async def _enqueue_search(service: SearchService, payload: SearchInput) -> SearchQueued:
     try:
-        job_id, run_id = await service.enqueue_search(**payload.model_dump())
+        from linkedin_dashboard.configuration import load_configuration
+
+        with service.database.sessions() as session:
+            config = load_configuration(session)
+        values = payload.model_dump()
+        if values["automatic_downloads"] is None:
+            values["automatic_downloads"] = config.automatic_downloads
+        if values["paginate"] is None:
+            values["paginate"] = config.automatic_pagination
+        job_id, run_id = await service.enqueue_search(**values)
     except LookupError as error:
         raise HTTPException(409, str(error)) from error
     except ValueError as error:
