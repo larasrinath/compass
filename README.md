@@ -54,54 +54,25 @@ interface from the API, so a separate Vite process is unnecessary.
 
 </details>
 
-## Automatic profile downloads
+## Finding and downloading profiles
 
-With **Download profiles automatically** enabled in Settings (the default),
-**Run search** also authorizes downloading the people returned by that search,
-up to the configured batch limit (default **1,000 new profile downloads**).
-The network filter is forwarded to LinkedIn:
-1st-degree (`F`), 2nd-degree (`S`), or 3rd-degree and beyond (`O`). Select all three,
-or leave them all unchecked, to search across networks. Network distance does not
-contribute to a match score. Broad skills-based searches can surface people an
-exact-title search misses; no search guarantees complete LinkedIn coverage.
+By default, **Run search** follows LinkedIn search pages and queues up to **1,000
+new profile downloads per batch**. Previously downloaded profiles are reused;
+saved candidates can keep accumulating across searches. The limit does not
+guarantee LinkedIn will return that many matches.
 
-With **Continue through search pages** enabled (the default), Compass follows
-people-search pages automatically, preserving the same keywords,
-location, network and company filters. The launcher installs the compatible connector automatically.
-[Connector integration notes](integrations/linkedin-mcp-server/README.md) explain the extensions.
-Each page is a separate checkpointed queue job; all pages appear as one saved search.
-Discovery stops at the configured download or page limit, an empty or repeated
-page, a failed/incomplete page, or **Stop discovery**. Already queued profile downloads continue after stopping.
-LinkedIn controls the results it exposes: the ceiling does **not** guarantee 1,000
-matches. **Saved candidates and search history have no lifetime count cap.**
-Previously downloaded profiles are reused and do not consume a new batch’s allowance.
-For example, a workspace with 10,000 saved profiles can queue another 1,000 new
-profile downloads. Starting a new search gets a fresh batch allowance; it does not
-delete or reset previous records. A page crossing the batch boundary can leave a
-few additional discovered candidates waiting for a later request.
+Choose **1st-degree**, **2nd-degree**, or **3rd-degree and beyond** in Role brief,
+or leave all unchecked to search across networks. Network distance does not
+contribute to match scores.
 
-Downloads use a durable queue with one or two isolated profile tabs, selected in
-Settings and capped by the connector’s capacity (one with older connectors).
-Retrieval opens LinkedIn pages in the signed-in browser; it is not a bulk data API.
-Hidden browser tabs do not make profile visits anonymous. The queue uses its configured pause
-between calls, rate-limit cooldowns and operator pause/resume controls. A batch
-reserves two page reads per newly requested profile (overview and experience).
-Its explicit authorization expands the session read budget only as needed for
-those initial reads; extra sections and retries remain subject to the budget.
-Already requested profiles are skipped, including failed/cancelled requests;
-retry those individually after inspecting the failure. Restarting the app does
-not turn old searches into new download requests. Select an older search under
-**Results from**, then use **Download remaining profiles** to catch up.
+Downloads run one or two profiles at a time, depending on Settings and connector
+support. Retrieval uses LinkedIn pages in your signed-in browser session; hidden
+tabs do not make visits anonymous.
 
-For `POST /api/searches`, omitted or null `automatic_downloads` and `paginate`
-flags now use the saved Settings defaults. Explicit booleans override them for
-that request. API clients requiring discovery only must send
-`automatic_downloads: false`; use `paginate: false` to request only the first page.
-`POST /api/searches/{id}/stop` stops further
-discovery pages. `POST /api/searches/{id}/downloads` requests an
-idempotent catch-up batch for that search.
-
-See [download behavior and verification](docs/reviews/automatic-downloads.md) for implementation details.
+Use **Settings** to change automatic downloads, pacing, and batch limits.
+**Stop discovery** stops fetching more search pages; queued downloads continue.
+For an older search, select it under **Results from** and choose **Download
+remaining profiles**.
 
 ## Working with Compass
 
@@ -183,93 +154,22 @@ own save action below the download settings.
 
 </details>
 
-### Configuration and local data
+## Settings and saved data
 
-Open **Settings** in the sidebar to configure simultaneous profile downloads
-(1–2 with the current connector), read pacing, automatic downloads, automatic
-search pagination, per-batch download/page limits, and retry delays. Operational
-settings are stored in the local database and survive restarts. Saved pacing
-settings override `INTER_CALL_DELAY_SECONDS`; before the first save, its configured
-value is used. Concurrency is capped by the connector's supported capacity.
-Concurrency and pacing apply to upcoming reads; new batch limits apply to new searches, while
-existing batches retain their original limits. Saving settings does not resume a
-paused queue or start the browser connector.
+**Settings** groups download controls and scoring preferences. Scoring weights
+have their own save action and recalculate existing evidence locally. Search
+criteria, locations, company, and network filters stay in **Role brief**.
 
-Scoring weights and metro/region equivalences also live in **Settings** and have
-their own save action, which recalculates scores locally. Role criteria, locations,
-company and connection filters remain in **Role brief**.
+Your searches, profiles, and evidence are stored locally in
+`~/.linkedin-dashboard/session.db`. Saved work remains available without the
+LinkedIn connector while Compass is running. Compass supports research and
+comparison; it does not send messages or connection requests.
 
-Copy [.env.example](.env.example) to `.env` only to override startup defaults. `HOST`,
-`FRONTEND_HOST`, and the host in `MCP_URL` must be numeric loopback literals, such as
-`127.0.0.1` or `::1`; `localhost` and non-loopback addresses are rejected.
-Vite derives its listener and API proxy from the same validated settings.
+## More information
 
-The database defaults to `~/.linkedin-dashboard/session.db` with owner-only file
-permissions (`0600`) inside an owner-only directory (`0700`). A custom `DB_PATH`
-parent must already have safe ownership and permissions. Saved source sections and
-score history retain provenance; evidence spans use Unicode code-point offsets.
-
-Current delivery covers discovery, retrieval, local analysis, and comparison.
-Shortlisting, drafting, and sending are outside this delivery. `SEND_ENABLED`
-remains false and `LLM_PROVIDER` is `null`; matching uses the local implementation.
-
-## Verification
-
-From the repository root:
-
-```bash
-uv run ruff check .
-uv run ruff format --check .
-uv run ty check
-uv run pytest
-```
-
-From `frontend/`:
-
-```bash
-npm test
-npm run lint
-npm run build
-npm run test:e2e
-```
-
-Browser tests run on isolated port **5194** with mocked APIs. Frontend tests also
-bind temporary loopback listeners, so a restrictive sandbox may need to permit
-those local test processes.
-
-The [4 September review](docs/reviews/2026-09-04-project-review.md) recorded
-**1,403 backend tests passed, 3 skipped; 85 frontend tests passed; 15 browser tests
-passed**, plus build, lint, and type checks. It distinguishes the full backend
-baseline from the affected checks rerun after fixes.
-
-### Known limitations
-
-- Navigating away from the brief discards unsaved edits. Save with **Continue to
-  search** before leaving.
-- A first credential-only brief requires a positive credential weight. Its setup
-  currently involves saving another criterion first and configuring scoring.
-- LinkedIn location is a search preference, not a guaranteed geographic filter.
-  Check the location in the downloaded profile.
-- Comparison selection is temporary: it survives opening and closing a profile,
-  but resets on browser reload.
-
-## Documentation
-
-| Document | Purpose |
-| --- | --- |
-| [Development setup](docs/development.md) | Launcher internals and manual hot-reload setup |
-| [Frontend guide](frontend/README.md) | Routes, components, API contracts, local guide, and browser checks |
-| [Design system](frontend/DESIGN.md) | Compass layout, typography, controls, and interaction rules |
-| [Settings reference](docs/settings.md) | Defaults, limits, persistence, and API behavior |
-| [Review workflow](docs/reviews/review-workflow.md) | User questions, source checks, and verification boundaries |
-| [Project review](docs/reviews/2026-09-04-project-review.md) | Findings, fixes, verification, and remaining issues |
-| [Implementation history](docs/implementation-history.md) | Queue, parsing, privacy, persistence, and dated acceptance records |
-| [Delivery plan](PROJECT_PLAN.md) | Current scope and retained historical roadmap |
-| [Screenshot guide](docs/screenshots/README.md) | Reproduce the fictional documentation screenshots |
-
-Refresh the README screenshots from `frontend/` with `npm run docs:screenshots`.
-The script renders the working UI on isolated port **5195**, intercepts all API
-requests, blocks external requests, and shuts down its temporary browser and server.
+- [Settings](docs/settings.md) — download preferences and scoring controls.
+- [Usage notes](docs/usage-notes.md) — current limitations and saved-work behavior.
+- [Developer guide](docs/development.md) — contributing, setup, tests, and technical documentation.
 
 ## Acknowledgments
 
