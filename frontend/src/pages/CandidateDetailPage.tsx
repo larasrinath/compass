@@ -29,7 +29,7 @@ export function CandidateDetailPage({
 }: {
   candidateId: string
   onBack: () => void
-  backDestination: 'search' | 'candidates'
+  backDestination: 'search' | 'candidates' | 'saved searches'
   queue: ReturnTypeOfJobEvents
   retrievalReady?: boolean
   rankingUnlocked: boolean

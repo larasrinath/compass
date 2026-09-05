@@ -112,11 +112,4 @@ a, .pool-heading-meta a { color: var(--accent); }
   .ranked-candidate > .score-badge { grid-column: 2; }
   .comparison-instructions { display: grid; }
 }
-.saved-search-list { display: grid; gap: 14px; }
-.saved-search-row { display: grid; grid-template-columns: 36px minmax(0,1fr) auto 18px; align-items: center; gap: 16px; width: 100%; padding: 24px; border: 1px solid var(--line); border-radius: 18px; background: white; text-align: left; color: var(--ink); cursor: pointer; }
-.saved-search-row:hover { border-color: #91b3a7; background: #fcfdfb; }
-.saved-search-row strong { font-size: 16px; display: block; }
-.saved-search-row small { display: block; margin-top: 8px; color: var(--ink-faint); }
-.saved-search-icon { color: var(--accent); font-size: 28px; }
-.saved-run-status { border-radius: 20px; padding: 5px 10px; background: #f4f2ec; color: var(--ink-soft); font-size: 12px; }
-@media(max-width:820px) { .workflow-nav { flex-wrap: wrap; } .workflow-nav button { flex-basis: 40%; } .saved-search-row { grid-template-columns: 24px minmax(0,1fr) auto; padding: 18px; gap: 10px; } .saved-search-row > span:last-child { display: none; } }
+@media(max-width:820px) { .workflow-nav { flex-wrap: wrap; } .workflow-nav button { flex-basis: 40%; } }

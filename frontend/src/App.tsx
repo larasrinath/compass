@@ -24,6 +24,7 @@ import './App.css'
 import './compass.css'
 import './search-setup.css'
 import './results.css'
+import './saved-searches.css'
 
 function StatusDot({ healthy }: { healthy: boolean }) {
   return (
@@ -41,6 +42,7 @@ function App() {
   )
   const [comparisonIds, setComparisonIds] = useState<string[]>([])
   const [sourceRun, setSourceRun] = useState<string | null>(null)
+  const [returnToSaved, setReturnToSaved] = useState(false)
   const [sessionLabel, setSessionLabel] = useState('Focused candidate search')
   const [verificationState, setVerificationState] = useState<{
     scope: string
@@ -90,6 +92,8 @@ function App() {
     if (queue.revision > 0) {
       void queryClient.invalidateQueries({ queryKey: ['session'] })
       void queryClient.invalidateQueries({ queryKey: ['ranked-candidates'] })
+      void queryClient.invalidateQueries({ queryKey: ['candidates'] })
+      void queryClient.invalidateQueries({ queryKey: ['searches'] })
     }
   }, [queryClient, queue.revision])
 
@@ -166,16 +170,16 @@ function App() {
           <span aria-hidden="true"><CompassIcon name="plus" /></span> Role brief
         </button>
         <button
-          aria-current={view === 'search' || (view === 'candidate' && !rankingUnlocked) ? 'page' : undefined}
+          aria-current={view === 'search' || (view === 'candidate' && !rankingUnlocked && !returnToSaved) ? 'page' : undefined}
           disabled={!brief.data}
           onClick={() => { setSourceRun(null); navigate({ view: 'search', candidateId: null }) }}
           type="button"
         >
           <span aria-hidden="true"><CompassIcon name="search" /></span> Find candidates
         </button>
-        <button aria-current={view === 'saved' ? 'page' : undefined} disabled={!session.data} onClick={() => navigate({ view: 'saved', candidateId: null })} type="button"><span aria-hidden="true"><CompassIcon name="folder" /></span> Saved searches</button>
+        <button aria-current={view === 'saved' || (view === 'candidate' && returnToSaved) ? 'page' : undefined} disabled={!session.data} onClick={() => navigate({ view: 'saved', candidateId: null })} type="button"><span aria-hidden="true"><CompassIcon name="folder" /></span> Saved searches</button>
         <button
-          aria-current={view === 'ranked' || (view === 'candidate' && rankingUnlocked) ? 'page' : undefined}
+          aria-current={view === 'ranked' || (view === 'candidate' && rankingUnlocked && !returnToSaved) ? 'page' : undefined}
           disabled={!rankingUnlocked}
           title={!rankingUnlocked ? 'Review the candidate list to unlock comparison' : undefined}
           onClick={() => navigate({ view: 'ranked', candidateId: null })}
@@ -249,11 +253,11 @@ function App() {
           ) : view === 'candidate' && candidateId ? (
             <CandidateDetailPage
               key={candidateId}
-              backDestination={rankingUnlocked ? 'candidates' : 'search'}
+              backDestination={returnToSaved ? 'saved searches' : rankingUnlocked ? 'candidates' : 'search'}
               candidateId={candidateId}
               onBack={() =>
                 navigate({
-                  view: rankingUnlocked ? 'ranked' : 'search',
+                  view: returnToSaved ? 'saved' : rankingUnlocked ? 'ranked' : 'search',
                   candidateId: null,
                 })
               }
@@ -276,7 +280,7 @@ function App() {
               verifiedEvidence={verifiedEvidence}
             />
           ) : view === 'saved' ? (
-            <SavedSearchesPage sessionId={session.data.id} onSearch={() => { setSourceRun(null); navigate({ view: 'search', candidateId: null }) }} onOpenRun={id => { setSourceRun(id); navigate({ view: 'search', candidateId: null }) }} />
+            <SavedSearchesPage sessionId={session.data.id} onOpenCandidate={id => { setReturnToSaved(true); navigate({ view: 'candidate', candidateId: id }) }} onSearch={() => { setSourceRun(null); navigate({ view: 'search', candidateId: null }) }} onOpenRun={id => { setSourceRun(id); navigate({ view: 'search', candidateId: null }) }} />
           ) : view === 'ranked' ? (
             <CandidatesPage
               brief={brief.data}
@@ -285,6 +289,7 @@ function App() {
               onComparisonChange={setComparisonIds}
               onEvidenceReconciled={reconcileEvidenceVerifications}
               onCandidateOpen={(id) => {
+                setReturnToSaved(false)
                 navigate({ view: 'candidate', candidateId: id })
               }}
               onScoresChanged={clearEvidenceVerifications}
@@ -299,6 +304,7 @@ function App() {
               onEditBrief={() => navigate({ view: 'brief', candidateId: null })}
               brief={brief.data}
               onCandidateOpen={(id) => {
+                setReturnToSaved(false)
                 navigate({ view: 'candidate', candidateId: id })
               }}
               onGateAChanged={() => navigate({ view: 'ranked', candidateId: null })}

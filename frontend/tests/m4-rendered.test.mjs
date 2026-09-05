@@ -637,6 +637,7 @@ test('saved searches open the selected persisted run without starting a download
   let opened = null
   globalThis.fetch = (input, init) => {
     assert.equal(init?.method ?? 'GET', 'GET')
+    if (String(input).startsWith('/api/candidate-pool?')) return json([])
     assert.ok(String(input).startsWith('/api/searches?'))
     return json([{ id: 'run-2', keywords: 'Planning specialist', location: 'India', created_at: '2026-09-04T00:00:00Z', person_reference_count: 5, status: 'ok' }])
   }
@@ -669,4 +670,39 @@ test('result cards limit comparison to three and allow a replacement after remov
   await user.click(screen.getByRole('checkbox', { name: 'Compare Sam' }))
   assert.equal(screen.getByRole('checkbox', { name: 'Compare Grace' }).disabled, true)
   assert.equal(screen.getAllByRole('checkbox', { checked: true }).length, 3)
+})
+
+
+test('saved search cards group downloaded profiles by source run and open the chosen profile', async () => {
+  let opened = null
+  const runs = ['First role', 'Second role'].map((keywords, index) => ({
+    id: `run-${index}`, keywords, location: null, created_at: '2026-09-04T00:00:00Z',
+    person_reference_count: 3, status: 'ok',
+  }))
+  const profiles = [
+    { id: 'ada', display_name: 'Ada', stage: 'stage1', sources: [{ search_run_id: 'run-0' }] },
+    { id: 'grace', display_name: 'Grace', stage: 'stage2', sources: [{ search_run_id: 'run-1' }] },
+    { id: 'lin', display_name: 'Lin', stage: 'discovered', sources: [{ search_run_id: 'run-0' }] },
+  ]
+  globalThis.fetch = (input, init) => {
+    assert.equal(init?.method ?? 'GET', 'GET')
+    const path = String(input)
+    if (path.startsWith('/api/searches?')) return json(runs)
+    if (path.startsWith('/api/candidate-pool?')) return json(profiles)
+    throw new Error(`unexpected fetch ${path}`)
+  }
+  const user = userEvent.setup({ document: dom.window.document })
+  render(wrapper(React.createElement(SavedSearchesPage, {
+    sessionId: 'session', onOpenRun() {}, onSearch() {}, onOpenCandidate(id) { opened = id },
+  })))
+  await screen.findByRole('button', { name: 'Review Ada' })
+  const first = screen.getByRole('region', { name: 'First role' })
+  const second = screen.getByRole('region', { name: 'Second role' })
+  assert.ok(within(first).getByText('Ada'))
+  assert.equal(within(first).queryByText('Grace'), null)
+  assert.equal(within(first).queryByText('Lin'), null)
+  assert.ok(within(second).getByText('Grace'))
+  assert.equal(within(second).queryByText('Ada'), null)
+  await user.click(within(second).getByRole('button', { name: 'Review Grace' }))
+  assert.equal(opened, 'grace')
 })

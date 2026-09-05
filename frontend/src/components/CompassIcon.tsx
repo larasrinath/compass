@@ -1,6 +1,8 @@
 /** Small stroke icons shared by the Compass navigation and search controls. */
-export function CompassIcon({ name, size = 20 }: { name: 'compass' | 'plus' | 'search' | 'folder' | 'compare' | 'arrow' | 'back' | 'minus' | 'close'; size?: number }) {
+export function CompassIcon({ name, size = 20 }: { name: 'compass' | 'plus' | 'search' | 'folder' | 'compare' | 'arrow' | 'back' | 'minus' | 'close' | 'chevron' | 'bookmark'; size?: number }) {
   const paths = {
+    chevron: <path d="m9 5 7 7-7 7" />,
+    bookmark: <path d="M6 21V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v16l-6-4-6 4Z" />,
     compass: <><circle cx="12" cy="12" r="10" /><path d="m16.2 7.8-2.8 5.6-5.6 2.8 2.8-5.6 5.6-2.8Z" /></>,
     plus: <path d="M12 5v14M5 12h14" />,
     minus: <path d="M5 12h14" />,
