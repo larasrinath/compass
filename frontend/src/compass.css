@@ -2,7 +2,7 @@
    All data and actions continue to use the local dashboard API. */
 
 body { background: var(--canvas); }
-.app-shell { grid-template-columns: 236px minmax(0,1fr); grid-template-rows: 98px 1fr auto; min-height: 100vh; }
+.app-shell { --sidebar-width: 236px; grid-template-columns: var(--sidebar-width) minmax(0,1fr); grid-template-rows: 98px 1fr auto; min-height: 100vh; }
 .topbar { grid-column: 1; grid-row: 1; padding: 28px 22px; background: #fff; border-right: 1px solid var(--line); border-bottom: 0; gap: 10px; }
 .brand-mark { background: transparent; color: var(--accent); box-shadow: none; width: 28px; height: 30px; font-size: 30px; }
 .brand-title { color: var(--ink); font-size: 18px; font-weight: 800; letter-spacing: -.025em; margin: 0; }
@@ -86,10 +86,15 @@ a, .pool-heading-meta a { color: var(--accent); }
 .comparison-verdict.contradicted { background: var(--rust-soft); color: var(--rust); }
 .comparison-note { color: var(--ink-faint); font-size: 12px; line-height: 1.6; }
 @media(max-width:1100px) {
-  .app-shell { grid-template-columns: 210px minmax(0,1fr); }
+  .app-shell { --sidebar-width: 210px; }
   .topbar-status { width: 178px; }
   main { padding: 36px 24px; }
   .search-workspace { grid-template-columns: 1fr; }
+}
+@media(min-width:821px) {
+  .topbar { position: fixed; top: 0; left: 0; width: var(--sidebar-width); height: 98px; z-index: 6; }
+  .workflow-nav { position: fixed; top: 98px; bottom: 0; left: 0; width: var(--sidebar-width); overflow-y: auto; overscroll-behavior: contain; z-index: 5; }
+  .workflow-nav button { flex-shrink: 0; }
 }
 @media(max-width:820px) {
   .app-shell { display: flex; flex-direction: column; }
