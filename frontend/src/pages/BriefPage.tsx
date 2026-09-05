@@ -188,7 +188,7 @@ export function BriefPage({
         <div className="criteria-sheet">
           {!current ? <p className="criteria-hint">Add the criteria from your description that you want to check against profiles.</p> : null}
           <TermEditor errors={fieldErrors.target_titles} field="target_titles" label="Target titles" placeholder="Add a role title" onChange={editTerms(setTitles)} values={titles} />
-          <KeyFilters skills={required} credentials={credentials} skillErrors={fieldErrors.required_skills} credentialErrors={fieldErrors.required_credentials} onSkillsChange={editTerms(setRequired)} onCredentialsChange={editTerms(setCredentials)} />
+          <KeyFilters skills={required} credentials={credentials} optionalSkills={optional} optionalSkillErrors={fieldErrors.optional_skills} onOptionalSkillsChange={editTerms(setOptional)} skillErrors={fieldErrors.required_skills} credentialErrors={fieldErrors.required_credentials} onSkillsChange={editTerms(setRequired)} onCredentialsChange={editTerms(setCredentials)} />
           <div data-field-prefix="required_experience_months">
             <span className="criteria-label" id="experience-label">Minimum experience</span>
             <div className="experience-stepper" role="group" aria-labelledby="experience-label">
@@ -204,7 +204,6 @@ export function BriefPage({
           <section className="criteria-optional" aria-labelledby="optional-title">
             <h2 id="optional-title">Optional preferences</h2>
             <div className="criteria-optional-fields">
-              <TermEditor errors={fieldErrors.optional_skills} field="optional_skills" label="Nice-to-have skills" placeholder="Add a skill" onChange={editTerms(setOptional)} values={optional} />
               <label className="field" data-field-prefix="positive_keywords"><span>Positive keywords</span><textarea value={positive} onChange={event => setPositive(event.target.value)} rows={2} placeholder="One per line, or separated by commas" />{fieldErrors.positive_keywords?.map(error => <span className="field-error" key={error} role="alert">{error}</span>)}</label>
               <label className="field" data-field-prefix="negative_keywords"><span>Exclusions / negative keywords</span><textarea value={negative} onChange={event => setNegative(event.target.value)} rows={2} placeholder="One per line, or separated by commas" />{fieldErrors.negative_keywords?.map(error => <span className="field-error" key={error} role="alert">{error}</span>)}</label>
               <SearchSettingsEditor sessionId={session.id} value={searchSettings} onChange={value => { setSearchSettings(value); markDirty() }} suggestedKeywords={defaultSearchKeywords({ target_titles: titles, required_skills: required, required_credentials: credentials, positive_keywords: parseKeywords(positive) })} retrievalReady={retrievalReady} queueRevision={queueRevision} />

@@ -91,12 +91,14 @@ test('create adds skills and credentials together and saves minimum experience i
   await user.click(screen.getByRole('button', { name: /Increase minimum experience/ }))
   assert.equal(screen.getByRole('status').textContent, '2+ years')
 
-  const filters = screen.getByRole('group', { name: 'Skills & key filters' })
+  const filters = screen.getByRole('group', { name: 'Skills & keywords' })
   await user.type(within(filters).getByLabelText('New key filter'), 'Go{Enter}')
   await user.type(within(filters).getByLabelText('New key filter'), 'AWS Architect')
   // Changing type must not prematurely add the pending credential as a skill.
   await user.selectOptions(within(filters).getByLabelText('Filter type'), 'credential')
   await user.click(within(filters).getByRole('button', { name: 'Add filter' }))
+  await user.selectOptions(within(filters).getByLabelText('Filter type'), 'optional')
+  await user.type(within(filters).getByLabelText('New key filter'), 'Terraform{Enter}')
   await user.type(screen.getByLabelText('Search keywords — optional'), '"Platform engineer" Go')
   await user.type(screen.getByLabelText('Company ID — optional'), '123')
   await user.click(screen.getByRole('checkbox', { name: '3rd-degree and beyond' }))
@@ -108,6 +110,7 @@ test('create adds skills and credentials together and saves minimum experience i
   assert.equal(request.body.required_experience_months, 24)
   assert.deepEqual(request.body.required_skills, [{ term: 'Go', aliases: [] }])
   assert.deepEqual(request.body.required_credentials, [{ term: 'AWS Architect', aliases: [] }])
+  assert.deepEqual(request.body.optional_skills, [{ term: 'Terraform', aliases: [] }])
 })
 
 test('loaded experience and credentials can be explicitly removed without affecting skills', async () => {
@@ -124,7 +127,7 @@ test('loaded experience and credentials can be explicitly removed without affect
   })))
 
   assert.equal(screen.getByRole('status').textContent, '2+ years')
-  const filters = screen.getByRole('group', { name: 'Skills & key filters' })
+  const filters = screen.getByRole('group', { name: 'Skills & keywords' })
   assert.equal(within(filters).getByLabelText('Credential filter 1').value, 'PMP')
   await user.click(screen.getByRole('button', { name: /Decrease minimum experience/ }))
   await user.click(screen.getByRole('button', { name: /Decrease minimum experience/ }))
