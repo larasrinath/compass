@@ -20,6 +20,8 @@ import {
   type EvidenceVerification,
 } from './scoreVerification'
 import { CandidateDrawer } from './components/CandidateDrawer'
+import { LauncherStatus } from './components/LauncherStatus'
+import { useLauncherStatus } from './hooks/useLauncherStatus'
 import { CompassIcon } from './components/CompassIcon'
 import './fonts.css'
 import './App.css'
@@ -54,6 +56,7 @@ function App() {
     scope: string
     values: Map<string, EvidenceVerification>
   }>(() => ({ scope: '', values: new Map() }))
+  const launcher = useLauncherStatus()
   const health = useQuery({ queryKey: ['health'], queryFn: getHealth })
   const mcp = useQuery({
     queryKey: ['mcp-status'],
@@ -69,7 +72,7 @@ function App() {
     enabled: Boolean(session.data?.id),
   })
   const queue = useJobEvents()
-  const retrievalReady = mcp.data?.reachable === true && queue.state !== 'paused' && queue.connected
+  const retrievalReady = mcp.data?.reachable === true && queue.state !== 'paused' && queue.connected && (!launcher.data?.managed || launcher.data.phase === 'ready')
   const view = route.view
   const candidateId = route.candidateId
   const rankingUnlocked = Boolean(session.data?.phase_gates?.A)
@@ -211,7 +214,8 @@ function App() {
       </nav>
 
       <main id="main-content">
-        {view !== 'learn' && !mcp.data?.reachable ? <div className="connection-strip" role="status">
+        {launcher.data?.managed ? <LauncherStatus phase={launcher.data.phase} /> : null}
+        {view !== 'learn' && !mcp.data?.reachable && !launcher.data?.managed ? <div className="connection-strip" role="status">
           <div>
             <strong>{mcp.isFetching ? 'Checking the LinkedIn connector…' : mcp.data?.reachable ? 'LinkedIn connector connected' : 'LinkedIn downloads are offline'}</strong>
             <span>{mcp.data?.reachable ? 'Search and download profiles on demand. Your work is saved locally.' : 'Saved candidates, evidence, and local scoring remain available. Start the LinkedIn connector, then check again.'}</span>
