@@ -136,9 +136,9 @@ export function BriefPage({
       <div className="page-intro">
         <div>
           <p className="eyebrow">Your search</p>
-          <h1 id="brief-title">Role brief</h1>
+          <h1 id="brief-title">Who are you looking for?</h1>
           <p>
-            Set the skills and experience that matter. Save your brief, then start a search.
+            Describe the role, then add the criteria you want to check. You’ll review everything before searching.
           </p>
         </div>
         <div className="version-card">

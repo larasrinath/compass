@@ -39,6 +39,8 @@ const { EvidencePanel } = await vite.ssrLoadModule('/src/components/EvidencePane
 const { missingReasonCopy } = await vite.ssrLoadModule('/src/components/scoringCopy.ts')
 const { WeightsEditor } = await vite.ssrLoadModule('/src/components/WeightsEditor.tsx')
 const { SearchPage } = await vite.ssrLoadModule('/src/pages/SearchPage.tsx')
+const { ComparisonBoard } = await vite.ssrLoadModule('/src/components/ComparisonBoard.tsx')
+const { SavedSearchesPage } = await vite.ssrLoadModule('/src/pages/SavedSearchesPage.tsx')
 await vite.close()
 
 test.after(async () => {
@@ -602,4 +604,41 @@ test('hostile unexpected weight key is a contract error and never reaches PUT', 
   assert.equal(alert.textContent.includes('unexpected weight keys S-7'), true)
   assert.equal(writes, 0)
   assert.equal(screen.queryByRole('button', { name: /Save from/ }), null)
+})
+
+
+test('comparison keeps missing evidence unknown and never displays masked source text', async () => {
+  let opened = null
+  let removed = null
+  const people = ['Ada', 'Grace', 'Lin'].map(name => ({ id: name.toLowerCase(), display_name: name, username: name.toLowerCase(), headline: 'Engineer' }))
+  globalThis.fetch = input => {
+    const id = String(input).split('/').at(-1)
+    return json({ signals: [{ signal_id: 'S-1', label: 'Required skills', claims: [{
+      claim_key: 'go', display_term: 'Go', verdict: id === 'grace' ? 'unknown' : 'matched',
+      evidence: id === 'grace' ? [] : [{ snippet: id === 'lin' ? 'PRIVATE MASKED TEXT' : 'Built Go services', availability: { state: id === 'lin' ? 'masked' : 'available' } }],
+    }] }] })
+  }
+  const user = userEvent.setup({ document: dom.window.document })
+  render(wrapper(React.createElement(ComparisonBoard, { candidates: people, onOpen: id => { opened = id }, onRemove: id => { removed = id } })))
+  await screen.findByText('Built Go services')
+  assert.ok(screen.getByText('Not checked'))
+  assert.equal(screen.queryByText('PRIVATE MASKED TEXT'), null)
+  assert.equal(screen.queryByText('Verified'), null)
+  await user.click(screen.getAllByRole('button', { name: 'Open profile →' })[0])
+  assert.equal(opened, 'ada')
+  await user.click(screen.getByRole('button', { name: 'Remove Grace from comparison' }))
+  assert.equal(removed, 'grace')
+})
+
+test('saved searches open the selected persisted run without starting a download', async () => {
+  let opened = null
+  globalThis.fetch = (input, init) => {
+    assert.equal(init?.method ?? 'GET', 'GET')
+    assert.ok(String(input).startsWith('/api/searches?'))
+    return json([{ id: 'run-2', keywords: 'Planning specialist', location: 'India', created_at: '2026-09-04T00:00:00Z', person_reference_count: 5, status: 'ok' }])
+  }
+  render(wrapper(React.createElement(SavedSearchesPage, { sessionId: 'session', onOpenRun: id => { opened = id }, onSearch() {} })))
+  const user = userEvent.setup({ document: dom.window.document })
+  await user.click(await screen.findByRole('button', { name: /Planning specialist/ }))
+  assert.equal(opened, 'run-2')
 })

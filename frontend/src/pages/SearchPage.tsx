@@ -66,6 +66,7 @@ export function SearchPage({
   queue,
   retrievalReady = true,
   onEditBrief,
+  initialRunId = null,
 }: {
   session: SessionRecord
   brief: BriefRecord | null | undefined
@@ -74,10 +75,12 @@ export function SearchPage({
   queue: ReturnTypeOfJobEvents
   retrievalReady?: boolean
   onEditBrief?: () => void
+  initialRunId?: string | null
 }) {
   const client = useQueryClient()
   const errorRef = useRef<HTMLDivElement>(null)
   const enrichmentErrorRef = useRef<HTMLDivElement>(null)
+  const [poolRun, setPoolRun] = useState<string | null>(initialRunId)
   const [nameFilter, setNameFilter] = useState('')
   const [keywords, setKeywords] = useState(() =>
     brief
@@ -94,7 +97,7 @@ export function SearchPage({
   const [companyId, setCompanyId] = useState('')
   const [companySlug, setCompanySlug] = useState('')
   const [lookupId, setLookupId] = useState<string | null>(null)
-  const [selectedRun, setSelectedRun] = useState<string | null>(null)
+  const [selectedRun, setSelectedRun] = useState<string | null>(initialRunId)
   const [gateNote, setGateNote] = useState('')
 
   const runs = useQuery({
@@ -166,7 +169,7 @@ export function SearchPage({
   const positiveSet = new Set((brief?.positive_keywords ?? []).map((term) => term.normalize('NFKC').toLowerCase()))
   const hasConflicts = (brief?.negative_keywords ?? []).some((term) => positiveSet.has(term.normalize('NFKC').toLowerCase()))
   const downloadsBlocked = !retrievalReady || hasConflicts
-  const filteredCandidates = (candidates.data ?? []).filter((candidate) => `${candidate.display_name} ${candidate.username}`.toLowerCase().includes(nameFilter.toLowerCase()))
+  const filteredCandidates = (candidates.data ?? []).filter((candidate) => (!poolRun || candidate.sources.some(source => source.search_run_id === poolRun)) && `${candidate.display_name} ${candidate.username}`.toLowerCase().includes(nameFilter.toLowerCase()))
 
   function queuePosition(jobId: string): string | null {
     const job = queue.jobs.find((item) => item.id === jobId)
@@ -352,6 +355,7 @@ export function SearchPage({
           </div>
           <div className="pool-heading-meta"><span>{filteredCandidates.length} shown · first-seen order</span>{gateAEligible && !session.phase_gates?.A ? <a href="#pool-review">Review list to compare →</a> : null}</div>
         </div>
+        <label className="field pool-filter"><span>Results from</span><select value={poolRun ?? ''} onChange={event => setPoolRun(event.target.value || null)}><option value="">All saved searches</option>{runs.data?.map(run => <option key={run.id} value={run.id}>{run.keywords} · {new Date(run.created_at).toLocaleDateString()}</option>)}</select></label>
         <label className="field pool-filter"><span>Find a saved candidate</span><input placeholder="Search by name" value={nameFilter} onChange={(event) => setNameFilter(event.target.value)} /></label>
         {candidates.isError ? <div className="form-error" role="alert">Saved candidates could not be loaded. <button className="quiet-action" onClick={() => void candidates.refetch()} type="button">Try again</button></div> : null}
         {enrich.isError ? (

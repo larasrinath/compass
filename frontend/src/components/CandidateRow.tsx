@@ -13,7 +13,7 @@ export function CandidateRow({
   return (
     <article className="ranked-candidate">
       <div className="ranked-position" aria-hidden="true">
-        {candidate.score === null ? '—' : candidate.score >= 80 ? 'A' : candidate.score >= 60 ? 'B' : 'C'}
+        {(candidate.display_name || candidate.username).split(/\s+/).slice(0, 2).map(part => part[0]).join('')}
       </div>
       <div className="ranked-identity">
         <div className="ranked-badges">
@@ -26,13 +26,13 @@ export function CandidateRow({
         <p className="candidate-headline">
           {candidate.headline || 'Headline not found in the retrieved data'}
         </p>
-        <p>
+        <details className="candidate-calculation"><summary>Scoring details</summary><p>
           {candidate.calculation_status === 'scored' ? 'Scored' : 'Not calculated'} · config{' '}
           {candidate.weights_version} · {candidate.active_signal_count} active signals
           {candidate.previous_score === null
             ? ' · no prior score'
             : ` · previous ${candidate.previous_score.toFixed(1)} · change ${delta !== null && delta >= 0 ? '+' : ''}${delta?.toFixed(1) ?? '—'}`}
-        </p>
+        </p></details>
         {candidate.top_signals.length ? (
           <ul className="top-signals" aria-label="Top scoring signals">
             {candidate.top_signals.slice(0, 3).map((signal) => (
@@ -45,13 +45,13 @@ export function CandidateRow({
           <p className="no-signals">No top signals</p>
         )}
         {candidate.non_scoring_hints.length ? (
-          <div className="non-scoring-hints" aria-label="Non-scoring context">
+          <details className="non-scoring-hints"><summary>Search context</summary>
             {candidate.non_scoring_hints.map((hint, index) => (
               <span key={`${hint.kind}-${index}`}>
                 {hint.label}: {hint.value} · non-scoring
               </span>
             ))}
-          </div>
+          </details>
         ) : null}
       </div>
       <ScoreBadge candidate={candidate} />

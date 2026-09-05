@@ -5,6 +5,7 @@ import {
   listCandidates,
   type SessionRecord,
 } from '../api/client'
+import { ComparisonBoard } from '../components/ComparisonBoard'
 import { CandidateRow } from '../components/CandidateRow'
 import { WeightsEditor } from '../components/WeightsEditor'
 import {
@@ -19,14 +20,25 @@ export function CandidatesPage({
   verifiedEvidence,
   onEvidenceReconciled,
   onScoresChanged,
+  selectedForComparison,
+  onComparisonChange,
 }: {
   session: SessionRecord
   onCandidateOpen: (candidateId: string) => void
   verifiedEvidence: ReadonlyMap<string, EvidenceVerification>
   onEvidenceReconciled: (values: Map<string, EvidenceVerification>) => void
   onScoresChanged: () => void
+  selectedForComparison?: string[]
+  onComparisonChange?: (ids: string[]) => void
 }) {
   const client = useQueryClient()
+  const [localComparisonIds, setLocalComparisonIds] = useState<string[]>([])
+  const comparisonIds = selectedForComparison ?? localComparisonIds
+  const setComparisonIds = (update: string[] | ((ids: string[]) => string[])) => {
+    const next = typeof update === 'function' ? update(comparisonIds) : update
+    if (onComparisonChange) onComparisonChange(next)
+    else setLocalComparisonIds(next)
+  }
   const [stage, setStage] = useState('')
   const [confidence, setConfidence] = useState('')
   const [minimum, setMinimum] = useState('')
@@ -115,13 +127,19 @@ export function CandidatesPage({
         </div>
       </div>
 
+      <div className="comparison-instructions"><strong>Choose up to 3 people to compare</strong><span>Select candidates below to see their evidence side by side.</span>{comparisonIds.length ? <a href="#comparison-board">View comparison ({comparisonIds.length}/3) ↓</a> : null}</div>
+      {comparisonIds.length ? <ComparisonBoard
+        candidates={orderedCandidates.filter(candidate => comparisonIds.includes(candidate.id))}
+        onRemove={id => setComparisonIds(ids => ids.filter(value => value !== id))}
+        onOpen={onCandidateOpen}
+      /> : null}
       <WeightsEditor onScoresChanged={onScoresChanged} />
 
       <form className="ranking-filters panel" onSubmit={(event) => event.preventDefault()}>
         <p className="eyebrow">Filter and sort</p>
         <label className="field">
           <span>Retrieval stage</span>
-          <select onChange={(event) => setStage(event.target.value)} value={stage}>
+          <select onChange={(event) => { setStage(event.target.value); setComparisonIds([]) }} value={stage}>
             <option value="">All stages</option>
             <option value="provisional">Provisional</option>
             <option value="enriched">Enriched</option>
@@ -129,7 +147,7 @@ export function CandidatesPage({
         </label>
         <label className="field">
           <span>Confidence</span>
-          <select onChange={(event) => setConfidence(event.target.value)} value={confidence}>
+          <select onChange={(event) => { setConfidence(event.target.value); setComparisonIds([]) }} value={confidence}>
             <option value="">All confidence</option>
             <option value="high">High</option>
             <option value="medium">Medium</option>
@@ -142,7 +160,7 @@ export function CandidatesPage({
             inputMode="decimal"
             max="100"
             min="0"
-            onChange={(event) => setMinimum(event.target.value)}
+            onChange={(event) => { setMinimum(event.target.value); setComparisonIds([]) }}
             placeholder="Any"
             type="number"
             value={minimum}
@@ -167,7 +185,10 @@ export function CandidatesPage({
       ) : orderedCandidates.length ? (
         <div className="ranked-list" aria-label="Ranked candidates">
           {orderedCandidates.map((candidate) => (
-            <CandidateRow candidate={candidate} key={candidate.id} onOpen={onCandidateOpen} />
+            <div className="comparison-candidate" key={candidate.id}>
+              <label className="comparison-pick"><input type="checkbox" checked={comparisonIds.includes(candidate.id)} disabled={!comparisonIds.includes(candidate.id) && comparisonIds.length >= 3} onChange={event => setComparisonIds(ids => event.target.checked ? [...ids, candidate.id] : ids.filter(id => id !== candidate.id))} />Compare {candidate.display_name || candidate.username}</label>
+              <CandidateRow candidate={candidate} onOpen={onCandidateOpen} />
+            </div>
           ))}
         </div>
       ) : (

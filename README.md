@@ -6,6 +6,26 @@ over loopback streamable HTTP. The MCP server remains an unchanged sibling
 service; this project never imports it, reads its browser profile, or manages
 its process.
 
+## Compass design base
+
+The live dashboard now adopts the supplied Compass prototype's warm palette,
+light sidebar and rounded controls. It uses the existing local API and saved
+profiles; no demo candidate data or simulated searches are included.
+
+- **Saved searches** opens a persisted run and filters the candidate pool by its
+  source links. The Results from selector can switch back to all saved searches.
+- **Compare matches** lets you select up to three candidates for a side-by-side
+  criteria table. Opening a profile and returning preserves the selection during
+  the current page session. Reloading the browser clears that temporary selection.
+- Comparison cells show the existing exact-text/alias matcher results, original
+  snippets when available, and explicit unknown states. They do not establish
+  credential validity, expiry or independent verification.
+
+The original prototype remains a separate demo preview on port 5177. The connected
+application remains on port 5173. Frontend verification: 55 tests, lint and build
+passed; saved-run filtering, the three-profile limit, profile-return navigation,
+and narrow-screen overflow were checked in the browser.
+
 ## Daily use
 
 Open **http://127.0.0.1:5173/search** while the local services are running.

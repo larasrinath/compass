@@ -11,7 +11,7 @@ const terms = readFileSync(`${root}/src/components/TermEditor.tsx`, 'utf8')
 const css = readFileSync(`${root}/src/App.css`, 'utf8')
 
 test('brief and search are separate explicit actions', () => {
-  assert.match(brief, /Save your brief, then start a search/)
+  assert.match(brief, /You’ll review everything before searching/)
   assert.match(brief, /Save brief/)
   assert.doesNotMatch(brief, /runSearch|\/api\/searches/)
   assert.match(app, /disabled=\{!brief\.data\}/)

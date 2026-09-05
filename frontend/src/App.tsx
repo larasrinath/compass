@@ -11,6 +11,7 @@ import { useJobEvents } from './hooks/useJobEvents'
 import { BriefPage } from './pages/BriefPage'
 import { CandidateDetailPage } from './pages/CandidateDetailPage'
 import { CandidatesPage } from './pages/CandidatesPage'
+import { SavedSearchesPage } from './pages/SavedSearchesPage'
 import { SearchPage } from './pages/SearchPage'
 import { parseAppRoute, pathForRoute, type AppRoute } from './routing'
 import {
@@ -18,6 +19,7 @@ import {
   type EvidenceVerification,
 } from './scoreVerification'
 import './App.css'
+import './compass.css'
 
 function StatusDot({ healthy }: { healthy: boolean }) {
   return (
@@ -33,6 +35,8 @@ function App() {
   const [route, setRoute] = useState<AppRoute>(() =>
     parseAppRoute(window.location.pathname),
   )
+  const [comparisonIds, setComparisonIds] = useState<string[]>([])
+  const [sourceRun, setSourceRun] = useState<string | null>(null)
   const [sessionLabel, setSessionLabel] = useState('Focused candidate search')
   const [verificationState, setVerificationState] = useState<{
     scope: string
@@ -79,7 +83,10 @@ function App() {
     setRoute(next)
   }, [])
   useEffect(() => {
-    if (queue.revision > 0) void queryClient.invalidateQueries({ queryKey: ['session'] })
+    if (queue.revision > 0) {
+      void queryClient.invalidateQueries({ queryKey: ['session'] })
+      void queryClient.invalidateQueries({ queryKey: ['ranked-candidates'] })
+    }
   }, [queryClient, queue.revision])
 
   useEffect(() => {
@@ -105,12 +112,12 @@ function App() {
   useEffect(() => {
     document.title =
       view === 'brief'
-        ? 'Role brief · LinkedIn Dashboard'
+        ? 'Role brief · Compass'
         : view === 'candidate'
-          ? 'Candidate detail · LinkedIn Dashboard'
+          ? 'Candidate detail · Compass'
           : view === 'ranked'
-            ? 'Ranked evidence · LinkedIn Dashboard'
-            : 'Find candidates · LinkedIn Dashboard'
+            ? 'Ranked evidence · Compass'
+            : view === 'saved' ? 'Saved searches · Compass' : 'Find candidates · Compass'
   }, [view])
 
   return (
@@ -120,11 +127,11 @@ function App() {
       </a>
       <header className="topbar">
         <div aria-hidden="true" className="brand-mark">
-          in
+          ◈
         </div>
         <div>
-          <p className="eyebrow">My recruiting workspace</p>
-          <strong className="brand-title">LinkedIn Dashboard</strong>
+          <p className="eyebrow">Personal recruiting</p>
+          <strong className="brand-title">Compass</strong>
         </div>
         <div className="topbar-status">
           <span className="local-badge">Local only</span>
@@ -152,16 +159,17 @@ function App() {
           onClick={() => navigate({ view: 'brief', candidateId: null })}
           type="button"
         >
-          <span>01</span> Role brief
+          <span aria-hidden="true">⊕</span> Role brief
         </button>
         <button
           aria-current={view === 'search' || (view === 'candidate' && !rankingUnlocked) ? 'page' : undefined}
           disabled={!brief.data}
-          onClick={() => navigate({ view: 'search', candidateId: null })}
+          onClick={() => { setSourceRun(null); navigate({ view: 'search', candidateId: null }) }}
           type="button"
         >
-          <span>02</span> Find candidates
+          <span aria-hidden="true">⌕</span> Find candidates
         </button>
+        <button aria-current={view === 'saved' ? 'page' : undefined} disabled={!session.data} onClick={() => navigate({ view: 'saved', candidateId: null })} type="button"><span aria-hidden="true">▱</span> Saved searches</button>
         <button
           aria-current={view === 'ranked' || (view === 'candidate' && rankingUnlocked) ? 'page' : undefined}
           disabled={!rankingUnlocked}
@@ -169,7 +177,7 @@ function App() {
           onClick={() => navigate({ view: 'ranked', candidateId: null })}
           type="button"
         >
-          <span>03</span> Compare matches
+          <span aria-hidden="true">▥</span> Compare matches
         </button>
       </nav>
 
@@ -263,8 +271,12 @@ function App() {
               sessionId={session.data.id}
               verifiedEvidence={verifiedEvidence}
             />
+          ) : view === 'saved' ? (
+            <SavedSearchesPage sessionId={session.data.id} onSearch={() => { setSourceRun(null); navigate({ view: 'search', candidateId: null }) }} onOpenRun={id => { setSourceRun(id); navigate({ view: 'search', candidateId: null }) }} />
           ) : view === 'ranked' ? (
             <CandidatesPage
+              selectedForComparison={comparisonIds}
+              onComparisonChange={setComparisonIds}
               onEvidenceReconciled={reconcileEvidenceVerifications}
               onCandidateOpen={(id) => {
                 navigate({ view: 'candidate', candidateId: id })
@@ -275,7 +287,8 @@ function App() {
             />
           ) : (
             <SearchPage
-              key={brief.data?.id ?? 'loading'}
+              key={`${brief.data?.id ?? 'loading'}:${sourceRun ?? 'all'}`}
+              initialRunId={sourceRun}
               retrievalReady={retrievalReady}
               onEditBrief={() => navigate({ view: 'brief', candidateId: null })}
               brief={brief.data}
