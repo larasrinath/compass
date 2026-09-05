@@ -356,6 +356,7 @@ test('candidate pool renders queued, failed, and focused enqueue errors', { time
 
 test('offline discovery keeps saved profiles browseable and filters names locally', async () => {
   let opened = null
+  let compared = false
   let writes = 0
   const pool = ['Ada', 'Grace'].map((name, index) => ({
     id: name, username: name.toLowerCase(), display_name: name,
@@ -372,11 +373,19 @@ test('offline discovery keeps saved profiles browseable and filters names locall
   }
   const user = userEvent.setup({ document: dom.window.document })
   render(wrapper(React.createElement(SearchPage, {
-    session: { id: 'session' },
+    session: { id: 'session', phase_gates: { A: true } },
     brief: { id: 'brief', version: 1, target_titles: [], positive_keywords: ['platform'], negative_keywords: [], location: '' },
     queue, retrievalReady: false, onCandidateOpen(id) { opened = id },
+    onGateAChanged() { compared = true },
   })))
   await screen.findByRole('heading', { name: 'Ada' })
+  assert.equal(document.querySelector('#pool-review'), null)
+  assert.ok(screen.getByText('List reviewed'))
+  const history = document.querySelector('.search-history')
+  const cards = document.querySelector('.candidate-grid')
+  assert.ok(history.compareDocumentPosition(cards) & 4)
+  await user.click(screen.getByRole('button', { name: 'Compare candidates' }))
+  assert.equal(compared, true)
   assert.equal(screen.getByRole('button', { name: 'Run search' }).disabled, true)
   assert.equal(screen.getByRole('button', { name: 'Download profile & experience' }).disabled, true)
   await user.click(screen.getByRole('button', { name: 'Review', exact: true }))

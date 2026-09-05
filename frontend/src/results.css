@@ -89,3 +89,18 @@
 .search-launch > p { margin: 0; color: var(--ink-faint); font: 400 14px/1.6 var(--font-body); }
 .search-launch > .primary-action { display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; }
 @media (max-width: 600px) { .search-launch { flex-wrap: wrap; } }
+
+.pool-heading-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 12px; }
+.pool-heading-actions .quiet-action { display: inline-flex; align-items: center; gap: 8px; width: auto; padding: 7px 12px; min-height: 36px; font-size: 12px; font-weight: 500; color: var(--accent); }
+.pool-review-status { color: var(--ink-faint); font-size: 12px; font-weight: 400; }
+.candidate-pool > .pool-review { display: block; background: var(--surface); padding: 16px 20px; border: 1px solid var(--line); }
+.candidate-pool > .pool-review h3 { margin: 16px 0 8px; font: 600 16px/1.5 var(--font-body); }
+.candidate-pool > .pool-review p { color: var(--ink-soft); font-size: 14px; line-height: 1.6; }
+.candidate-pool > .search-history { margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; }
+.candidate-pool > .search-history .run-detail { margin-top: 20px; }
+.candidate-pool > .search-history > .section-heading h2 { font-size: 16px; }
+@media(max-width: 600px) {
+  .candidate-pool > .section-heading { flex-wrap: wrap; gap: 12px; }
+  .pool-heading-meta { text-align: left; }
+  .pool-heading-actions { justify-content: flex-start; }
+}

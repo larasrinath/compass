@@ -176,10 +176,160 @@ export function SearchPage({
             <p className="eyebrow">Saved candidates</p>
             <h2 id="pool-title">Candidate pool</h2>
           </div>
-          <div className="pool-heading-meta"><span>{filteredCandidates.length} shown · first-seen order</span>{gateAEligible && !session.phase_gates?.A ? <a href="#pool-review">Review list to compare →</a> : null}</div>
+          <div className="pool-heading-meta"><span>{filteredCandidates.length} shown · first-seen order</span><div className="pool-heading-actions">{session.phase_gates?.A ? <><span className="pool-review-status">List reviewed</span>{onGateAChanged ? <button className="quiet-action" type="button" onClick={onGateAChanged}>Compare candidates <CompassIcon name="compare" size={16} /></button> : null}</> : gateAEligible ? <a href="#pool-review">Review list to compare →</a> : null}</div></div>
         </div>
-        <div className="pool-filter-row"><label className="field pool-filter"><span>Results from</span><select value={poolRun ?? ''} onChange={event => setPoolRun(event.target.value || null)}><option value="">All saved searches</option>{runs.data?.map(run => <option key={run.id} value={run.id}>{run.keywords} · {new Date(run.created_at).toLocaleDateString()}</option>)}</select></label>
+        <div className="pool-filter-row"><label className="field pool-filter"><span>Results from</span><select value={poolRun ?? ''} onChange={event => { setPoolRun(event.target.value || null); setSelectedRun(event.target.value || null) }}><option value="">All saved searches</option>{runs.data?.map(run => <option key={run.id} value={run.id}>{run.keywords} · {new Date(run.created_at).toLocaleDateString()}</option>)}</select></label>
         <label className="field pool-filter"><span>Find a saved candidate</span><input placeholder="Search by name" value={nameFilter} onChange={(event) => setNameFilter(event.target.value)} /></label></div>
+        {!session.phase_gates?.A ? (
+        <details id="pool-review" className="pool-review phase-gate-card panel" open={gateAEligible && !session.phase_gates?.A}>
+          <summary>Review candidate list & unlock comparison</summary>
+          <div>
+          <div>
+            <p className="eyebrow">Candidate review</p>
+            <h3>Check names and duplicates</h3>
+            <p>
+              Review names and source searches for duplicates, then confirm to compare candidates.
+            </p>
+          </div>
+            <form
+              onSubmit={(event) => {
+                event.preventDefault()
+                gateA.mutate()
+              }}
+            >
+              <label className="field">
+                <span>Inspection note</span>
+                <textarea
+                  onChange={(event) => setGateNote(event.target.value)}
+                  required
+                  rows={2}
+                  value={gateNote}
+                />
+              </label>
+              <button
+                aria-describedby="gate-a-eligibility"
+                className="primary-action"
+                disabled={gateA.isPending || !gateAEligible}
+                type="submit"
+              >
+                {gateA.isPending ? 'Recording…' : 'Confirm review & compare'}
+              </button>
+              <p id="gate-a-eligibility" role="status">
+                {gateAEligibility}
+              </p>
+              {gateA.isError ? (
+                <p className="field-error" role="alert">
+                  {gateA.error.message}
+                </p>
+              ) : null}
+            </form>
+        </div>
+        </details>
+        ) : null}
+      <details className="discovery-section search-history simple-options">
+        <summary>Search history</summary>
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Provenance</p>
+            <h2 id="runs-title">Search run history</h2>
+          </div>
+          <span>{runs.data?.length ?? 0} total runs</span>
+        </div>
+        {runs.isError ? <p className="form-error" role="alert">Search history could not be loaded.</p> : runs.data?.length ? (
+          <div className="run-grid">
+            {runs.data.map((run) => (
+              <button
+                className={selectedRun === run.id ? 'run-card selected' : 'run-card'}
+                key={run.id}
+                onClick={() => { setSelectedRun(run.id); setPoolRun(run.id) }}
+                type="button"
+              >
+                <span className={`status-label ${run.status}`}>{run.status}</span>
+                <strong>{run.keywords}</strong>
+                <span>
+                  {run.person_reference_count} of {run.reference_count} references were
+                  people
+                </span>
+                <small>
+                  {run.new_candidate_count} new · {run.existing_candidate_count} already
+                  in pool
+                </small>
+                <small>
+                  {run.location || 'Any location'} ·{' '}
+                  {run.network.length ? run.network.join('/') : 'Any network'} ·{' '}
+                  {run.current_company ? `Company ${run.current_company}` : 'Any company'}
+                </small>
+                <small>
+                  {queuePosition(run.job_id) ??
+                    new Date(run.created_at).toLocaleString()}
+                </small>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="empty-card">
+            <h3>No searches run</h3>
+            <p>Your first narrow search will appear here without replacing later runs.</p>
+          </div>
+        )}
+            {detail.data ? (
+        <section aria-labelledby="run-detail-title" className="run-detail panel">
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">Stored run</p>
+              <h2 id="run-detail-title">{detail.data.keywords}</h2>
+            </div>
+            <strong>
+              {detail.data.person_reference_count} of {detail.data.reference_count}{' '}
+              references were people
+            </strong>
+          </div>
+          <dl className="run-parameters">
+            <div><dt>Location</dt><dd>{detail.data.location || 'Any location'}</dd></div>
+            <div><dt>Network evidence</dt><dd>{detail.data.network.length ? detail.data.network.join(', ') : 'Any network'}</dd></div>
+            <div><dt>Current company</dt><dd>{detail.data.current_company || 'Any company'}</dd></div>
+            <div><dt>Created</dt><dd>{new Date(detail.data.created_at).toLocaleString()}</dd></div>
+          </dl>
+          {detail.data.reference_count === 15 ? (
+            <p className="cap-notice">
+              LinkedIn returned the shared 15-reference cap. Non-person references can
+              use part of that limit; run another narrower search instead of assuming
+              more pages exist.
+            </p>
+          ) : null}
+          {detail.data.errors.map((error, index) => (
+            <div className="inline-error" key={`${error.error_type}-${index}`} role="alert">
+              <strong>{error.error_type.replaceAll('_', ' ')}</strong>
+              <span>{error.error_message}</span>
+            </div>
+          ))}
+          <div className="reference-breakdown">
+            {Object.entries(detail.data.reference_kind_counts).map(([kind, count]) => (
+              <span key={kind}>
+                {kind}: {count}
+              </span>
+            ))}
+          </div>
+          <details>
+            <summary>View raw search text</summary>
+            <pre aria-label="Raw LinkedIn search results">
+              {detail.data.raw_text || 'No raw search text returned.'}
+            </pre>
+          </details>
+          <details>
+            <summary>View ordered references</summary>
+            <ol className="reference-list">
+              {detail.data.references.map((reference) => (
+                <li key={`${reference.position}-${reference.kind}`}>
+                  <strong>{reference.kind}</strong>
+                  <span>{reference.text ?? reference.url ?? reference.value ?? 'No label'}</span>
+                </li>
+              ))}
+            </ol>
+          </details>
+        </section>
+      ) : null}
+      </details>
         {candidates.isError ? <div className="form-error" role="alert">Saved candidates could not be loaded. <button className="quiet-action" onClick={() => void candidates.refetch()} type="button">Try again</button></div> : null}
         {enrich.isError ? (
           <div
@@ -285,164 +435,10 @@ export function SearchPage({
             <p>{nameFilter ? 'Try a different name or clear the filter.' : 'Run a focused LinkedIn search. Candidates are saved here with their source, ready to review and compare.'}</p>
           </div>
         )}
-        <details id="pool-review" className="pool-review phase-gate-card panel" open={gateAEligible && !session.phase_gates?.A}>
-          <summary>Review candidate list & unlock comparison</summary>
-          <div>
-          <div>
-            <p className="eyebrow">Candidate review</p>
-            <h3>Check names and duplicates</h3>
-            <p>
-              Inspect names, source searches, and repeated profiles above. Ranking stays
-              unavailable until you explicitly accept this pool.
-            </p>
-          </div>
-          {session.phase_gates?.A ? (
-            <p className="gate-accepted" role="status">
-              ✓ Candidate list reviewed · comparison unlocked
-            </p>
-          ) : (
-            <form
-              onSubmit={(event) => {
-                event.preventDefault()
-                gateA.mutate()
-              }}
-            >
-              <label className="field">
-                <span>Inspection note</span>
-                <textarea
-                  onChange={(event) => setGateNote(event.target.value)}
-                  required
-                  rows={2}
-                  value={gateNote}
-                />
-              </label>
-              <button
-                aria-describedby="gate-a-eligibility"
-                className="primary-action"
-                disabled={gateA.isPending || !gateAEligible}
-                type="submit"
-              >
-                {gateA.isPending ? 'Recording…' : 'Confirm review & compare'}
-              </button>
-              <p id="gate-a-eligibility" role="status">
-                {gateAEligibility}
-              </p>
-              {gateA.isError ? (
-                <p className="field-error" role="alert">
-                  {gateA.error.message}
-                </p>
-              ) : null}
-            </form>
-          )}
-        </div>
-        </details>
+
       </section>
 
-      <details className="discovery-section search-history simple-options">
-        <summary>Search history</summary>
-        <div className="section-heading">
-          <div>
-            <p className="eyebrow">Provenance</p>
-            <h2 id="runs-title">Search run history</h2>
-          </div>
-          <span>{runs.data?.length ?? 0} total runs</span>
-        </div>
-        {runs.isError ? <p className="form-error" role="alert">Search history could not be loaded.</p> : runs.data?.length ? (
-          <div className="run-grid">
-            {runs.data.map((run) => (
-              <button
-                className={selectedRun === run.id ? 'run-card selected' : 'run-card'}
-                key={run.id}
-                onClick={() => setSelectedRun(run.id)}
-                type="button"
-              >
-                <span className={`status-label ${run.status}`}>{run.status}</span>
-                <strong>{run.keywords}</strong>
-                <span>
-                  {run.person_reference_count} of {run.reference_count} references were
-                  people
-                </span>
-                <small>
-                  {run.new_candidate_count} new · {run.existing_candidate_count} already
-                  in pool
-                </small>
-                <small>
-                  {run.location || 'Any location'} ·{' '}
-                  {run.network.length ? run.network.join('/') : 'Any network'} ·{' '}
-                  {run.current_company ? `Company ${run.current_company}` : 'Any company'}
-                </small>
-                <small>
-                  {queuePosition(run.job_id) ??
-                    new Date(run.created_at).toLocaleString()}
-                </small>
-              </button>
-            ))}
-          </div>
-        ) : (
-          <div className="empty-card">
-            <h3>No searches run</h3>
-            <p>Your first narrow search will appear here without replacing later runs.</p>
-          </div>
-        )}
-      </details>
 
-      {detail.data ? (
-        <section aria-labelledby="run-detail-title" className="run-detail panel">
-          <div className="section-heading">
-            <div>
-              <p className="eyebrow">Stored run</p>
-              <h2 id="run-detail-title">{detail.data.keywords}</h2>
-            </div>
-            <strong>
-              {detail.data.person_reference_count} of {detail.data.reference_count}{' '}
-              references were people
-            </strong>
-          </div>
-          <dl className="run-parameters">
-            <div><dt>Location</dt><dd>{detail.data.location || 'Any location'}</dd></div>
-            <div><dt>Network evidence</dt><dd>{detail.data.network.length ? detail.data.network.join(', ') : 'Any network'}</dd></div>
-            <div><dt>Current company</dt><dd>{detail.data.current_company || 'Any company'}</dd></div>
-            <div><dt>Created</dt><dd>{new Date(detail.data.created_at).toLocaleString()}</dd></div>
-          </dl>
-          {detail.data.reference_count === 15 ? (
-            <p className="cap-notice">
-              LinkedIn returned the shared 15-reference cap. Non-person references can
-              use part of that limit; run another narrower search instead of assuming
-              more pages exist.
-            </p>
-          ) : null}
-          {detail.data.errors.map((error, index) => (
-            <div className="inline-error" key={`${error.error_type}-${index}`} role="alert">
-              <strong>{error.error_type.replaceAll('_', ' ')}</strong>
-              <span>{error.error_message}</span>
-            </div>
-          ))}
-          <div className="reference-breakdown">
-            {Object.entries(detail.data.reference_kind_counts).map(([kind, count]) => (
-              <span key={kind}>
-                {kind}: {count}
-              </span>
-            ))}
-          </div>
-          <details>
-            <summary>View raw search text</summary>
-            <pre aria-label="Raw LinkedIn search results">
-              {detail.data.raw_text || 'No raw search text returned.'}
-            </pre>
-          </details>
-          <details>
-            <summary>View ordered references</summary>
-            <ol className="reference-list">
-              {detail.data.references.map((reference) => (
-                <li key={`${reference.position}-${reference.kind}`}>
-                  <strong>{reference.kind}</strong>
-                  <span>{reference.text ?? reference.url ?? reference.value ?? 'No label'}</span>
-                </li>
-              ))}
-            </ol>
-          </details>
-        </section>
-      ) : null}
 
 
     </section>
