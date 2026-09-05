@@ -3,11 +3,10 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import { getCompanyLookup, startCompanyLookup } from '../api/client'
 import { NETWORKS, type SearchSettings } from '../searchSettings'
 
-export function SearchSettingsEditor({ sessionId, value, onChange, suggestedKeywords, retrievalReady, queueRevision }: {
+export function SearchSettingsEditor({ sessionId, value, onChange, retrievalReady, queueRevision }: {
   sessionId: string
   value: SearchSettings
   onChange: (value: SearchSettings) => void
-  suggestedKeywords: string
   retrievalReady: boolean
   queueRevision: number
 }) {
@@ -21,10 +20,6 @@ export function SearchSettingsEditor({ sessionId, value, onChange, suggestedKeyw
   }, [queueRevision, lookupId])
   const company = useMutation({ mutationFn: () => startCompanyLookup(sessionId, companySlug.trim()), onSuccess: result => setLookupId(result.lookup_id) })
   return <div className="brief-search-settings">
-    <label className="field"><span>Search keywords — optional</span>
-      <input aria-label="Search keywords — optional" aria-describedby="search-keywords-help" value={value.keywords} placeholder={suggestedKeywords || 'e.g. Backend engineer Go'} onChange={event => onChange({ ...value, keywords: event.target.value })} />
-      <small id="search-keywords-help" className="criteria-hint">Leave blank to use your role titles, key filters, and positive keywords. Search uses the location above.</small>
-    </label>
     <fieldset className="network-fieldset">
       <legend>Network distance</legend>
       {NETWORKS.map(option => <label key={option.value}>

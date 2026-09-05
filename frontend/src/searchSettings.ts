@@ -1,7 +1,6 @@
 import type { BriefInput } from './api/client'
 
 export interface SearchSettings {
-  keywords: string
   network: string[]
   companyId: string
 }
@@ -16,18 +15,18 @@ export function defaultSearchKeywords(brief: Partial<BriefInput> | null | undefi
   if (!brief) return ''
   const titles = brief.target_titles?.map(item => item.term) ?? []
   const filters = [...(brief.required_credentials ?? []), ...(brief.required_skills ?? [])].map(item => item.term)
-  return [...new Set([...(titles.length ? titles : filters), ...(brief.positive_keywords ?? [])].map(term => term.trim()).filter(Boolean))].slice(0, 4).join(' ')
+  return [...new Set([...titles, ...filters, ...(brief.positive_keywords ?? [])].map(term => term.trim()).filter(Boolean))].slice(0, 4).join(' ')
 }
 
 const key = (briefId: string) => `compass:search-settings:${briefId}`
 export function readSearchSettings(briefId?: string): SearchSettings {
-  const fallback = { keywords: '', network: ['F', 'S'], companyId: '' }
+  const fallback = { network: ['F', 'S'], companyId: '' }
   if (!briefId) return fallback
   try {
     const saved = JSON.parse(window.localStorage.getItem(key(briefId)) ?? 'null')
-    if (!saved || typeof saved.keywords !== 'string' || typeof saved.companyId !== 'string' ||
+    if (!saved || typeof saved.companyId !== 'string' ||
       !Array.isArray(saved.network) || !saved.network.every((value: unknown) => NETWORKS.some(option => option.value === value))) return fallback
-    return saved
+    return { network: saved.network, companyId: saved.companyId }
   } catch { return fallback }
 }
 

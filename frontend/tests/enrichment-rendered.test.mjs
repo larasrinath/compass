@@ -505,7 +505,7 @@ test('drawer closes on cancel, locks page scrolling, and restores focus', async 
 })
 
 
-test('Find candidates launches the saved setup without repeating its form', async () => {
+test('Find candidates derives keywords from the brief and ignores legacy overrides', async () => {
   let submitted = null
   window.localStorage.setItem('compass:search-settings:launch-brief', JSON.stringify({ keywords: '"Platform engineer" Go', network: ['O'], companyId: '123' }))
   globalThis.fetch = (input, init) => {
@@ -522,7 +522,7 @@ test('Find candidates launches the saved setup without repeating its form', asyn
   const user = userEvent.setup({ document: dom.window.document })
   try {
     render(wrapper(React.createElement(SearchPage, {
-      session: { id: 'session', phase_gates: {} }, brief: { id: 'launch-brief', location: 'Berlin', target_titles: [{ term: 'Engineer' }], required_skills: [], required_credentials: [], positive_keywords: [], negative_keywords: [] },
+      session: { id: 'session', phase_gates: {} }, brief: { id: 'launch-brief', location: 'Berlin', target_titles: [{ term: 'Engineer' }], required_skills: [{ term: 'Go' }], required_credentials: [], positive_keywords: ['payments'], negative_keywords: [] },
       queue, onCandidateOpen() {}, onEditBrief() { edited = true },
     })))
     assert.equal(screen.queryByLabelText('Keywords'), null)
@@ -531,7 +531,7 @@ test('Find candidates launches the saved setup without repeating its form', asyn
     assert.equal(submitted, null, 'opening results must not start a search')
     await user.click(screen.getByRole('button', { name: 'Run search' }))
     await waitFor(() => assert.notEqual(submitted, null))
-    assert.deepEqual(submitted, { session_id: 'session', brief_id: 'launch-brief', keywords: '"Platform engineer" Go', location: 'Berlin', network: ['O'], current_company: '123' })
+    assert.deepEqual(submitted, { session_id: 'session', brief_id: 'launch-brief', keywords: 'Engineer Go payments', location: 'Berlin', network: ['O'], current_company: '123' })
     await user.click(screen.getByRole('button', { name: 'Adjust criteria' }))
     assert.equal(edited, true)
   } finally { window.localStorage.removeItem('compass:search-settings:launch-brief') }

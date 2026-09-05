@@ -78,7 +78,7 @@ export function SearchPage({
   const [poolRun, setPoolRun] = useState<string | null>(initialRunId)
   const [nameFilter, setNameFilter] = useState('')
   const settings = readSearchSettings(brief?.id)
-  const keywords = settings.keywords.trim() || defaultSearchKeywords(brief)
+  const keywords = defaultSearchKeywords(brief)
   const [selectedRun, setSelectedRun] = useState<string | null>(initialRunId)
   const [gateNote, setGateNote] = useState('')
 
