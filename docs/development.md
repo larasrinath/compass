@@ -73,3 +73,49 @@ conflicts, and SPA fallback. The documentation screenshot tool intercepts APIs.
 
 Official installer references: [uv installer options](https://docs.astral.sh/uv/reference/installer/)
 and [Node release checksums](https://nodejs.org/dist/v22.22.0/SHASUMS256.txt).
+
+## Development checks
+
+From the repository root:
+
+```bash
+uv run ruff check .
+uv run ruff format --check .
+uv run ty check
+uv run pytest
+```
+
+From `frontend/`:
+
+```bash
+npm test
+npm run lint
+npm run build
+npm run test:e2e
+```
+
+Browser tests run on isolated port **5194** with mocked APIs. Frontend tests also
+bind temporary loopback listeners, so a restrictive sandbox may need to permit
+those local test processes.
+
+The [4 September review](reviews/2026-09-04-project-review.md) recorded
+**1,403 backend tests passed, 3 skipped; 85 frontend tests passed; 15 browser tests
+passed**, plus build, lint, and type checks. It distinguishes the full backend
+baseline from the affected checks rerun after fixes.
+
+## Contributor references
+
+- [Frontend guide](../frontend/README.md): components, routes, and API contracts.
+- [Design system](../frontend/DESIGN.md): shared UI conventions.
+- [Review workflow](reviews/review-workflow.md): source checks and verification boundaries.
+- [Project review](reviews/2026-09-04-project-review.md): dated findings and verification.
+- [Implementation history](implementation-history.md): technical decisions and acceptance records.
+- [Delivery plan](../PROJECT_PLAN.md): retained roadmap and implementation history.
+- [Screenshot guide](screenshots/README.md): regenerate fictional screenshots with
+  `npm run docs:screenshots` from `frontend/`, using isolated, intercepted APIs.
+
+## Additional launcher options
+
+- `./compass --setup-only`: install dependencies without starting services or login.
+- `./compass --no-open`: start services and print the URL without opening the app tab.
+- `./compass --port 8788 --connector-port 8001`: use different local ports.
