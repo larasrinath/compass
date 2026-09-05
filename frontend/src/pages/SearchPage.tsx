@@ -198,10 +198,10 @@ export function SearchPage({
         }}>{search.isPending ? 'Queueing…' : 'Run search'}<CompassIcon name="search" size={16} /></button>
       ) : null} />
 
-      <p className="field-help">Automatic search pages · up to 1,000 profiles per session · {settings.network.length && settings.network.length < 3 ? NETWORKS.filter(item => settings.network.includes(item.value)).map(item => item.label).join(', ') : 'All networks'}. Scores use your role criteria.</p>
+      <p className="field-help">Automatic search pages · up to 1,000 new downloads per search batch · {settings.network.length && settings.network.length < 3 ? NETWORKS.filter(item => settings.network.includes(item.value)).map(item => item.label).join(', ') : 'All networks'}. Scores use your role criteria.</p>
       <QueueStatus queue={queue} />
       {runs.data?.filter(run => run.pagination && (poolRun ? run.id === poolRun : !run.pagination.stop_reason)).map(run => <div className="pool-download-action" key={run.id}>
-        <span>{run.keywords} · {run.pagination!.people_found} people · {run.pagination!.pages_completed} pages · {run.pagination!.stop_reason ? ({ exhausted: 'All returned pages searched', repeated_page: 'No new people returned', profile_limit: 'Profile limit reached', page_limit: 'Page limit reached', stopped: 'Discovery stopped', failed: 'Search failed', rate_limited: 'LinkedIn limited this search', partial: 'Page incomplete' }[run.pagination!.stop_reason] ?? 'Search ended') : 'Searching more pages'}</span>
+        <span>{run.keywords} · {run.pagination!.people_found} people · {run.pagination!.pages_completed} pages{run.pagination!.downloads_queued !== undefined ? ` · ${run.pagination!.downloads_queued}/${run.pagination!.profile_limit} downloads queued` : ''} · {run.pagination!.stop_reason ? ({ exhausted: 'All returned pages searched', repeated_page: 'No new people returned', profile_limit: 'Previous search limit reached', download_limit: 'Download batch limit reached', page_limit: 'Page limit reached', stopped: 'Discovery stopped', failed: 'Search failed', rate_limited: 'LinkedIn limited this search', partial: 'Page incomplete' }[run.pagination!.stop_reason] ?? 'Search ended') : 'Searching more pages'}</span>
         {!run.pagination!.stop_reason ? <button className="quiet-action" type="button" disabled={stopDiscovery.isPending} onClick={() => stopDiscovery.mutate(run.id)}>Stop discovery</button> : null}
       </div>)}
       {stopDiscovery.isSuccess ? <p className="field-help">Discovery stopped. Profiles already queued will finish downloading.</p> : null}

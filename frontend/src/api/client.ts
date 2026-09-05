@@ -170,7 +170,7 @@ export type SearchRunStatus =
   | 'cancelled'
 
 export interface SearchRun {
-  pagination?: { pages_completed: number; people_found: number; profile_limit: number; stop_reason: string | null } | null
+  pagination?: { pages_completed: number; people_found: number; downloads_queued?: number; profile_limit: number; stop_reason: string | null } | null
   pages?: Array<{ run_id: string; status: SearchRunStatus }>
   automatic_downloads?: boolean
   downloads_dispatched?: boolean

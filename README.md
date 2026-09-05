@@ -14,7 +14,7 @@ contain real candidate records or represent live search results.*
 ## Automatic profile downloads
 
 **Run search** also authorizes downloading the people returned by that search,
-up to **1,000 profiles per batch**. The network filter is forwarded to LinkedIn:
+up to **1,000 new profile-download requests per search batch**. The network filter is forwarded to LinkedIn:
 1st-degree (`F`), 2nd-degree (`S`), or 3rd-degree and beyond (`O`). Select all three,
 or leave them all unchecked, to search across networks. Network distance does not
 contribute to a match score. Broad skills-based searches can surface people an
@@ -24,10 +24,15 @@ Compass now follows people-search pages automatically, preserving the same keywo
 location, network and company filters. Install the [bundled connector pagination
 patch](integrations/linkedin-mcp-server/README.md) before using this feature.
 Each page is a separate checkpointed queue job; all pages appear as one saved search.
-Discovery stops at 1,000 candidates, an empty or repeated page, a failed/incomplete
-page, or **Stop discovery**. Already queued profile downloads continue after stopping.
+Discovery stops after queuing 1,000 new downloads across that search’s pages, an
+empty or repeated page, a failed/incomplete page, or **Stop discovery**. Already queued profile downloads continue after stopping.
 LinkedIn controls the results it exposes: the ceiling does **not** guarantee 1,000
-matches. Compass retains up to 1,000 candidates and 200 logical searches per session.
+matches. **Saved candidates and search history have no lifetime count cap.**
+Previously downloaded profiles are reused and do not consume a new batch’s allowance.
+For example, a workspace with 10,000 saved profiles can queue another 1,000 new
+profile downloads. Starting a new search gets a fresh batch allowance; it does not
+delete or reset previous records. A page crossing the batch boundary can leave a
+few additional discovered candidates waiting for a later request.
 
 Downloads use the existing durable, single-worker queue with its configured pause
 between calls, rate-limit cooldowns and operator pause/resume controls. A batch

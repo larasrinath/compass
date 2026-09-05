@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from linkedin_dashboard.db.models import (
@@ -14,10 +14,37 @@ from linkedin_dashboard.db.models import (
     ProfileFetch,
     SearchDownload,
     SearchPage,
+    SearchPagination,
     SearchRun,
 )
 from linkedin_dashboard.db.session import Database
 from linkedin_dashboard.services.enrichment import EnrichmentService
+
+
+class DownloadBudgetChanged(RuntimeError):
+    pass
+
+
+def remaining_batch_downloads(db: Any, run_id: str, limit: int) -> int:
+    """Count new requests across every page of this logical search, not the library."""
+    page = db.get(SearchPage, run_id)
+    if page is None:
+        intent = db.get(SearchDownload, run_id)
+        used = intent.queued_count if intent else 0
+    else:
+        group = db.get(SearchPagination, page.root_run_id)
+        if group is None:
+            raise RuntimeError("search pagination is missing")
+        limit = min(limit, group.profile_limit)
+        used = (
+            db.scalar(
+                select(func.coalesce(func.sum(SearchDownload.queued_count), 0))
+                .join(SearchPage, SearchPage.run_id == SearchDownload.search_run_id)
+                .where(SearchPage.root_run_id == page.root_run_id)
+            )
+            or 0
+        )
+    return max(0, limit - used)
 
 
 class SearchDownloadService:
@@ -104,7 +131,9 @@ class SearchDownloadService:
                             .exists(),
                         )
                         .order_by(Candidate.first_seen_at, Candidate.id)
-                        .limit(intent.profile_limit)
+                        .limit(
+                            remaining_batch_downloads(db, run_id, intent.profile_limit)
+                        )
                     )
                 )
 
@@ -114,6 +143,12 @@ class SearchDownloadService:
                 raise IntegrityError(
                     "download already dispatched", {}, ValueError("already dispatched")
                 )
+            if len(candidate_ids) > remaining_batch_downloads(
+                db, run_id, intent.profile_limit
+            ):
+                # Recheck under queue admission's write transaction: another page
+                # may have used the allowance since candidate selection.
+                raise DownloadBudgetChanged("download batch allowance changed")
             intent.dispatched_at = datetime.now(UTC).isoformat()
             intent.queued_count = len(candidate_ids)
             db.add(
@@ -148,6 +183,9 @@ class SearchDownloadService:
                     [],
                     transaction_callback=dispatched,
                 )
+        except DownloadBudgetChanged:
+            # The whole admission rolled back. Re-select against the new allowance.
+            return
         except RuntimeError as error:
             # A concurrent manual request won. Re-select on the next worker turn;
             # the transaction rolled back both jobs and the dispatch marker.
