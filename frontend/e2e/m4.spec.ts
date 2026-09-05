@@ -686,3 +686,43 @@ test('Find candidates pagination stays within 30 profiles on mobile', async ({ p
   await expect(table.locator('tbody tr')).toHaveCount(30)
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
 })
+
+test('activity summary keeps a thousand waiting downloads compact on desktop and mobile', async ({ page }) => {
+  await mockApi(page, true)
+  await page.addInitScript(() => {
+    window.EventSource = class extends EventTarget {
+      timer: ReturnType<typeof setTimeout>
+      constructor() {
+        super()
+        this.timer = setTimeout(() => {
+          this.dispatchEvent(new Event('open'))
+          this.dispatchEvent(new MessageEvent('snapshot', { data: JSON.stringify({
+            state: 'active', pause_reason: null, resume_at: null, counts: {},
+            jobs: Array.from({ length: 1001 }, (_, index) => ({
+              id: `job-${index}`, kind: index ? 'get_person_profile' : 'search_people',
+              state: index ? 'queued' : 'running', position: index || null, depth: 1001, percent: 100,
+            })),
+          }) }))
+        }, 0)
+      }
+      close() { clearTimeout(this.timer) }
+    } as unknown as typeof EventSource
+  })
+  await page.goto('/search')
+  const activity = page.getByRole('complementary', { name: 'Activity queue' })
+  await expect(activity.getByText('Finding candidates')).toBeVisible()
+  await expect(activity.getByText('1,000 profiles')).toBeVisible()
+  expect((await activity.boundingBox())!.height).toBeLessThan(150)
+  await expect(activity.locator('.queue-job')).toHaveCount(0)
+  await page.screenshot({ path: '/private/tmp/compass-activity-desktop.png' })
+  await activity.getByRole('button', { name: 'View tasks' }).click()
+  await expect(activity.locator('.queue-job')).toHaveCount(10)
+  await activity.getByRole('button', { name: 'Next tasks' }).click()
+  await expect(activity.getByText('11–20 of 1,001 tasks')).toBeVisible()
+  await page.setViewportSize({ width: 390, height: 844 })
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  await expect(activity.getByRole('button', { name: 'Cancel Profile download at position 10' })).toBeVisible()
+  await activity.getByRole('button', { name: 'Hide tasks' }).click()
+  expect((await activity.boundingBox())!.height).toBeLessThan(170)
+  await activity.screenshot({ path: '/private/tmp/compass-activity-mobile.png' })
+})
