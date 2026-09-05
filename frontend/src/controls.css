@@ -1,0 +1,18 @@
+/* Shared select treatment: keep the native interaction, with Compass spacing. */
+select:not([multiple]) {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url('/icons/chevron-down.svg');
+  background-repeat: no-repeat;
+  background-position: right 16px center;
+  background-size: 16px 16px;
+  padding-right: 44px;
+}
+.criteria-filter-add select:not([multiple]) {
+  background-position: right 8px center;
+  background-size: 12px 12px;
+  padding-right: 28px;
+}
+@media (forced-colors: active) {
+  select:not([multiple]) { appearance: auto; -webkit-appearance: auto; background-image: none; }
+}

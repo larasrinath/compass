@@ -27,6 +27,7 @@ import './search-setup.css'
 import './results.css'
 import './saved-searches.css'
 import './candidate-profile.css'
+import './controls.css'
 
 function StatusDot({ healthy }: { healthy: boolean }) {
   return (

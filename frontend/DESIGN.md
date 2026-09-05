@@ -36,7 +36,8 @@ not just its colors.
 
 Implementation: `search-setup.css` owns the prompt/criteria screens; `results.css`
 owns result headers, cards, comparison controls, and discovery layout. `compass.css`
-contains the shared palette and application shell. `candidate-profile.css` owns
+contains the shared palette and application shell. `controls.css` gives native
+selects a shared inset chevron and reserves right padding for it. `candidate-profile.css` owns
 the profile drawer. Legacy evidence and diagnostic
 views still have styles in `App.css`.
 
