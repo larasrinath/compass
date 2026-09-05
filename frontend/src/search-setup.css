@@ -32,7 +32,8 @@ h1, h2, h3, .brand-title { font-family: 'Plus Jakarta Sans', 'Figtree', sans-ser
 .criteria-chips { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .criteria-chip { display: inline-flex; align-items: center; max-width: 100%; min-width: 0; border: 1px solid var(--line); border-radius: 24px; background: #fff; padding-left: 12px; }
 .criteria-chip input { border: 0; border-radius: 0; background: transparent; min-height: 38px; padding: 6px 0; font-size: 14px; line-height: 1.5; min-width: 0; max-width: calc(100% - 36px); }
-.criteria-chip input:focus { outline-offset: 0; border-radius: 4px; }
+.criteria-chip input:focus { outline: none; }
+.criteria-chip:focus-within { border-color: var(--accent); }
 .criteria-chip button { display: inline-flex; align-items: center; justify-content: center; min-width: 36px; min-height: 38px; padding: 0; background: transparent; color: #8a8577; border: 0; border-radius: 20px; }
 .criteria-chip button:hover { background: #f4f2ec; color: var(--accent); }
 .criteria-chip-add { border-style: dashed; }
