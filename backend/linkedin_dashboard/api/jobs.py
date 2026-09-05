@@ -117,6 +117,15 @@ async def mcp_status(
     queue: Annotated[DurableJobQueue, Depends(get_queue)],
 ) -> MCPStatus:
     correlation_id = current_correlation_id()
+    # Managed startup deliberately keeps the worker stopped until sign-in finishes.
+    # Status checks must remain readable without starting or enqueueing retrieval.
+    if not queue.accepting_jobs:
+        return MCPStatus(
+            reachable=False,
+            tools=[],
+            last_error_class=None,
+            correlation_id=correlation_id,
+        )
     job = await queue.probe_status(correlation_id)
     tools: list[str] = []
     if job.state == "done":

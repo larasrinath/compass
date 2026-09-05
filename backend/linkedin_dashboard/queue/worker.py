@@ -238,6 +238,10 @@ class DurableJobQueue:
         self._owner_token: str | None = None
         self._worker_lock_fd: int | None = None
 
+    @property
+    def accepting_jobs(self) -> bool:
+        return self._accepting
+
     async def start(self) -> None:
         async with self._start_lock:
             if self._worker is not None and not self._worker.done():

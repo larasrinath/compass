@@ -57,10 +57,12 @@ function App() {
     values: Map<string, EvidenceVerification>
   }>(() => ({ scope: '', values: new Map() }))
   const launcher = useLauncherStatus()
+  const canCheckConnector = !launcher.isPending && (!launcher.data?.managed || launcher.data.phase === 'ready')
   const health = useQuery({ queryKey: ['health'], queryFn: getHealth })
   const mcp = useQuery({
     queryKey: ['mcp-status'],
     queryFn: getMcpStatus,
+    enabled: canCheckConnector,
     retry: false,
     refetchOnWindowFocus: false,
     staleTime: Infinity,
@@ -166,13 +168,15 @@ function App() {
           <span>
             <StatusDot healthy={mcp.data?.reachable === true} />
             Connector{' '}
-            {mcp.isPending
+            {launcher.data?.managed && launcher.data.phase !== 'ready'
+              ? (['failed', 'login_failed'].includes(launcher.data.phase) ? 'needs sign-in' : 'connecting')
+              : mcp.isPending
               ? 'checking'
               : mcp.data?.reachable
                 ? 'connected'
                 : 'unavailable'}
           </span>
-          {mcp.data?.reachable ? <button className="connection-recheck" disabled={mcp.isFetching} onClick={() => void mcp.refetch()} type="button">{mcp.isFetching ? 'Checking…' : 'Check connection'}</button> : null}
+          {canCheckConnector && mcp.data?.reachable ? <button className="connection-recheck" disabled={mcp.isFetching} onClick={() => void mcp.refetch()} type="button">{mcp.isFetching ? 'Checking…' : 'Check connection'}</button> : null}
           {session.data ? (
             <span>
               Page reads {session.data.nav_used}/{session.data.nav_budget}
@@ -215,7 +219,7 @@ function App() {
 
       <main id="main-content">
         {launcher.data?.managed ? <LauncherStatus phase={launcher.data.phase} /> : null}
-        {view !== 'learn' && !mcp.data?.reachable && !launcher.data?.managed ? <div className="connection-strip" role="status">
+        {view !== 'learn' && canCheckConnector && !mcp.data?.reachable && !launcher.data?.managed ? <div className="connection-strip" role="status">
           <div>
             <strong>{mcp.isFetching ? 'Checking the LinkedIn connector…' : mcp.data?.reachable ? 'LinkedIn connector connected' : 'LinkedIn downloads are offline'}</strong>
             <span>{mcp.data?.reachable ? 'Search and download profiles on demand. Your work is saved locally.' : 'Saved candidates, evidence, and local scoring remain available. Start the LinkedIn connector, then check again.'}</span>
