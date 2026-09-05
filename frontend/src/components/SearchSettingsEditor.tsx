@@ -29,7 +29,7 @@ export function SearchSettingsEditor({ sessionId, value, onChange, retrievalRead
       <p className="criteria-hint">Leave all unchecked to search any network. Network distance never affects match scores.</p>
     </fieldset>
     <div className="brief-company-fields">
-    <label className="field"><span>Company ID — optional</span><input inputMode="numeric" pattern="[0-9]*" placeholder="Any company" value={value.companyId} onChange={event => onChange({ ...value, companyId: event.target.value })} /></label>
+    <label className="field"><span>Company ID</span><input inputMode="numeric" pattern="[0-9]*" placeholder="Any company" value={value.companyId} onChange={event => onChange({ ...value, companyId: event.target.value })} /></label>
     <div className="brief-company-lookup">
       <label className="field"><span>Find a company ID</span><input value={companySlug} placeholder="Company name from its LinkedIn URL" onChange={event => setCompanySlug(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); if (companySlug.trim() && retrievalReady && !company.isPending) company.mutate() } }} /></label>
       <button className="quiet-action" type="button" disabled={!companySlug.trim() || !retrievalReady || company.isPending} onClick={() => company.mutate()}>{company.isPending ? 'Queueing…' : 'Look up company'}</button>

@@ -100,7 +100,7 @@ test('create adds skills and credentials together and saves minimum experience i
   await user.selectOptions(within(filters).getByLabelText('Filter type'), 'optional')
   await user.type(within(filters).getByLabelText('New key filter'), 'Terraform{Enter}')
   assert.equal(screen.queryByLabelText('Search keywords — optional'), null)
-  await user.type(screen.getByLabelText('Company ID — optional'), '123')
+  await user.type(screen.getByLabelText('Company ID'), '123')
   await user.click(screen.getByRole('checkbox', { name: '3rd-degree and beyond' }))
   await user.click(screen.getByRole('button', { name: 'Save brief' }))
 
