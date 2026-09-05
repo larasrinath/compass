@@ -42,6 +42,7 @@ h1, h2, h3, .brand-title { font-family: var(--font-display); }
 .criteria-chip button { display: inline-flex; align-items: center; justify-content: center; min-width: 36px; min-height: 38px; padding: 0; background: transparent; color: var(--ink-faint); border: 0; border-radius: 20px; }
 .criteria-chip button:hover { background: var(--subtle); color: var(--accent); }
 .criteria-chip-add { border-style: dashed; }
+.criteria-chip-add:not(.criteria-filter-add) { width: 175px; }
 .criteria-chip-add input { width: 125px; }
 .criteria-chip-add input::placeholder { color: #a6a195; }
 .criteria-chip-add button { color: var(--accent); }
@@ -54,7 +55,7 @@ h1, h2, h3, .brand-title { font-family: var(--font-display); }
 .criteria-optional-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px 16px; align-items: start; }
 .criteria-optional-fields > .field { min-width: 0; }
 .criteria-optional-fields > .criteria-terms, .criteria-optional-fields > .brief-search-settings { grid-column: 1 / -1; }
-.experience-stepper { display: inline-flex; align-items: center; height: var(--pill-height); border: 1px solid var(--line); border-radius: 28px; padding: 0 4px; }
+.experience-stepper { display: inline-flex; align-items: center; justify-content: space-between; width: 175px; height: var(--pill-height); border: 1px solid var(--line); border-radius: 24px; padding: 0 4px; }
 .experience-stepper button { display: inline-flex; align-items: center; justify-content: center; background: none; border: 0; padding: 0; min-width: 38px; height: calc(var(--pill-height) - 2px); min-height: 0; color: var(--ink-faint); border-radius: 50%; }
 .experience-stepper button:hover:not(:disabled) { background: var(--subtle); }
 .experience-stepper output { min-width: 76px; text-align: center; font-size: 14px; font-weight: 600; }
