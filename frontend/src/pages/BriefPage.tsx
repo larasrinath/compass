@@ -172,7 +172,6 @@ export function BriefPage({
     <section aria-labelledby="brief-title" className="compass-setup">
       <button className="compass-back" type="button" onClick={() => setStep('describe')}><CompassIcon name="back" size={18} /> Back to role description</button>
       <header className="compass-setup-heading">
-        <p className="compass-kicker">Step 2 of 3 · Review the details</p>
         <h1 id="brief-title" tabIndex={-1}>Here’s what I’ll look for</h1>
         <blockquote>{description}</blockquote>
       </header>
