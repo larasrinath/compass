@@ -34,7 +34,8 @@ profile downloads. Starting a new search gets a fresh batch allowance; it does n
 delete or reset previous records. A page crossing the batch boundary can leave a
 few additional discovered candidates waiting for a later request.
 
-Downloads use the existing durable, single-worker queue with its configured pause
+Downloads use a durable queue with two isolated profile tabs when the patched
+connector is available (one with older connectors), with its configured pause
 between calls, rate-limit cooldowns and operator pause/resume controls. A batch
 reserves two page reads per newly requested profile (overview and experience).
 Its explicit authorization expands the session read budget only as needed for
@@ -60,7 +61,7 @@ See [download behavior and verification](docs/reviews/automatic-downloads.md) fo
    is not automatically parsed; review the criteria before continuing.
 2. **Find candidates** — run a search from the saved brief. Each location queues
    a separate search. Newly found profiles and experience download automatically,
-   one person at a time, and scoring updates after each download. Repeated results
+   up to two people at a time, and scoring updates after each download. Repeated results
    reuse saved profiles. The activity summary shows the current task and waiting counts;
    **View tasks** opens ten tasks at a time with individual cancellation controls.
    Keep the current **Cards** view, or switch to

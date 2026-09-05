@@ -773,3 +773,12 @@ test('large activity queues stay collapsed, page tasks, and cancel only the sele
   await user.click(screen.getByRole('button', { name: 'Hide tasks' }))
   assert.equal(view.container.querySelectorAll('.queue-job').length, 0)
 })
+
+test('activity summary reports both running profile downloads', () => {
+  render(wrapper(React.createElement(QueueStatus, { queue: { ...queue, jobs: [
+    { id: 'one', kind: 'get_person_profile', state: 'running', position: null, depth: 2 },
+    { id: 'two', kind: 'get_person_profile', state: 'running', position: null, depth: 2 },
+  ] } })))
+  assert.ok(screen.getByText('Downloading 2 profiles'))
+  assert.equal(screen.queryByText(/waiting/), null)
+})

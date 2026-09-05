@@ -50,6 +50,7 @@ from linkedin_dashboard.db.migrations import (
     v0029_m4_claim_stage_identity,
     v0030_search_downloads,
     v0031_search_pagination,
+    v0032_parallel_profiles,
 )
 from linkedin_dashboard.db.models import Base
 from linkedin_dashboard.db.unicode_identity import (
@@ -90,6 +91,7 @@ _MIGRATION_MODULES = (
     v0029_m4_claim_stage_identity,
     v0030_search_downloads,
     v0031_search_pagination,
+    v0032_parallel_profiles,
 )
 
 _SCHEMA_ACTIONS = {
