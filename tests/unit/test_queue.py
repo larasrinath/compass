@@ -19,6 +19,7 @@ from linkedin_dashboard.db.models import (
 )
 from linkedin_dashboard.db.session import Database
 from linkedin_dashboard.main import create_app
+from linkedin_dashboard.platform_support import IS_WINDOWS
 from linkedin_dashboard.queue.jobs import JobKind, JobPayload
 from linkedin_dashboard.queue.worker import (
     DurableJobQueue,
@@ -452,7 +453,19 @@ async def test_two_workers_still_cannot_overlap_external_calls(tmp_path) -> None
             assert attempt is not None and attempt.raw_response is not None
             assert control is not None and control.owner_token == first_owner
         lock_path = database.path.with_name(f"{database.path.name}.queue.lock")
-        assert lock_path.stat().st_mode & 0o777 == 0o600
+        if IS_WINDOWS:
+            from linkedin_dashboard.platform_support import windows_acl
+            from linkedin_dashboard.platform_support.privacy import (
+                windows_owner_is_acceptable,
+                windows_unauthorized_trustees,
+            )
+
+            user_sid = windows_acl.current_user_sid()
+            owner, entries = windows_acl.describe_access(lock_path)
+            assert windows_owner_is_acceptable(owner, user_sid)
+            assert not windows_unauthorized_trustees(entries, user_sid)
+        else:
+            assert lock_path.stat().st_mode & 0o777 == 0o600
         release.set()
         assert (await first.wait_for_terminal(job_id)).state == "done"
         assert executor.max_active == 1
