@@ -2,7 +2,11 @@
 # One entry point for macOS and Linux. Installs tools locally, never with sudo.
 set -eu
 cd "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-case "$(uname -s)" in Darwin|Linux) ;; *) echo 'Use macOS or Linux (Windows: WSL with a desktop browser).' >&2; exit 1;; esac
+case "$(uname -s)" in
+  Darwin|Linux) ;;
+  MINGW*|MSYS*|CYGWIN*) exec powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/compass-windows.ps1 "$@" ;;
+  *) echo 'Use macOS, Linux, or Windows (run .\compass in PowerShell).' >&2; exit 1;;
+esac
 for tool in git curl; do
   command -v "$tool" >/dev/null 2>&1 || { echo "Compass needs $tool installed." >&2; exit 1; }
 done

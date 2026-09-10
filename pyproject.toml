@@ -10,6 +10,7 @@ dependencies = [
     "fastapi>=0.115,<1",
     "fastmcp-slim[client]==3.4.4",
     "psutil>=7,<8",
+    "pywin32>=311,<313; sys_platform == 'win32'",
     "pydantic-settings>=2.8,<3",
     "sqlalchemy>=2.0.36,<3",
     "uvicorn[standard]>=0.34,<1",

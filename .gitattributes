@@ -1,0 +1,6 @@
+# Bundled git patches must remain byte-for-byte applicable on Windows.
+*.patch text eol=lf
+compass text eol=lf
+*.sh text eol=lf
+*.cmd text eol=crlf
+*.ps1 text eol=lf

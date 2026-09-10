@@ -1,7 +1,6 @@
 """Launcher checks use fake subprocesses and local HTTP; never LinkedIn."""
 
 import asyncio
-import fcntl
 import os
 import socket
 import subprocess
@@ -81,7 +80,7 @@ def test_connector_install_is_cached_and_failed_setup_is_retryable(tmp_path):
 
     def fake_run(command, **kwargs):
         commands.append(command)
-        if command[1] == "clone":
+        if "clone" in command:
             Path(command[-1]).mkdir()
 
     with patch("linkedin_dashboard.launcher.run", side_effect=fake_run):
@@ -89,7 +88,7 @@ def test_connector_install_is_cached_and_failed_setup_is_retryable(tmp_path):
         count = len(commands)
         assert ensure_connector(root, cache, "uv") == first
         assert len(commands) == count
-        assert sum(cmd[:3] == ["git", "apply", "--check"] for cmd in commands) == 2
+        assert sum("apply" in cmd and "--check" in cmd for cmd in commands) == 2
         (patches / "people-pagination.patch").write_text("new patch")
         second = ensure_connector(root, cache, "uv")
         assert second != first
@@ -218,6 +217,8 @@ def test_status_probe_starts_only_after_managed_connector_is_ready(tmp_path):
 
 @pytest.fixture
 def running_launcher(tmp_path):
+    if os.name == "nt":
+        pytest.skip("Legacy POSIX launcher upgrade compatibility")
     processes = []
 
     def start(
@@ -261,6 +262,7 @@ with (cache / 'launcher.lock').open('w') as lock:
             text=True,
         )
         processes.append(process)
+        assert process.stdout is not None
         assert process.stdout.readline().strip() == "ready"
         return root, cache, process
 
@@ -282,7 +284,7 @@ def test_repeat_launch_stops_verified_owner_and_waits_for_cleanup(
         assert process.poll() is not None
         assert (cache / "closed-cleanly").read_text() == "yes"
         assert saved.read_text() == "keep this"
-        assert (cache / "launcher.lock").read_text() == "preparing"
+        assert "preparing" in (cache / "launcher.lock").read_text()
     # A leftover lock file does not block later launches.
     with launcher_lock(cache, root):
         pass
@@ -317,8 +319,10 @@ def test_setup_only_does_not_stop_running_app(running_launcher):
 
 
 def test_simultaneous_restart_is_serialized(tmp_path):
-    with (tmp_path / "launcher-restart.lock").open("a+") as takeover:
-        fcntl.flock(takeover, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    from linkedin_dashboard.platform_support.locks import StateLock
+
+    with StateLock(tmp_path / "launcher-restart.lock") as takeover:
+        takeover.acquire()
         with pytest.raises(RuntimeError, match="Another Compass launch"):
             with launcher_lock(tmp_path, tmp_path):
                 pytest.fail("Only one takeover can run")
