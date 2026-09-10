@@ -31,10 +31,21 @@ from linkedin_dashboard.platform_support.locks import LockUnavailable, StateLock
 from linkedin_dashboard.platform_support.privacy import (
     create_private_directories,
     require_private_directory,
+    windows_unauthorized_trustees,
 )
 from linkedin_dashboard.platform_support.processes import spawn_contained
 
 PROJECT = Path(__file__).resolve().parents[2]
+
+
+def test_windows_owner_rights_does_not_allow_other_accounts():
+    user_sid = "S-1-5-21-1-2-3-1001"
+    private_entries = [(0, user_sid), (0, "S-1-3-4"), (0, "S-1-5-18")]
+    assert windows_unauthorized_trustees(private_entries, user_sid) == ()
+    assert windows_unauthorized_trustees(
+        [*private_entries, (0, "S-1-1-0")], user_sid
+    ) == ("S-1-1-0",)
+    assert windows_unauthorized_trustees(None, user_sid) == ("S-1-1-0",)
 
 
 def test_lock_excludes_other_handles_and_processes_but_state_stays_readable(tmp_path):
@@ -163,7 +174,11 @@ def test_windows_node_archives(machine):
 def test_node_zip_rejects_escaping_paths(tmp_path, member):
     archive = tmp_path / "node.zip"
     with zipfile.ZipFile(archive, "w") as bundle:
-        bundle.writestr(member, "no")
+        info = zipfile.ZipInfo(member)
+        # ZipInfo normalizes Windows separators; preserve the actual hostile
+        # archive entry so every platform exercises the same input bytes.
+        info.filename = member
+        bundle.writestr(info, "no")
     with pytest.raises(RuntimeError, match="unexpected path"):
         extract_archive(archive, tmp_path / "out", expected_root="node")
 

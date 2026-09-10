@@ -252,6 +252,7 @@ def extract_archive(archive: Path, destination: Path, *, expected_root: str) -> 
     if archive.name.endswith(".zip"):
         with zipfile.ZipFile(archive) as bundle:
             for member in bundle.infolist():
+                _require_contained_member(member.orig_filename, expected_root)
                 _require_contained_member(member.filename, expected_root)
                 mode = member.external_attr >> 16
                 if member.create_system == 3 and stat.S_ISLNK(mode):
@@ -486,6 +487,7 @@ class ManagedConnector:
 class CompassFiles(StaticFiles):
     async def get_response(self, path, scope):
         # SPA fallback applies only to known browser routes, never missing API/assets.
+        path = path.replace(os.sep, "/")
         if path.strip("/") in {
             "",
             ".",

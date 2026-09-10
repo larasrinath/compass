@@ -45,7 +45,9 @@ def windows_unauthorized_trustees(
     """
     if entries is None:
         return ("S-1-1-0",)
-    allowed = WINDOWS_SYSTEM_TRUSTEES | {user_sid}
+    # OWNER RIGHTS represents the already-verified object owner, not another
+    # account. Windows may include it on otherwise private user directories.
+    allowed = WINDOWS_SYSTEM_TRUSTEES | {user_sid, "S-1-3-4"}
     return tuple(
         sorted(
             {
