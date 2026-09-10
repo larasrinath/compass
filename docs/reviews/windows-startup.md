@@ -12,7 +12,7 @@ The connector runs with `--no-daemon` so it remains owned by this launcher.
 
 ## Local evidence (macOS, Python 3.13)
 
-- Launcher, platform support, startup and queue: **69 passed, 4 skipped**.
+- Launcher, platform support, startup and queue: **70 passed, 4 skipped**.
   The skipped tests require native Windows: two command spellings, ACL repair,
   and cleanup after an intermediate process exits.
 - Database regression suite: **152 passed**. Its expected migration list was
@@ -25,10 +25,11 @@ The connector runs with `--no-daemon` so it remains owned by this launcher.
 
 ## Limits and existing failures
 
-Native Windows execution and interactive LinkedIn sign-in were not available on
-the macOS host. The platform workflow executes real Windows command resolution,
-locking, permissions, child-process tests, and fresh/cached setup. Adding this
-workflow does not mean a Windows run has passed; that evidence is still pending.
+The [platform workflow](https://github.com/larasrinath/compass/actions/workflows/platform-startup.yml)
+executes real Windows command resolution, locking, permissions, child-process
+tests, and fresh/cached setup on native GitHub runners, alongside macOS and Linux.
+Consult the workflow run for the commit being evaluated for its CI results.
+Interactive LinkedIn sign-in was not exercised.
 
 The broad backend test attempt was interrupted to diagnose repeated scoring
 fixture errors. The same scoring setup error, source-contract failure, OpenAPI
