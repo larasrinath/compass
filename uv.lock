@@ -663,6 +663,7 @@ dependencies = [
     { name = "fastmcp-slim", extra = ["client"] },
     { name = "psutil" },
     { name = "pydantic-settings" },
+    { name = "pywin32", marker = "sys_platform == 'win32'" },
     { name = "sqlalchemy" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -683,6 +684,7 @@ requires-dist = [
     { name = "fastmcp-slim", extras = ["client"], specifier = "==3.4.4" },
     { name = "psutil", specifier = ">=7,<8" },
     { name = "pydantic-settings", specifier = ">=2.8,<3" },
+    { name = "pywin32", marker = "sys_platform == 'win32'", specifier = ">=311,<313" },
     { name = "sqlalchemy", specifier = ">=2.0.36,<3" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34,<1" },
 ]

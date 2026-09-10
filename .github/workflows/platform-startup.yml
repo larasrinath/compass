@@ -1,0 +1,45 @@
+name: Platform startup
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  startup:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: Compass smoke
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: Compass smoke
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.10.5'
+          python-version: '3.13'
+      - name: Test native platform behavior
+        run: uv run --frozen --group dev pytest tests/unit/test_launcher.py tests/unit/test_platform_support.py tests/unit/test_startup.py tests/unit/test_queue.py
+      - name: Windows first launch and cached setup
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $nodeDir = Split-Path (Get-Command node.exe).Source
+          $uvDir = Split-Path (Get-Command uv.exe).Source
+          $env:Path = ($env:Path.Split(';') | Where-Object { $_.TrimEnd('\') -notin @($nodeDir, $uvDir) }) -join ';'
+          .\compass --setup-only
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\compass --setup-only
+          exit $LASTEXITCODE
+      - name: POSIX setup
+        if: runner.os != 'Windows'
+        run: ./compass --setup-only

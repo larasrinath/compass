@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import fcntl
 import os
 import re
 import sqlite3
-import stat
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from errno import ELOOP
 from functools import lru_cache
 from pathlib import Path
 from threading import Lock, RLock
@@ -57,6 +54,31 @@ from linkedin_dashboard.db.models import Base
 from linkedin_dashboard.db.unicode_identity import (
     register_unicode_casefold,
     unicode_data_version,
+)
+from linkedin_dashboard.platform_support.locks import lock_exclusive, unlock
+from linkedin_dashboard.platform_support.privacy import (
+    create_private_directories as _create_private_directories,
+)
+from linkedin_dashboard.platform_support.privacy import (
+    open_existing_file as _open_existing_file,
+)
+from linkedin_dashboard.platform_support.privacy import (
+    open_owner_only_file as _open_owner_only_file,
+)
+from linkedin_dashboard.platform_support.privacy import (
+    require_private_directory as _require_private_directory,
+)
+from linkedin_dashboard.platform_support.privacy import (
+    require_same_file as _require_same_file,
+)
+from linkedin_dashboard.platform_support.privacy import (
+    require_single_link as _require_single_link,
+)
+from linkedin_dashboard.platform_support.privacy import (
+    restore_owner_only_mode as _restore_owner_only_mode,
+)
+from linkedin_dashboard.platform_support.privacy import (
+    secure_existing_sidecars as _secure_existing_sidecars,
 )
 from linkedin_dashboard.settings import normalize_database_path
 
@@ -255,7 +277,9 @@ class Database:
             _require_private_directory(lock_path.parent)
             descriptor = _open_owner_only_file(lock_path, create=True)
             try:
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                # One portable exclusive lock: POSIX takes the whole file, and
+                # Windows a byte outside anything the sidecar ever stores.
+                lock_exclusive(descriptor)
             except OSError as error:
                 raise BlockingIOError("another queue owner is active") from error
             with _WORKER_LOCKS_GUARD:
@@ -276,7 +300,7 @@ class Database:
                 return
             _WORKER_LOCK_PATHS.discard(lock_path)
         try:
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            unlock(descriptor)
         finally:
             os.close(descriptor)
 
@@ -519,16 +543,6 @@ def _revalidate_storage(dbapi_connection: Any, path: Path, expected_fd: int) -> 
     _secure_existing_sidecars(path)
 
 
-def _restore_owner_only_mode(path: Path, expected_fd: int) -> None:
-    """Repair mode through the held, proven inode and verify the result."""
-    _require_same_file(path, expected_fd)
-    os.fchmod(expected_fd, stat.S_IRUSR | stat.S_IWUSR)
-    file_stat = os.fstat(expected_fd)
-    if stat.S_IMODE(file_stat.st_mode) != 0o600:
-        raise PermissionError(f"database mode could not be restored to 0600: {path}")
-    _require_same_file(path, expected_fd)
-
-
 def _verify_connection_target(
     dbapi_connection: Any, path: Path, expected_fd: int
 ) -> None:
@@ -556,128 +570,6 @@ def _verify_connection_target(
             raise ValueError(f"SQLite database target changed before opening: {path}")
     finally:
         os.close(actual_fd)
-
-
-def _create_private_directories(directory: Path) -> None:
-    """Create missing DB parents privately without changing existing parents."""
-    missing: list[Path] = []
-    cursor = directory
-    while not cursor.exists():
-        missing.append(cursor)
-        cursor = cursor.parent
-
-    if not cursor.is_dir():
-        raise NotADirectoryError(cursor)
-
-    for path in reversed(missing):
-        try:
-            path.mkdir(mode=0o700)
-        except FileExistsError:
-            if not path.is_dir():
-                raise
-        else:
-            os.chmod(path, 0o700)
-
-
-def _require_private_directory(directory: Path) -> None:
-    """Require a private, current-user-owned directory before SQLite writes."""
-    directory_stat = directory.lstat()
-    if stat.S_ISLNK(directory_stat.st_mode):
-        raise PermissionError(
-            f"database parent must not be a symbolic link: {directory}"
-        )
-    if not stat.S_ISDIR(directory_stat.st_mode):
-        raise NotADirectoryError(directory)
-
-    current_uid = getattr(os, "geteuid", os.getuid)()
-    if directory_stat.st_uid != current_uid:
-        raise PermissionError(
-            f"database parent must be owned by the current user: {directory}"
-        )
-
-    mode = stat.S_IMODE(directory_stat.st_mode)
-    if mode & (stat.S_IRWXG | stat.S_IRWXO):
-        raise PermissionError(
-            "database parent must grant no group or world permissions "
-            f"(expected mode 0700 or stricter): {directory}"
-        )
-
-
-def _open_owner_only_file(path: Path, *, create: bool) -> int:
-    """Open a regular file without following its final path component."""
-    flags = (
-        os.O_RDWR
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-        | getattr(os, "O_NONBLOCK", 0)
-    )
-    if create:
-        try:
-            descriptor = os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o600)
-        except FileExistsError:
-            descriptor = _open_existing_file(path, flags)
-    else:
-        descriptor = _open_existing_file(path, flags)
-
-    try:
-        file_stat = os.fstat(descriptor)
-        if not stat.S_ISREG(file_stat.st_mode):
-            raise ValueError(f"database path is not a regular file: {path}")
-        _require_same_file(path, descriptor)
-        os.fchmod(descriptor, stat.S_IRUSR | stat.S_IWUSR)
-        _require_same_file(path, descriptor)
-    except Exception:
-        os.close(descriptor)
-        raise
-    return descriptor
-
-
-def _open_existing_file(path: Path, flags: int) -> int:
-    try:
-        return os.open(path, flags)
-    except OSError as error:
-        if error.errno == ELOOP:
-            raise ValueError(
-                f"database path must not be a symbolic link: {path}"
-            ) from error
-        raise
-
-
-def _require_same_file(path: Path, descriptor: int) -> None:
-    path_stat = path.lstat()
-    file_stat = os.fstat(descriptor)
-    _require_single_link(path_stat, path)
-    _require_single_link(file_stat, path)
-    if stat.S_ISLNK(path_stat.st_mode) or (
-        path_stat.st_dev,
-        path_stat.st_ino,
-    ) != (file_stat.st_dev, file_stat.st_ino):
-        raise ValueError(f"database path changed while opening it: {path}")
-
-
-def _require_single_link(file_stat: os.stat_result, path: Path) -> None:
-    if file_stat.st_nlink != 1:
-        raise ValueError(f"database file must have exactly one hard link: {path}")
-
-
-def _secure_existing_sidecars(path: Path) -> None:
-    for suffix in ("-wal", "-shm", "-journal"):
-        sidecar = Path(f"{path}{suffix}")
-        try:
-            sidecar_stat = sidecar.lstat()
-        except FileNotFoundError:
-            continue
-        if stat.S_ISLNK(sidecar_stat.st_mode):
-            raise ValueError(f"database sidecar must not be a symbolic link: {sidecar}")
-        if not stat.S_ISREG(sidecar_stat.st_mode):
-            raise ValueError(f"database sidecar is not a regular file: {sidecar}")
-        _require_single_link(sidecar_stat, sidecar)
-        try:
-            descriptor = _open_owner_only_file(sidecar, create=False)
-        except FileNotFoundError:
-            continue
-        else:
-            os.close(descriptor)
 
 
 def _sqlite_authorizer(

@@ -5,37 +5,76 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
-import fcntl
 import hashlib
 import os
 import platform
 import shutil
-import signal
 import socket
+import stat
 import subprocess
 import tarfile
 import tempfile
+import time
+import urllib.error
 import urllib.request
 import webbrowser
-from pathlib import Path
+import zipfile
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 
-import psutil
 import uvicorn
 from fastapi import HTTPException
 from fastapi.responses import FileResponse
 from starlette.staticfiles import StaticFiles
 
+from linkedin_dashboard.instance import (
+    REQUEST_POLL_SECONDS,
+    RUNNING,
+    OwnerRecord,
+    clear_shutdown_request,
+    launcher_lock,
+    own_record,
+    take_shutdown_request,
+)
 from linkedin_dashboard.main import create_app
+from linkedin_dashboard.platform_support import BOOTSTRAP_COMMAND, IS_WINDOWS
+from linkedin_dashboard.platform_support.privacy import (
+    create_private_directories,
+    remove_tree,
+)
+from linkedin_dashboard.platform_support.processes import (
+    ContainedProcess,
+    spawn_contained,
+)
 from linkedin_dashboard.settings import PROJECT_ROOT, Settings
 
 UPSTREAM = "https://github.com/stickerdaniel/linkedin-mcp-server.git"
 CONNECTOR_REVISION = "f410bfdc32569f8763fde11338b24ec6a0797f0d"
 NODE_VERSION = "22.22.0"
 PATCHES = ("people-pagination.patch", "parallel-profiles.patch")
+DOWNLOAD_ATTEMPTS = 3
+RETRY_SECONDS = 2.0
+# Git checks out and applies patches byte for byte here: Windows line-ending
+# translation would rewrite the bundled patches and stop them applying.
+GIT_TEXT_SETTINGS = (
+    "-c",
+    "core.autocrlf=false",
+    "-c",
+    "core.eol=lf",
+    "-c",
+    "core.safecrlf=false",
+    "-c",
+    "core.longpaths=true",
+)
 
 
 def run(command: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> None:
     subprocess.run(command, cwd=cwd, env=env, check=True)
+
+
+def git(arguments: list[str], *, cwd: Path) -> None:
+    """Run Git with the text handling Compass's bundled patches require."""
+    run(["git", *GIT_TEXT_SETTINGS, *arguments], cwd=cwd)
 
 
 def fingerprint(paths: list[Path]) -> str:
@@ -56,31 +95,35 @@ def ensure_connector(root: Path, cache: Path, uv: str) -> Path:
     if not marker.exists():
         print("Preparing LinkedIn support…", flush=True)
         # Publish only complete installations; never patch a user's checkout.
-        with tempfile.TemporaryDirectory(prefix="connector-", dir=cache) as temporary:
-            checkout = Path(temporary) / "source"
-            run(
-                ["git", "clone", "--quiet", "--no-checkout", UPSTREAM, str(checkout)],
+        temporary = Path(tempfile.mkdtemp(prefix="connector-", dir=cache))
+        try:
+            checkout = temporary / "source"
+            git(
+                ["clone", "--quiet", "--no-checkout", UPSTREAM, str(checkout)],
                 cwd=root,
             )
-            run(
-                ["git", "checkout", "--quiet", "--detach", CONNECTOR_REVISION],
-                cwd=checkout,
-            )
+            git(["checkout", "--quiet", "--detach", CONNECTOR_REVISION], cwd=checkout)
             for patch in patches:
-                run(["git", "apply", "--check", str(patch)], cwd=checkout)
-                run(["git", "apply", str(patch)], cwd=checkout)
+                git(["apply", "--check", str(patch)], cwd=checkout)
+                git(["apply", str(patch)], cwd=checkout)
             # Move before installing: virtual-environment scripts embed absolute paths.
             if destination.exists():
-                shutil.rmtree(destination)
+                remove_tree(destination)
             checkout.rename(destination)
+        finally:
+            # Git leaves object files read-only, which Windows refuses to delete
+            # through a plain tree removal.
+            remove_tree(temporary)
         run([uv, "sync", "--frozen", "--no-dev", "--python", "3.13"], cwd=destination)
-        marker.write_text(version)
+        marker.write_text(version, encoding="utf-8")
     return destination
 
 
-def supported_node(executable: str) -> bool:
+def supported_node(executable: str | Path) -> bool:
     try:
-        version = subprocess.check_output([executable, "--version"], text=True).strip()
+        version = subprocess.check_output(
+            [str(executable), "--version"], text=True
+        ).strip()
         major, minor, *_ = map(int, version.lstrip("v").split("."))
         return (
             (major == 20 and minor >= 19)
@@ -91,66 +134,205 @@ def supported_node(executable: str) -> bool:
         return False
 
 
-def ensure_node(cache: Path) -> Path:
-    existing = shutil.which("node")
-    if existing and shutil.which("npm") and supported_node(existing):
-        return Path(existing).parent
-    system = {"Darwin": "darwin", "Linux": "linux"}.get(platform.system())
-    arch = {"arm64": "arm64", "aarch64": "arm64", "x86_64": "x64", "AMD64": "x64"}.get(
-        platform.machine()
+@dataclass(frozen=True)
+class NodeRuntime:
+    """A Node.js executable and npm's own entry point.
+
+    npm ships as ``npm.cmd`` on Windows, which is a batch file: running it means
+    handing a user's folder names to the command interpreter to re-parse.
+    Compass runs npm's JavaScript through Node directly instead, so paths with
+    spaces, ampersands or non-ASCII characters are passed as arguments and never
+    parsed as commands.
+    """
+
+    node: Path
+    npm_cli: Path
+
+    @property
+    def bin_directory(self) -> Path:
+        return self.node.parent
+
+    def npm(self, *arguments: str) -> list[str]:
+        return [str(self.node), str(self.npm_cli), *arguments]
+
+    def environment(self) -> dict[str, str]:
+        return {
+            **os.environ,
+            "PATH": str(self.bin_directory) + os.pathsep + os.environ.get("PATH", ""),
+        }
+
+
+def npm_cli_for(node: Path, *, search_path: bool = False) -> Path | None:
+    """Find npm's CLI script for a Node.js executable, on any layout."""
+    directory = node.parent
+    candidates = [
+        directory / "node_modules/npm/bin/npm-cli.js",  # Windows distributions
+        directory.parent / "lib/node_modules/npm/bin/npm-cli.js",  # POSIX layout
+    ]
+    npm = shutil.which("npm", path=str(directory))
+    if not npm and search_path:
+        npm = shutil.which("npm")
+    if npm:
+        resolved = Path(npm).resolve()
+        candidates += [resolved, resolved.parent / "node_modules/npm/bin/npm-cli.js"]
+    for candidate in candidates:
+        if candidate.name == "npm-cli.js" and candidate.is_file():
+            return candidate
+    return None
+
+
+def node_download(system: str, machine: str) -> tuple[str, str, str] | None:
+    """Return the ``(name, archive, extension)`` Node publishes for this machine."""
+    platform_name = {"Darwin": "darwin", "Linux": "linux", "Windows": "win"}.get(system)
+    architecture = {
+        "arm64": "arm64",
+        "aarch64": "arm64",
+        "ARM64": "arm64",
+        "x86_64": "x64",
+        "AMD64": "x64",
+    }.get(machine)
+    if not platform_name or not architecture:
+        return None
+    name = f"node-v{NODE_VERSION}-{platform_name}-{architecture}"
+    extension = "zip" if platform_name == "win" else "tar.gz"
+    return name, f"{name}.{extension}", extension
+
+
+def node_runtime_at(directory: Path) -> NodeRuntime | None:
+    """Describe an extracted Node.js distribution, whatever its layout."""
+    for node in (directory / "node.exe", directory / "bin/node"):
+        if node.exists():
+            npm_cli = npm_cli_for(node)
+            if npm_cli:
+                return NodeRuntime(node=node, npm_cli=npm_cli)
+    return None
+
+
+def fetch(url: str, *, timeout: float) -> bytes:
+    """Download one small file, retrying briefly around a flaky connection."""
+    last: Exception | None = None
+    for attempt in range(DOWNLOAD_ATTEMPTS):
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as response:
+                return bytes(response.read())
+        except (urllib.error.URLError, TimeoutError, OSError) as error:
+            last = error
+            if attempt + 1 < DOWNLOAD_ATTEMPTS:
+                time.sleep(RETRY_SECONDS)
+    raise RuntimeError(f"Could not download {url}: {last}")
+
+
+def download_verified(url: str, destination: Path, digest: str, *, timeout: float):
+    """Stream a download to disk and keep it only if it matches its checksum."""
+    last: Exception | None = None
+    for attempt in range(DOWNLOAD_ATTEMPTS):
+        try:
+            checksum = hashlib.sha256()
+            with urllib.request.urlopen(url, timeout=timeout) as response:
+                with destination.open("wb") as output:
+                    while chunk := response.read(1 << 20):
+                        checksum.update(chunk)
+                        output.write(chunk)
+            if checksum.hexdigest() == digest:
+                return
+            last = RuntimeError("checksum did not match")
+        except (urllib.error.URLError, TimeoutError, OSError) as error:
+            last = error
+        destination.unlink(missing_ok=True)
+        if attempt + 1 < DOWNLOAD_ATTEMPTS:
+            time.sleep(RETRY_SECONDS)
+    raise RuntimeError(
+        f"Could not download a verified copy of {url} ({last}). "
+        f"Run {BOOTSTRAP_COMMAND} again."
     )
-    if not system or not arch:
+
+
+def extract_archive(archive: Path, destination: Path, *, expected_root: str) -> None:
+    """Unpack a Node.js archive, refusing any member that escapes *destination*."""
+    if archive.name.endswith(".zip"):
+        with zipfile.ZipFile(archive) as bundle:
+            for member in bundle.infolist():
+                _require_contained_member(member.orig_filename, expected_root)
+                _require_contained_member(member.filename, expected_root)
+                mode = member.external_attr >> 16
+                if member.create_system == 3 and stat.S_ISLNK(mode):
+                    raise RuntimeError("Node archive contains a link; not unpacked.")
+            bundle.extractall(destination)
+        return
+    with tarfile.open(archive) as bundle:
+        for member in bundle.getnames():
+            _require_contained_member(member, expected_root)
+        bundle.extractall(destination, filter="data")
+
+
+def _require_contained_member(name: str, expected_root: str) -> None:
+    parts = PurePosixPath(name).parts
+    if (
+        name.startswith(("/", "\\"))
+        or "\\" in name
+        or ":" in name
+        or not parts
+        or parts[0] != expected_root
+        or ".." in parts
+    ):
+        raise RuntimeError(f"Node archive contains an unexpected path: {name!r}")
+
+
+def ensure_node(cache: Path) -> NodeRuntime:
+    existing = shutil.which("node")
+    if existing and supported_node(existing):
+        npm_cli = npm_cli_for(Path(existing), search_path=True)
+        if npm_cli:
+            return NodeRuntime(node=Path(existing), npm_cli=npm_cli)
+    target = node_download(platform.system(), platform.machine())
+    if not target:
         raise RuntimeError(
             "Install a supported Node.js version for this platform, "
-            "then run ./compass again."
+            f"then run {BOOTSTRAP_COMMAND} again."
         )
-    name = f"node-v{NODE_VERSION}-{system}-{arch}"
+    name, archive_name, _extension = target
     destination = cache / name
-    if not (destination / "bin/node").exists():
-        print("Preparing the local JavaScript runtime…", flush=True)
-        base = f"https://nodejs.org/dist/v{NODE_VERSION}/"
-        with urllib.request.urlopen(base + "SHASUMS256.txt", timeout=60) as response:
-            sums = dict(
-                line.split()[::-1] for line in response.read().decode().splitlines()
-            )
-        archive_name = name + ".tar.gz"
-        with tempfile.TemporaryDirectory(prefix="node-", dir=cache) as temporary:
-            archive = Path(temporary) / archive_name
-            with urllib.request.urlopen(base + archive_name, timeout=120) as response:
-                with archive.open("wb") as output:
-                    shutil.copyfileobj(response, output)
-            if hashlib.sha256(archive.read_bytes()).hexdigest() != sums[archive_name]:
-                raise RuntimeError(
-                    "Node download checksum did not match. Run ./compass again."
-                )
-            with tarfile.open(archive) as bundle:
-                bundle.extractall(temporary, filter="data")
-            if destination.exists():
-                shutil.rmtree(destination)
-            (Path(temporary) / name).rename(destination)
-    return destination / "bin"
+    runtime = node_runtime_at(destination)
+    if runtime:
+        return runtime
+    print("Preparing the local JavaScript runtime…", flush=True)
+    base = f"https://nodejs.org/dist/v{NODE_VERSION}/"
+    sums = dict(
+        line.split()[::-1]
+        for line in fetch(base + "SHASUMS256.txt", timeout=60).decode().splitlines()
+    )
+    if archive_name not in sums:
+        raise RuntimeError(f"Node.js {NODE_VERSION} publishes no {archive_name}.")
+    temporary = Path(tempfile.mkdtemp(prefix="node-", dir=cache))
+    try:
+        archive = temporary / archive_name
+        download_verified(base + archive_name, archive, sums[archive_name], timeout=300)
+        extract_archive(archive, temporary, expected_root=name)
+        if destination.exists():
+            remove_tree(destination)
+        (temporary / name).rename(destination)
+    finally:
+        remove_tree(temporary)
+    runtime = node_runtime_at(destination)
+    if not runtime:
+        raise RuntimeError("The downloaded JavaScript runtime is missing npm.")
+    return runtime
 
 
 def prepare_frontend(root: Path, cache: Path) -> Path:
     frontend = root / "frontend"
-    node_bin = ensure_node(cache)
-    env = {
-        **os.environ,
-        "PATH": str(node_bin) + os.pathsep + os.environ.get("PATH", ""),
-    }
-    npm = shutil.which("npm", path=env["PATH"])
-    if not npm:
-        raise RuntimeError("The JavaScript runtime is missing npm.")
+    node = ensure_node(cache)
+    env = node.environment()
     lock_hash = fingerprint([frontend / "package-lock.json", frontend / "package.json"])
     install_stamp = cache / "frontend-install"
     if (
         not (frontend / "node_modules").exists()
         or not install_stamp.exists()
-        or install_stamp.read_text() != lock_hash
+        or install_stamp.read_text(encoding="utf-8") != lock_hash
     ):
         print("Installing the Compass interface…", flush=True)
-        run([npm, "ci", "--no-audit", "--no-fund"], cwd=frontend, env=env)
-        install_stamp.write_text(lock_hash)
+        run(node.npm("ci", "--no-audit", "--no-fund"), cwd=frontend, env=env)
+        install_stamp.write_text(lock_hash, encoding="utf-8")
     sources = [
         p
         for folder in (frontend / "src", frontend / "public")
@@ -163,11 +345,11 @@ def prepare_frontend(root: Path, cache: Path) -> Path:
     if (
         not (frontend / "dist/index.html").exists()
         or not build_stamp.exists()
-        or build_stamp.read_text() != build_hash
+        or build_stamp.read_text(encoding="utf-8") != build_hash
     ):
         print("Building Compass…", flush=True)
-        run([npm, "run", "build"], cwd=frontend, env=env)
-        build_stamp.write_text(build_hash)
+        run(node.npm("run", "build"), cwd=frontend, env=env)
+        build_stamp.write_text(build_hash, encoding="utf-8")
     return frontend / "dist"
 
 
@@ -180,95 +362,6 @@ def require_free_port(port: int) -> None:
             f"Port {port} is already in use. Stop the previous Compass terminal "
             "or choose --port and --connector-port. No existing process was stopped."
         ) from error
-
-
-def find_launcher_owner(lock_path: Path, root: Path) -> psutil.Process | None:
-    """Identify a launcher by its module, repository and open lock file."""
-    owners = []
-    for process in psutil.process_iter(["pid", "cmdline", "cwd"]):
-        try:
-            if process.pid == os.getpid():
-                continue
-            arguments = process.info["cmdline"] or []
-            if not any(
-                arguments[index : index + 2] == ["-m", "linkedin_dashboard.launcher"]
-                for index in range(len(arguments) - 1)
-            ):
-                continue
-            if (
-                not process.info["cwd"]
-                or Path(process.info["cwd"]).resolve() != root.resolve()
-            ):
-                continue
-            if any(
-                Path(item.path).resolve() == lock_path.resolve()
-                for item in process.open_files()
-            ):
-                owners.append(process)
-        except (psutil.Error, OSError):
-            continue
-    return owners[0] if len(owners) == 1 else None
-
-
-@contextlib.contextmanager
-def launcher_lock(cache: Path, root: Path, *, setup_only: bool = False):
-    # Serialize takeover so simultaneous launches cannot stop the same instance.
-    with (cache / "launcher-restart.lock").open("a+") as takeover:
-        try:
-            fcntl.flock(takeover, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise RuntimeError(
-                "Another Compass launch is restarting. Wait for it to finish."
-            ) from None
-        lock_path = cache / "launcher.lock"
-        lock = lock_path.open("a+")
-        try:
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                if setup_only:
-                    raise RuntimeError(
-                        "Compass is running. Stop it before setup-only maintenance."
-                    ) from None
-                lock.seek(0)
-                if lock.read().strip() == "preparing":
-                    raise RuntimeError(
-                        "Compass is still preparing its installation. "
-                        "Wait for the existing launch to finish."
-                    ) from None
-                owner = find_launcher_owner(lock_path, root)
-                if owner is None:
-                    raise RuntimeError(
-                        "Cannot verify the previous Compass process. "
-                        "No process was stopped."
-                    ) from None
-                print("Restarting the previous Compass instance…", flush=True)
-                try:
-                    owner.terminate()
-                    owner.wait(timeout=25)
-                except psutil.NoSuchProcess:
-                    pass
-                except psutil.TimeoutExpired:
-                    raise RuntimeError(
-                        "The previous Compass instance is still shutting down. "
-                        "Try again shortly."
-                    ) from None
-                except psutil.Error as error:
-                    raise RuntimeError(
-                        "Could not stop the previous Compass process."
-                    ) from error
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            lock.seek(0)
-            lock.truncate()
-            lock.write("preparing")
-            lock.flush()
-        except BaseException:
-            lock.close()
-            raise
-    try:
-        yield lock
-    finally:
-        lock.close()
 
 
 class ManagedConnector:
@@ -284,7 +377,7 @@ class ManagedConnector:
         ]
         self.checkout, self.profile, self.port, self.log = checkout, profile, port, log
         self.phase = "starting"
-        self.process: asyncio.subprocess.Process | None = None
+        self.process: ContainedProcess | None = None
         self.task: asyncio.Task | None = None
         self.stopping = False
 
@@ -297,17 +390,24 @@ class ManagedConnector:
         self.task = asyncio.create_task(self._run(login=login))
 
     async def _spawn(self, arguments: list[str]) -> None:
+        if self.process is not None:
+            await self.process.stop()
+        command = [
+            *self.command,
+            "--user-data-dir",
+            str(self.profile),
+            "--no-auto-import",
+            "--no-daemon",
+            *arguments,
+        ]
         with self.log.open("ab") as output:
-            self.process = await asyncio.create_subprocess_exec(
-                *self.command,
-                "--user-data-dir",
-                str(self.profile),
-                "--no-auto-import",
-                *arguments,
+            self.process = await spawn_contained(
+                command,
                 cwd=self.checkout,
-                stdout=output,
-                stderr=output,
-                start_new_session=True,
+                output=output.fileno(),
+                # The launcher cache is already private and beside the log this
+                # child writes to, so containment bookkeeping lives there too.
+                containment_dir=self.log.parent,
             )
 
     async def _run(self, *, login: bool) -> None:
@@ -327,6 +427,7 @@ class ManagedConnector:
                 assert self.process is not None
                 if await self.process.wait() != 0:
                     self.phase = "login_failed"
+                    await self.stop_process()
                     return
             self.phase = "connecting"
             await self._spawn(
@@ -360,6 +461,7 @@ class ManagedConnector:
             await self.process.wait()
             if not self.stopping:
                 self.phase = "failed"
+                await self.stop_process()
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -368,15 +470,10 @@ class ManagedConnector:
 
     async def stop_process(self) -> None:
         process = self.process
-        if process and process.returncode is None:
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(process.pid, signal.SIGTERM)
-            try:
-                await asyncio.wait_for(process.wait(), timeout=8)
-            except TimeoutError:
-                with contextlib.suppress(ProcessLookupError):
-                    os.killpg(process.pid, signal.SIGKILL)
-                await process.wait()
+        if process is not None:
+            # Ends the connector and everything it started, including its
+            # browser, and leaves every other browser on the machine alone.
+            await process.stop()
 
     async def close(self) -> None:
         self.stopping = True
@@ -390,6 +487,7 @@ class ManagedConnector:
 class CompassFiles(StaticFiles):
     async def get_response(self, path, scope):
         # SPA fallback applies only to known browser routes, never missing API/assets.
+        path = path.replace(os.sep, "/")
         if path.strip("/") in {
             "",
             ".",
@@ -441,7 +539,17 @@ def managed_app(
     return app
 
 
-async def serve(app, port: int, *, open_browser: bool):
+async def serve(
+    app,
+    port: int,
+    *,
+    open_browser: bool,
+    cache: Path | None = None,
+    record: OwnerRecord | None = None,
+):
+    # The loop is already running here, so Uvicorn never replaces it. That
+    # matters on Windows, where only the default proactor loop can start the
+    # connector process at all.
     server = uvicorn.Server(
         uvicorn.Config(
             app,
@@ -464,13 +572,33 @@ async def serve(app, port: int, *, open_browser: bool):
         if open_browser:
             await asyncio.to_thread(webbrowser.open, url)
 
-    opener = asyncio.create_task(open_when_ready())
+    async def stop_when_asked():
+        # A later launch from this folder asks this instance to shut itself
+        # down. Answering here means the handover runs the same clean shutdown
+        # as Ctrl+C on every platform, instead of a process being killed.
+        assert cache is not None and record is not None
+        while not server.should_exit:
+            if take_shutdown_request(cache, record):
+                print(
+                    "Another Compass launch asked this instance to stop. "
+                    "Closing this one…",
+                    flush=True,
+                )
+                server.should_exit = True
+                return
+            await asyncio.sleep(REQUEST_POLL_SECONDS)
+
+    watchers = [asyncio.create_task(open_when_ready())]
+    if cache is not None and record is not None:
+        watchers.append(asyncio.create_task(stop_when_asked()))
     try:
         await server.serve()
     finally:
-        opener.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await opener
+        for watcher in watchers:
+            watcher.cancel()
+        for watcher in watchers:
+            with contextlib.suppress(asyncio.CancelledError):
+                await watcher
 
 
 def main():
@@ -495,12 +623,13 @@ def main():
     )
     args = parser.parse_args()
     cache = PROJECT_ROOT / ".compass"
-    cache.mkdir(mode=0o700, exist_ok=True)
-    os.umask(0o077)
+    if not IS_WINDOWS:
+        os.umask(0o077)
     uv = os.environ.get("COMPASS_UV") or shutil.which("uv")
     if not uv:
-        parser.error("Start Compass with ./compass")
+        parser.error(f"Start Compass with {BOOTSTRAP_COMMAND}")
     try:
+        create_private_directories(cache)
         if not args.setup_only and (
             args.port == args.connector_port
             or not all(1 <= p <= 65535 for p in (args.port, args.connector_port))
@@ -513,9 +642,10 @@ def main():
             checkout = ensure_connector(PROJECT_ROOT, cache, uv)
             dist = prepare_frontend(PROJECT_ROOT, cache)
             if args.setup_only:
-                print("Compass is installed. Run ./compass to open it.")
+                print(f"Compass is installed. Run {BOOTSTRAP_COMMAND} to open it.")
                 return
             profile = Path.home() / ".compass-linkedin" / "profile"
+            create_private_directories(profile.parent)
             manager = ManagedConnector(
                 uv, checkout, profile, args.connector_port, cache / "connector.log"
             )
@@ -526,15 +656,18 @@ def main():
                 frontend_port=args.port,
                 mcp_url=f"http://127.0.0.1:{args.connector_port}/mcp",
             )
-            lock.seek(0)
-            lock.truncate()
-            lock.write("running")
-            lock.flush()
+            record = own_record(RUNNING, PROJECT_ROOT)
+            # A request left by a launch this instance never answered must not
+            # close the app the moment it opens.
+            clear_shutdown_request(cache)
+            lock.write_state(record.serialize())
             asyncio.run(
                 serve(
                     managed_app(settings, manager, dist, login=args.login),
                     args.port,
                     open_browser=not args.no_open,
+                    cache=cache,
+                    record=record,
                 )
             )
     except KeyboardInterrupt:
@@ -543,7 +676,7 @@ def main():
         parser.exit(
             1,
             f"Compass could not start: {error}\n"
-            "Run ./compass again after resolving this. "
+            f"Run {BOOTSTRAP_COMMAND} again after resolving this. "
             f"Logs: {cache / 'connector.log'}\n",
         )
 

@@ -1,6 +1,7 @@
 # Development setup
 
-Normal startup is `./compass` from the repository root. These separate commands
+Normal startup is `./compass` on macOS/Linux or `.\compass` in Windows PowerShell,
+from the repository root. These separate commands
 are for contributors who need hot reload or a manually managed connector.
 
 ## Services
@@ -39,6 +40,9 @@ on the same ports simultaneously.
 The `compass` shell entry point bootstraps uv if needed, without modifying shell
 profiles or requesting sudo. uv supplies Python 3.13 and the locked dashboard
 dependencies in `.compass/dashboard-venv`, leaving the developer `.venv` alone.
+Windows resolves `.\compass` to `compass.cmd`, which runs
+`scripts/compass-windows.ps1` with a process-local execution policy. It installs
+the same uv/Python versions locally and forwards all launcher options and exit codes.
 `backend/linkedin_dashboard/launcher.py` then:
 
 1. Locks this checkout and checks both loopback ports before setup.
@@ -53,6 +57,18 @@ dependencies in `.compass/dashboard-venv`, leaving the developer `.venv` alone.
    is retryable in the app. No searches are issued by the launcher itself.
 6. Stops its owned connector process group when the app exits. Port conflicts
    cause an error, never termination of someone else's process.
+
+Windows uses Job Objects to own connector descendants, portable byte-range
+locks for exclusive ownership, and native ACLs for private storage. Restart uses
+a request tied to the recorded process identity so the previous dashboard can
+close its queue and connector before releasing its lock. Windows Node downloads
+use the checked official ZIP; npm runs through Node directly to preserve paths
+containing spaces. Git attributes retain LF endings in bundled patches.
+
+The platform workflow runs launcher, storage, and queue tests on Windows, macOS,
+and Linux, plus real `--setup-only` smoke checks. Windows command-resolution tests
+exercise `.\compass` and `./compass` from a path with spaces and non-ASCII text.
+These checks use local test processes; interactive LinkedIn sign-in is manual.
 
 Operational settings and the existing database path still apply. Managed mode
 sets HOST/FRONTEND_HOST to 127.0.0.1, FRONTEND_PORT to the API port, and MCP_URL to

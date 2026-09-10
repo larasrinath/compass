@@ -12,14 +12,22 @@ Download or clone this repository, open its folder in a terminal, and run:
 ./compass
 ```
 
+On **Windows**, open the folder in **PowerShell** and run:
+
+```powershell
+.\compass
+```
+
 Compass installs what it needs, opens the app, and opens a LinkedIn sign-in window
 on first use. Sign in, complete **Search criteria**, then choose **Run search**.
 Later launches reuse your installation and login.
 
-**Requirements:** macOS or desktop Linux, Git, curl, and internet access for setup.
-Linux also needs Chromium's system libraries. The first launch may take a few
+**Requirements:** macOS, desktop Linux, or 64-bit Windows 10/11; Git and internet
+access for setup. Windows uses its built-in PowerShell; no WSL, Python, or Node
+installation is needed. macOS/Linux also need curl. Linux needs Chromium's system
+libraries. The first launch may take a few
 minutes. Keep the terminal open; **Ctrl+C** stops Compass without deleting saved work.
-Running `./compass` again gracefully restarts the previous instance from this
+Running the same command again gracefully restarts the previous instance from this
 repository and opens the app. Closing the browser tab alone does not stop Compass.
 
 [Startup help](docs/usage-notes.md#startup-help) · [Developer setup](docs/development.md)

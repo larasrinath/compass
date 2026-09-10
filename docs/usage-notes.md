@@ -2,9 +2,17 @@
 
 ## Startup help
 
-Run `./compass` from the repository folder. The app opens at
+Run `./compass` on macOS/Linux or `.\compass` in Windows PowerShell from the
+repository folder. Both commands install the required tools automatically. The app opens at
 [127.0.0.1:8787](http://127.0.0.1:8787/brief).
 
+The options below work with both commands; for example, Windows uses
+`.\compass --login`. In Command Prompt, use `compass.cmd`.
+
+- **Windows cannot find Git:** install [Git for Windows](https://git-scm.com/download/win),
+  reopen the terminal, and run `.\compass` again.
+- **Windows script policy:** use `.\compass` (or `.\compass.cmd`), which runs its
+  bootstrap with a policy scoped to that process. No global policy change is needed.
 - **Sign-in cancelled:** choose **Sign in to LinkedIn** in Compass to try again.
 - **Already running:** run `./compass` again. It stops the verified instance from
   this repository, waits for shutdown, then launches the current version. Saved
@@ -16,6 +24,9 @@ Run `./compass` from the repository folder. The app opens at
   a verified launcher from this repository; unrelated services are left alone.
 - **Browser did not open:** use the URL printed in the terminal.
 - **Startup failed:** check `.compass/connector.log` for details.
+- **Windows restart timed out:** press **Ctrl+C** in the original Compass terminal,
+  wait for it to finish, and launch again. Compass refuses to force-kill an
+  unresponsive previous dashboard.
 
 Compass uses a dedicated LinkedIn session in `~/.compass-linkedin/`. Enter your
 password only in LinkedIn's window. Your everyday browser cookies are not imported.
@@ -43,4 +54,3 @@ Unrecorded selections clear on reload or when scoring inputs change.
   Check the location in the downloaded profile.
 - Comparison selection is temporary: it survives opening and closing a profile,
   but resets on browser reload.
-
