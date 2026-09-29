@@ -365,7 +365,16 @@ def require_free_port(port: int) -> None:
 
 
 class ManagedConnector:
-    def __init__(self, uv: str, checkout: Path, profile: Path, port: int, log: Path):
+    def __init__(
+        self,
+        uv: str,
+        checkout: Path,
+        profile: Path,
+        port: int,
+        log: Path,
+        *,
+        temporary: Path | None = None,
+    ):
         self.command = [
             uv,
             "run",
@@ -376,6 +385,7 @@ class ManagedConnector:
             "linkedin_mcp_server",
         ]
         self.checkout, self.profile, self.port, self.log = checkout, profile, port, log
+        self.temporary = temporary
         self.phase = "starting"
         self.process: ContainedProcess | None = None
         self.task: asyncio.Task | None = None
@@ -400,6 +410,12 @@ class ManagedConnector:
             "--no-daemon",
             *arguments,
         ]
+        env = None
+        if self.temporary is not None:
+            env = {
+                **os.environ,
+                **dict.fromkeys(("TMP", "TEMP", "TMPDIR"), str(self.temporary)),
+            }
         with self.log.open("ab") as output:
             self.process = await spawn_contained(
                 command,
@@ -408,6 +424,7 @@ class ManagedConnector:
                 # The launcher cache is already private and beside the log this
                 # child writes to, so containment bookkeeping lives there too.
                 containment_dir=self.log.parent,
+                env=env,
             )
 
     async def _run(self, *, login: bool) -> None:
@@ -646,8 +663,20 @@ def main():
                 return
             profile = Path.home() / ".compass-linkedin" / "profile"
             create_private_directories(profile.parent)
+            temporary = None
+            if IS_WINDOWS:
+                # The connector refuses to install its browser under a %TEMP%
+                # that another local account may modify (sandbox tools such as
+                # CodexSandboxUsers add such grants), so it gets a private one.
+                temporary = profile.parent / "tmp"
+                create_private_directories(temporary)
             manager = ManagedConnector(
-                uv, checkout, profile, args.connector_port, cache / "connector.log"
+                uv,
+                checkout,
+                profile,
+                args.connector_port,
+                cache / "connector.log",
+                temporary=temporary,
             )
             settings = Settings(
                 host="127.0.0.1",
