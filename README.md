@@ -18,6 +18,9 @@ On **Windows**, open the folder in **PowerShell** and run:
 .\compass
 ```
 
+Or double-click **Start Compass.bat** in the folder. It works from wherever the
+folder is, and keeps the window open if startup fails so you can read the error.
+
 Compass installs what it needs, opens the app, and opens a LinkedIn sign-in window
 on first use. Sign in, complete **Search criteria**, then choose **Run search**.
 Later launches reuse your installation and login.
