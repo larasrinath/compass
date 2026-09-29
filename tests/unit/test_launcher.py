@@ -1,6 +1,7 @@
 """Launcher checks use fake subprocesses and local HTTP; never LinkedIn."""
 
 import asyncio
+import json
 import os
 import socket
 import subprocess
@@ -137,6 +138,34 @@ with socket.socket() as server:
         await manager.close()
     assert manager.process is not None and manager.process.returncode is not None
     require_free_port(port)
+
+
+@pytest.mark.asyncio
+async def test_manager_gives_connector_its_private_temporary_directory(tmp_path):
+    script = tmp_path / "connector.py"
+    script.write_text("""
+import json, os, pathlib, sys
+names = ('TMP', 'TEMP', 'TMPDIR')
+seen = {name: os.environ.get(name) for name in names}
+pathlib.Path(__file__).with_name('seen.json').write_text(json.dumps(seen))
+sys.exit(1)
+""")
+    temporary = tmp_path / "private-tmp"
+    temporary.mkdir()
+    manager = ManagedConnector(
+        "uv",
+        tmp_path,
+        tmp_path / "profile",
+        8000,
+        tmp_path / "connector.log",
+        temporary=temporary,
+    )
+    manager.command = [sys.executable, str(script)]
+    manager.begin(login=True)
+    assert manager.task is not None
+    await asyncio.wait_for(manager.task, timeout=5)
+    seen = json.loads((tmp_path / "seen.json").read_text())
+    assert seen == dict.fromkeys(("TMP", "TEMP", "TMPDIR"), str(temporary))
 
 
 def test_managed_app_keeps_queue_stopped_during_login_and_guards_retry(tmp_path):

@@ -16,6 +16,7 @@ import secrets
 import signal
 import subprocess
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 import psutil
@@ -166,12 +167,14 @@ async def spawn_contained(
     cwd: Path,
     output: int,
     containment_dir: Path,
+    env: Mapping[str, str] | None = None,
 ) -> ContainedProcess:
     """Start *command* so that Compass owns every process it goes on to start."""
     if not IS_WINDOWS:
         process = await asyncio.create_subprocess_exec(
             *command,
             cwd=cwd,
+            env=env,
             stdout=output,
             stderr=output,
             start_new_session=True,
@@ -185,6 +188,7 @@ async def spawn_contained(
         process = await asyncio.create_subprocess_exec(
             *gate_command(release, command),
             cwd=cwd,
+            env=env,
             stdout=output,
             stderr=output,
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
